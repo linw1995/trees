@@ -15,12 +15,14 @@
     inherit root;
     fileset = lib.fileset.unions [
       (craneLib.fileset.commonCargoSources root)
+      (root + /migrations)
     ];
   };
   cargoArgs = {
     pname = "trees";
     inherit version src;
     strictDeps = true;
+    nativeBuildInputs = [packagePkgs.git];
   };
   cargoArtifacts = craneLib.buildDepsOnly cargoArgs;
   trees = craneLib.buildPackage (cargoArgs // {
