@@ -1,0 +1,9 @@
+[package]
+name = "trees"
+version = "0.1.0"
+edition = "2021"
+description = "Manage coding workspaces composed of Git worktrees."
+
+[[bin]]
+name = "trees"
+path = "src/main.rs"

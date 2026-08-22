@@ -1,0 +1,18 @@
+# Rust
+/target/
+
+# Nix
+/result
+/result-*
+/.direnv/
+/.nix-gcroots/
+
+# Editors and operating systems
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Local logs
+*.log

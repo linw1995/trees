@@ -1,0 +1,7 @@
+Clippy
+Fenix
+OpenSpec
+OpenSpec's
+rustfmt
+worktree
+worktrees

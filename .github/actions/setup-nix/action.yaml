@@ -1,0 +1,32 @@
+name: Setup Nix Environment
+description: Install Nix and restore caches used by Flake checks.
+inputs:
+  cache-key-name:
+    description: Cache key namespace. Defaults to the current GitHub job name.
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - uses: nixbuild/nix-quick-install-action@v33
+      with:
+        nix_conf: |
+          keep-env-derivations = true
+          keep-outputs = true
+
+    - name: Restore and save Nix store
+      uses: nix-community/cache-nix-action@v7
+      with:
+        primary-key: nix-store-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-key-name || github.job }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'flake.nix', 'flake.lock', 'nix/**/*.nix', '.github/**/*.yaml') }}
+        gc-max-store-size-linux: 8G
+
+    - name: Cache Cargo dependencies
+      uses: actions/cache@v6
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-key-name || github.job }}-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
+        restore-keys: |
+          cargo-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-key-name || github.job }}-

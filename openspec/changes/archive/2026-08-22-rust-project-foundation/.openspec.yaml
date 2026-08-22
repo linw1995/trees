@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-08-22
+goal: Establish the Rust and Nix Flake project foundation without committing to unreviewed product behavior.
+skip_specs: true

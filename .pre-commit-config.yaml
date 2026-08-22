@@ -1,0 +1,36 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.4.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-case-conflict
+
+  - repo: https://github.com/doublify/pre-commit-rust
+    rev: v1.0
+    hooks:
+      - id: fmt
+        args: ["--verbose", "--"]
+      - id: clippy
+        args: ["--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]
+      - id: cargo-check
+        args: ["--workspace", "--all-targets", "--all-features"]
+
+  - repo: https://github.com/DavidAnson/markdownlint-cli2
+    rev: v0.18.1
+    hooks:
+      - id: markdownlint-cli2
+
+  - repo: local
+    hooks:
+      - id: harper
+        name: harper
+        entry: harper-cli lint --no-color --format compact --user-dict-path .harper-dictionary.txt
+        language: system
+        types: [markdown]
+
+default_stages: [pre-commit]
+fail_fast: false
