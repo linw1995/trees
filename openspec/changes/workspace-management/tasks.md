@@ -13,7 +13,7 @@
 - [x] 2.2 Persist operation intent, owner identity, lease expiry, and heartbeat before any Git mutation; verify a failed intent transaction prevents Git access
 - [x] 2.3 Enforce one non-terminal operation per workspace while allowing operations for different workspaces to run concurrently
 - [x] 2.4 Keep Git processes outside SQLite transactions; verify snapshot, event, and operation-step updates commit atomically in short transactions
-- [ ] 2.5 Record successful transitions, failures, and rollback steps; verify current snapshots and immutable events remain consistent
+- [x] 2.5 Record successful transitions, failures, and rollback steps; verify current snapshots and immutable events remain consistent
 
 ## 3. Git and CLI Primitives
 
