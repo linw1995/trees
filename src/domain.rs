@@ -2,6 +2,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+use diesel::{AsExpression, FromSqlRow};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::format_description::well_known::Rfc3339;
@@ -10,7 +11,19 @@ use uuid::Uuid;
 
 macro_rules! uuid_identifier {
     ($name:ident) => {
-        #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
+        #[derive(
+            Debug,
+            Clone,
+            Copy,
+            Eq,
+            PartialEq,
+            Hash,
+            Serialize,
+            Deserialize,
+            AsExpression,
+            FromSqlRow,
+        )]
+        #[diesel(sql_type = diesel::sql_types::Text)]
         #[serde(try_from = "String", into = "String")]
         pub struct $name(Uuid);
 
@@ -70,6 +83,7 @@ macro_rules! uuid_identifier {
 }
 
 uuid_identifier!(WorkspaceId);
+uuid_identifier!(RepoWorktreeId);
 uuid_identifier!(OperationId);
 uuid_identifier!(EventId);
 
@@ -97,7 +111,8 @@ impl std::error::Error for IdentifierError {
     }
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, AsExpression, FromSqlRow)]
+#[diesel(sql_type = diesel::sql_types::Text)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceState {
     Creating,
@@ -141,7 +156,8 @@ impl WorkspaceState {
     const ALL: &'static [&'static str] = &["creating", "ready", "degraded", "failed"];
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, AsExpression, FromSqlRow)]
+#[diesel(sql_type = diesel::sql_types::Text)]
 #[serde(rename_all = "snake_case")]
 pub enum RepoWorktreeState {
     Pending,
@@ -186,7 +202,8 @@ impl FromStr for RepoWorktreeState {
     }
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, AsExpression, FromSqlRow)]
+#[diesel(sql_type = diesel::sql_types::Text)]
 #[serde(rename_all = "snake_case")]
 pub enum OperationState {
     Running,
@@ -255,7 +272,8 @@ impl fmt::Display for StateParseError {
 
 impl std::error::Error for StateParseError {}
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, AsExpression, FromSqlRow)]
+#[diesel(sql_type = diesel::sql_types::Text)]
 #[serde(transparent)]
 pub struct CanonicalPath(PathBuf);
 
@@ -264,7 +282,16 @@ impl CanonicalPath {
         let path = path.as_ref().to_owned();
         std::fs::canonicalize(&path)
             .map(Self)
-            .map_err(|source| CanonicalPathError { path, source })
+            .map_err(|source| CanonicalPathError::Io { path, source })
+    }
+
+    pub fn from_absolute(path: impl AsRef<Path>) -> Result<Self, CanonicalPathError> {
+        let path = path.as_ref().to_owned();
+        if path.is_absolute() {
+            Ok(Self(path))
+        } else {
+            Err(CanonicalPathError::NotAbsolute { path })
+        }
     }
 
     pub fn as_path(&self) -> &Path {
@@ -288,30 +315,54 @@ impl fmt::Display for CanonicalPath {
     }
 }
 
+impl FromStr for CanonicalPath {
+    type Err = CanonicalPathError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::from_absolute(value)
+    }
+}
+
 #[derive(Debug)]
-pub struct CanonicalPathError {
-    path: PathBuf,
-    source: std::io::Error,
+pub enum CanonicalPathError {
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    NotAbsolute {
+        path: PathBuf,
+    },
 }
 
 impl fmt::Display for CanonicalPathError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "failed to canonicalize {}: {}",
-            self.path.display(),
-            self.source
-        )
+        match self {
+            Self::Io { path, source } => {
+                write!(
+                    formatter,
+                    "failed to canonicalize {}: {}",
+                    path.display(),
+                    source
+                )
+            }
+            Self::NotAbsolute { path } => {
+                write!(formatter, "path is not absolute: {}", path.display())
+            }
+        }
     }
 }
 
 impl std::error::Error for CanonicalPathError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.source)
+        match self {
+            Self::Io { source, .. } => Some(source),
+            Self::NotAbsolute { .. } => None,
+        }
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, AsExpression, FromSqlRow)]
+#[diesel(sql_type = diesel::sql_types::Text)]
 pub struct JsonDocument(Value);
 
 impl JsonDocument {
@@ -340,6 +391,20 @@ impl JsonDocument {
     }
 }
 
+impl fmt::Display for JsonDocument {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0.to_string())
+    }
+}
+
+impl FromStr for JsonDocument {
+    type Err = JsonDocumentError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+
 #[derive(Debug)]
 pub enum JsonDocumentError {
     Parse(serde_json::Error),
@@ -363,7 +428,10 @@ impl std::error::Error for JsonDocumentError {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, AsExpression, FromSqlRow,
+)]
+#[diesel(sql_type = diesel::sql_types::Text)]
 #[serde(transparent)]
 pub struct Timestamp(String);
 
@@ -384,6 +452,14 @@ impl Timestamp {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl FromStr for Timestamp {
+    type Err = TimestampError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
     }
 }
 
