@@ -30,17 +30,7 @@ pub fn inspect_repository(repository: &CanonicalPath) -> Result<RepositoryInfo, 
             &[arg("rev-parse"), arg("--show-toplevel")],
         )?,
     )?;
-    let common_dir_output = run_git(
-        repository.as_path(),
-        &[arg("rev-parse"), arg("--git-common-dir")],
-    )?;
-    let common_dir_path = PathBuf::from(common_dir_output.trim());
-    let common_dir_path = if common_dir_path.is_absolute() {
-        common_dir_path
-    } else {
-        repository.as_path().join(common_dir_path)
-    };
-    let common_dir = CanonicalPath::resolve(&common_dir_path).map_err(GitError::Canonicalize)?;
+    let common_dir = inspect_repository_identity(repository)?;
     let head = single_line(
         "rev-parse HEAD",
         run_git(repository.as_path(), &[arg("rev-parse"), arg("HEAD")])?,
@@ -51,6 +41,14 @@ pub fn inspect_repository(repository: &CanonicalPath) -> Result<RepositoryInfo, 
         common_dir,
         head,
     })
+}
+
+pub fn inspect_repository_identity(repository: &CanonicalPath) -> Result<CanonicalPath, GitError> {
+    inspect_common_directory(repository.as_path())
+}
+
+pub fn inspect_worktree_identity(worktree_path: &Path) -> Result<CanonicalPath, GitError> {
+    inspect_common_directory(worktree_path)
 }
 
 pub fn list_worktrees(repository: &CanonicalPath) -> Result<Vec<WorktreeInfo>, GitError> {
@@ -191,6 +189,20 @@ fn path_from_output(repository: &CanonicalPath, output: String) -> Result<Canoni
         repository.as_path().join(path)
     };
     CanonicalPath::resolve(path).map_err(GitError::Canonicalize)
+}
+
+fn inspect_common_directory(path: &Path) -> Result<CanonicalPath, GitError> {
+    let output = single_line(
+        "rev-parse --git-common-dir",
+        run_git(path, &[arg("rev-parse"), arg("--git-common-dir")])?,
+    )?;
+    let common_dir = PathBuf::from(output);
+    let common_dir = if common_dir.is_absolute() {
+        common_dir
+    } else {
+        path.join(common_dir)
+    };
+    CanonicalPath::resolve(common_dir).map_err(GitError::Canonicalize)
 }
 
 fn single_line(operation: &str, output: String) -> Result<String, GitError> {
@@ -354,6 +366,10 @@ mod tests {
             .expect("created worktree should be listed");
         assert!(created.detached);
         assert_eq!(created.head.as_deref(), Some(info.head.as_str()));
+        assert_eq!(
+            inspect_repository_identity(&repository).expect("repository identity should exist"),
+            inspect_worktree_identity(&worktree_path).expect("worktree identity should exist")
+        );
         assert!(worktree_path.join("README").exists());
 
         remove_worktree(&repository, &worktree_path).expect("worktree should be removed");

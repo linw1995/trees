@@ -33,34 +33,7 @@ pub fn reconcile_workspace(
     let mut observed_states = Vec::with_capacity(repositories.len());
 
     for repository in repositories {
-        let observation = match crate::git::list_worktrees(&repository.source_path) {
-            Ok(worktrees) => {
-                let worktree = worktrees
-                    .into_iter()
-                    .find(|worktree| worktree.path.as_path() == repository.worktree_path.as_path());
-                match worktree {
-                    Some(worktree)
-                        if worktree.detached
-                            && worktree.head.as_deref() == repository.last_head.as_deref() =>
-                    {
-                        Observation::Attached {
-                            head: worktree.head,
-                        }
-                    }
-                    Some(worktree) => Observation::Diverged {
-                        head: worktree.head,
-                        branch: worktree.branch,
-                    },
-                    None if repository.state == RepoWorktreeState::Pending => {
-                        Observation::Pending {
-                            head: repository.last_head.clone(),
-                        }
-                    }
-                    None => Observation::Missing,
-                }
-            }
-            Err(error) => Observation::Failed(error.to_string()),
-        };
+        let observation = observe_repository(&repository);
         let (state, head, details, error_json) = observation.into_record();
         observed_states.push(state);
         if state != repository.state || head.as_deref() != repository.last_head.as_deref() {
@@ -117,6 +90,98 @@ pub fn reconcile_workspace(
         changed_worktrees,
         workspace_state,
     })
+}
+
+fn observe_repository(repository: &RepoWorktreeRow) -> Observation {
+    let actual_repository_identity =
+        match crate::git::inspect_repository_identity(&repository.source_path) {
+            Ok(identity) => identity,
+            Err(error) => return Observation::Failed(error.to_string()),
+        };
+    if actual_repository_identity != repository.repository_identity {
+        return Observation::Diverged {
+            head: None,
+            branch: None,
+            reason: Some(format!(
+                "source repository identity changed from {} to {}",
+                repository.repository_identity, actual_repository_identity
+            )),
+        };
+    }
+
+    match crate::git::list_worktrees(&repository.source_path) {
+        Ok(worktrees) => {
+            let worktree = worktrees
+                .into_iter()
+                .find(|worktree| worktree.path.as_path() == repository.worktree_path.as_path());
+            match worktree {
+                Some(worktree) if worktree.prunable.is_some() => Observation::Missing {
+                    reason: Some("Git marked the worktree as prunable".to_owned()),
+                },
+                Some(_) if !repository.worktree_path.as_path().exists() => Observation::Missing {
+                    reason: Some("worktree path does not exist".to_owned()),
+                },
+                Some(worktree) => {
+                    match crate::git::inspect_worktree_identity(repository.worktree_path.as_path())
+                    {
+                        Ok(identity) if identity != repository.repository_identity => {
+                            Observation::Diverged {
+                                head: worktree.head,
+                                branch: worktree.branch,
+                                reason: Some(format!(
+                                    "worktree identity changed from {} to {}",
+                                    repository.repository_identity, identity
+                                )),
+                            }
+                        }
+                        Ok(_)
+                            if worktree.detached
+                                && worktree.head.as_deref() == repository.last_head.as_deref() =>
+                        {
+                            Observation::Attached {
+                                head: worktree.head,
+                            }
+                        }
+                        Ok(_) => Observation::Diverged {
+                            head: worktree.head,
+                            branch: worktree.branch,
+                            reason: Some("worktree revision or branch changed".to_owned()),
+                        },
+                        Err(error) => Observation::Diverged {
+                            head: worktree.head,
+                            branch: worktree.branch,
+                            reason: Some(format!("worktree identity is unavailable: {error}")),
+                        },
+                    }
+                }
+                None if repository.state == RepoWorktreeState::Pending => Observation::Pending {
+                    head: repository.last_head.clone(),
+                },
+                None if !repository.worktree_path.as_path().exists() => {
+                    Observation::Missing { reason: None }
+                }
+                None => {
+                    match crate::git::inspect_worktree_identity(repository.worktree_path.as_path())
+                    {
+                        Ok(identity) => Observation::Diverged {
+                            head: None,
+                            branch: None,
+                            reason: Some(format!(
+                                "worktree identity {} is not listed by the source repository",
+                                identity
+                            )),
+                        },
+                        Err(error) => Observation::Diverged {
+                            head: None,
+                            branch: None,
+                            reason: Some(format!("worktree path is not a Git worktree: {error}")),
+                        },
+                    }
+                }
+            }
+        }
+        Err(error) => Observation::Failed(error.to_string()),
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -331,8 +396,11 @@ enum Observation {
     Diverged {
         head: Option<String>,
         branch: Option<String>,
+        reason: Option<String>,
     },
-    Missing,
+    Missing {
+        reason: Option<String>,
+    },
     Failed(String),
 }
 
@@ -348,16 +416,20 @@ impl Observation {
         match self {
             Self::Attached { head } => (RepoWorktreeState::Attached, head, None, None),
             Self::Pending { head } => (RepoWorktreeState::Pending, head, None, None),
-            Self::Diverged { head, branch } => (
+            Self::Diverged {
+                head,
+                branch,
+                reason,
+            } => (
                 RepoWorktreeState::Diverged,
                 head,
-                Some(json_details("diverged", branch)),
+                Some(json_details("diverged", branch, reason)),
                 None,
             ),
-            Self::Missing => (
+            Self::Missing { reason } => (
                 RepoWorktreeState::Missing,
                 None,
-                Some(json_details("missing", None)),
+                Some(json_details("missing", None, reason)),
                 None,
             ),
             Self::Failed(error) => (
@@ -370,10 +442,11 @@ impl Observation {
     }
 }
 
-fn json_details(state: &str, branch: Option<String>) -> JsonDocument {
+fn json_details(state: &str, branch: Option<String>, reason: Option<String>) -> JsonDocument {
     JsonDocument::from_serializable(&serde_json::json!({
         "observed_state": state,
         "branch": branch,
+        "reason": reason,
     }))
     .expect("reconciliation details should serialize")
 }
@@ -547,6 +620,97 @@ mod tests {
 
         drop(connection);
         fs::remove_file(database_path).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn records_a_replaced_source_repository_as_diverged() {
+        let (root, mut connection, context) = setup_context();
+        execute_creation(&mut connection, &context).expect("creation should execute");
+        crate::storage::finalize_creation(
+            &mut connection,
+            &context.workspace_id,
+            &context.operation_id,
+        )
+        .expect("creation should finalize");
+
+        let source = context.repositories[0]
+            .plan
+            .source_path
+            .as_path()
+            .to_owned();
+        fs::remove_dir_all(&source).expect("original source repository should be removed");
+        fs::create_dir_all(&source).expect("replacement source repository should be created");
+        run_git(&source, &["init", "-q"]);
+        run_git(&source, &["config", "user.email", "trees@example.invalid"]);
+        run_git(&source, &["config", "user.name", "trees tests"]);
+        fs::write(source.join("README"), "replacement\n")
+            .expect("replacement file should be written");
+        run_git(&source, &["add", "README"]);
+        run_git(&source, &["commit", "-qm", "replacement"]);
+
+        let summary = reconcile_workspace(
+            &mut connection,
+            &context.workspace_id,
+            &context.operation_id,
+        )
+        .expect("reconciliation should succeed");
+        assert_eq!(summary.workspace_state, WorkspaceState::Degraded);
+        assert_eq!(summary.changed_worktrees, 1);
+        assert_eq!(
+            crate::storage::list_repo_worktrees(&mut connection, &context.workspace_id).unwrap()[0]
+                .state,
+            RepoWorktreeState::Diverged
+        );
+
+        drop(connection);
+        fs::remove_file(root.join("state.sqlite")).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn records_a_replaced_worktree_repository_as_diverged() {
+        let (root, mut connection, context) = setup_context();
+        execute_creation(&mut connection, &context).expect("creation should execute");
+        crate::storage::finalize_creation(
+            &mut connection,
+            &context.workspace_id,
+            &context.operation_id,
+        )
+        .expect("creation should finalize");
+
+        let repository = &context.repositories[0];
+        let worktree_path = repository.plan.worktree_path.clone();
+        crate::git::remove_worktree(&repository.plan.source_path, &worktree_path)
+            .expect("original worktree should be removed");
+        fs::create_dir_all(&worktree_path).expect("replacement worktree repository should exist");
+        run_git(&worktree_path, &["init", "-q"]);
+        run_git(
+            &worktree_path,
+            &["config", "user.email", "trees@example.invalid"],
+        );
+        run_git(&worktree_path, &["config", "user.name", "trees tests"]);
+        fs::write(worktree_path.join("README"), "replacement\n")
+            .expect("replacement file should be written");
+        run_git(&worktree_path, &["add", "README"]);
+        run_git(&worktree_path, &["commit", "-qm", "replacement"]);
+
+        let summary = reconcile_workspace(
+            &mut connection,
+            &context.workspace_id,
+            &context.operation_id,
+        )
+        .expect("reconciliation should succeed");
+        assert_eq!(summary.workspace_state, WorkspaceState::Degraded);
+        assert_eq!(summary.changed_worktrees, 1);
+        assert_eq!(
+            crate::storage::list_repo_worktrees(&mut connection, &context.workspace_id).unwrap()[0]
+                .state,
+            RepoWorktreeState::Diverged
+        );
+
+        drop(connection);
+        fs::remove_file(root.join("state.sqlite")).expect("state database should be removable");
         fs::remove_dir_all(root).expect("test root should be removable");
     }
 

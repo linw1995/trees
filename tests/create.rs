@@ -162,3 +162,47 @@ fn failed_creation_leaves_no_partial_workspace() {
     fs::remove_file(database_path).expect("state database should be removable");
     fs::remove_dir_all(root).expect("test root should be removable");
 }
+
+#[test]
+fn detects_an_external_worktree_branch_change() {
+    let root = test_root();
+    let source = repository(&root, "alpha");
+    let workspace_path = root.join("workspace");
+    let plan = prepare_create(&CreateRequest {
+        workspace_path,
+        repositories: vec![source.clone()],
+    })
+    .expect("creation plan should be prepared");
+    let database_path = root.join("state.sqlite");
+    let mut connection = trees::database::connect(&database_path).expect("database should open");
+    let result =
+        create_with_connection(&mut connection, plan).expect("workspace should be created");
+    let workspace = find_workspace_by_path(
+        &mut connection,
+        &CanonicalPath::resolve(&result.workspace_path).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    let operation = trees::schema::operations::table
+        .filter(trees::schema::operations::workspace_id.eq(&workspace.id))
+        .select(OperationRow::as_select())
+        .first(&mut connection)
+        .unwrap();
+
+    let worktree_path = &result.worktree_paths[0];
+    run_git(worktree_path, &["checkout", "-q", "-b", "external"]);
+    let summary = reconcile_workspace(&mut connection, &workspace.id, &operation.id)
+        .expect("reconciliation should succeed");
+    assert_eq!(summary.workspace_state, WorkspaceState::Degraded);
+    assert_eq!(summary.changed_worktrees, 1);
+    assert_eq!(
+        list_repo_worktrees(&mut connection, &workspace.id).unwrap()[0].state,
+        RepoWorktreeState::Diverged
+    );
+
+    git::remove_worktree(&CanonicalPath::resolve(&source).unwrap(), worktree_path)
+        .expect("changed worktree should be removable");
+    drop(connection);
+    fs::remove_file(database_path).expect("state database should be removable");
+    fs::remove_dir_all(root).expect("test root should be removable");
+}
