@@ -3,7 +3,7 @@
 - [x] 1.1 Add synchronous Diesel SQLite dependencies and embedded `diesel_migrations`; verify `SqliteConnection` is used and the Flake exposes `diesel-cli`
 - [x] 1.2 Resolve the platform-standard state directory and global `db.sqlite` path; verify the database is shared across workspaces and kept outside workspace content
 - [x] 1.3 Define migrations for the four lifecycle entities, UUID v7 text identities, JSON text details, exact state vocabulary, immutable events, indexes, and constraints; verify both migration directions
-- [ ] 1.4 Define typed lifecycle states, stable identities, canonical path handling, UUID v7 conversion, and JSON validation; verify invalid values cannot reach persistence
+- [x] 1.4 Define typed lifecycle states, stable identities, canonical path handling, UUID v7 conversion, and JSON validation; verify invalid values cannot reach persistence
 - [ ] 1.5 Configure writable SQLite connections with foreign keys, WAL, and a five-second busy timeout; verify read/write connection setup
 - [ ] 1.6 Enforce the no-runtime-raw-SQL rule with source checks or review tooling; verify application database access uses Diesel schema and query builder APIs
 

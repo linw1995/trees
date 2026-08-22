@@ -12,3 +12,7 @@ path = "src/main.rs"
 diesel = { version = "2.3", features = ["sqlite"] }
 diesel_migrations = "2.3"
 libsqlite3-sys = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+time = { version = "0.3", features = ["formatting", "parsing"] }
+uuid = { version = "1", features = ["serde", "v7"] }
