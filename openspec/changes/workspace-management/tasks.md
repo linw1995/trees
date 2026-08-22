@@ -27,7 +27,7 @@
 - [x] 4.1 Implement the reviewed `trees create <workspace-path> --repo <repository-path>...` orchestration using the typed CLI, persistence, and Git layers
 - [x] 4.2 Reconcile the workspace before and after the create operation, then persist `creating`, `pending`, and `running` states at the appropriate boundaries
 - [x] 4.3 Execute each Git mutation only after its intent is committed, and record the resulting snapshot, event, and operation step in a short transaction
-- [ ] 4.4 Clean up worktrees created earlier when a later repository fails; record failure and rollback events and avoid reporting a partial workspace as successful
+- [x] 4.4 Clean up worktrees created earlier when a later repository fails; record failure and rollback events and avoid reporting a partial workspace as successful
 - [ ] 4.5 Finalize successful creation as `ready`, `attached`, and `succeeded`; verify multiple direct child worktrees are present
 
 ## 5. Reconciliation and Recovery
