@@ -82,6 +82,16 @@ pub fn find_workspace_by_path(
         .optional()
 }
 
+pub fn find_workspace(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+) -> QueryResult<WorkspaceRow> {
+    workspaces::table
+        .find(workspace_id)
+        .select(WorkspaceRow::as_select())
+        .first(connection)
+}
+
 pub fn insert_repo_worktree(
     connection: &mut SqliteConnection,
     value: &NewRepoWorktree,

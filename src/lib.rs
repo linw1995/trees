@@ -4,6 +4,7 @@ pub mod domain;
 pub mod git;
 pub mod naming;
 pub mod paths;
+pub mod reconciliation;
 pub mod schema;
 pub mod storage;
 pub mod validation;
