@@ -650,4 +650,39 @@ mod tests {
         fs::remove_file(database_path).expect("state database should be removable");
         fs::remove_dir_all(root).expect("test root should be removable");
     }
+
+    #[test]
+    fn formats_workspace_errors_and_sources() {
+        let path = CanonicalPath::resolve(".").expect("workspace path should resolve");
+        let primary = WorkspaceError::AlreadyManaged(path.clone());
+        let errors = [
+            WorkspaceError::Validation(ValidationError::NoRepositories),
+            WorkspaceError::Naming(NamingError::MissingRepositoryName(path.clone())),
+            WorkspaceError::Git(GitError::WorktreeNotFound(path.as_path().to_owned())),
+            WorkspaceError::Database(diesel::result::Error::NotFound),
+            WorkspaceError::DatabaseOpen(crate::database::DatabaseError::Path(
+                crate::paths::PathError::HomeDirectoryUnavailable,
+            )),
+            WorkspaceError::Json(JsonDocument::parse("not json").unwrap_err()),
+            primary,
+            WorkspaceError::Rollback {
+                primary: Box::new(WorkspaceError::AlreadyManaged(path.clone())),
+                rollback: Box::new(WorkspaceError::RollbackFailure {
+                    errors: vec!["rollback error".to_owned()],
+                }),
+            },
+            WorkspaceError::RollbackFailure {
+                errors: vec!["rollback error".to_owned()],
+            },
+            WorkspaceError::Io {
+                path: path.into_path_buf(),
+                source: std::io::Error::other("io error"),
+            },
+        ];
+
+        for error in errors {
+            assert!(!error.to_string().is_empty());
+            let _ = std::error::Error::source(&error);
+        }
+    }
 }

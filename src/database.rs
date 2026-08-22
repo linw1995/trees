@@ -108,4 +108,27 @@ mod tests {
         drop(connection);
         fs::remove_file(path).expect("temporary database should be removable");
     }
+
+    #[test]
+    fn formats_database_errors() {
+        let path = PathBuf::from("/tmp/trees.sqlite");
+        let errors = [
+            DatabaseError::Path(PathError::HomeDirectoryUnavailable),
+            DatabaseError::StateDirectory(StateDirectoryError::new(
+                path.clone(),
+                std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
+            )),
+            DatabaseError::PathNotUtf8(path.clone()),
+            DatabaseError::Connection(diesel::ConnectionError::InvalidConnectionUrl(
+                "invalid".to_owned(),
+            )),
+            DatabaseError::Configuration(diesel::result::Error::NotFound),
+            DatabaseError::Migration(Box::new(std::io::Error::other("migration failed"))),
+        ];
+
+        for error in errors {
+            assert!(!error.to_string().is_empty());
+            let _ = std::error::Error::source(&error);
+        }
+    }
 }

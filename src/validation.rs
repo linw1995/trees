@@ -239,4 +239,31 @@ mod tests {
         ));
         fs::remove_dir_all(root).expect("test root should be removable");
     }
+
+    #[test]
+    fn formats_validation_errors() {
+        let path = PathBuf::from("/tmp/repository");
+        let errors = [
+            ValidationError::NoRepositories,
+            ValidationError::WorkspaceExists(path.clone()),
+            ValidationError::InvalidWorkspacePath(path.clone()),
+            ValidationError::PathIo {
+                path: path.clone(),
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "missing"),
+            },
+            ValidationError::Canonicalize(CanonicalPathError::NotAbsolute { path: path.clone() }),
+            ValidationError::NotDirectory(path.clone()),
+            ValidationError::NotGitRepository(path.clone()),
+            ValidationError::DuplicateRepository(path.clone()),
+            ValidationError::WorkspaceInsideRepository {
+                workspace: path.clone(),
+                repository: path,
+            },
+        ];
+
+        for error in errors {
+            assert!(!error.to_string().is_empty());
+            let _ = std::error::Error::source(&error);
+        }
+    }
 }

@@ -14,5 +14,6 @@
         stable.rustc
         stable.rustfmt
         stable.rust-analyzer
+        stable.llvm-tools
       ];
 }

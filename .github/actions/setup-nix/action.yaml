@@ -17,7 +17,7 @@ runs:
     - name: Restore and save Nix store
       uses: nix-community/cache-nix-action@v7
       with:
-        primary-key: nix-store-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-key-name || github.job }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'flake.nix', 'flake.lock', 'nix/**/*.nix', '.github/**/*.yaml') }}
+        primary-key: nix-store-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-key-name || github.job }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'flake.nix', 'flake.lock', 'nix/**/*.nix', 'scripts/**/*.sh', '.github/**/*.yaml') }}
         gc-max-store-size-linux: 8G
 
     - name: Cache Cargo dependencies

@@ -23,6 +23,58 @@ jobs:
       - name: Run repository checks
         run: nix develop --command prek -a
 
+  coverage:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-nix
+        with:
+          cache-key-name: coverage
+
+      - name: Run native coverage
+        run: nix develop --command bash scripts/run-cov.sh
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: target/coverage/result/
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          files: target/coverage/result/lcov.info
+          flags: rust
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  crap:
+    needs: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-nix
+        with:
+          cache-key-name: crap
+
+      - name: Download coverage artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: coverage
+          path: target/coverage/result/
+
+      - name: Run CRAP metric check
+        run: nix develop .#crap --command bash scripts/run-crap.sh
+
+      - name: Upload CRAP metric artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: crap
+          path: target/coverage/result/crap.md
+
   nix-build:
     needs: lint
     runs-on: ubuntu-latest

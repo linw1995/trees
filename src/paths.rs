@@ -48,6 +48,14 @@ pub struct StateDirectoryError {
     kind: StateDirectoryErrorKind,
 }
 
+impl StateDirectoryError {
+    pub fn new(path: PathBuf, source: io::Error) -> Self {
+        Self {
+            kind: StateDirectoryErrorKind::Io { path, source },
+        }
+    }
+}
+
 #[derive(Debug)]
 enum StateDirectoryErrorKind {
     Path(PathError),
