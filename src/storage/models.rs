@@ -127,6 +127,41 @@ pub struct NewOperation {
     pub error_json: Option<JsonDocument>,
 }
 
+#[derive(Debug, Clone)]
+pub struct OperationIntent {
+    pub id: OperationId,
+    pub workspace_id: WorkspaceId,
+    pub kind: String,
+    pub owner_id: String,
+    pub lease_expires_at: Timestamp,
+    pub pending_step: String,
+    pub intent_json: JsonDocument,
+    pub started_at: Timestamp,
+}
+
+impl OperationIntent {
+    pub fn new(
+        workspace_id: WorkspaceId,
+        kind: impl Into<String>,
+        owner_id: impl Into<String>,
+        lease_expires_at: Timestamp,
+        pending_step: impl Into<String>,
+        intent_json: JsonDocument,
+    ) -> Self {
+        let started_at = Timestamp::now();
+        Self {
+            id: OperationId::new(),
+            workspace_id,
+            kind: kind.into(),
+            owner_id: owner_id.into(),
+            lease_expires_at,
+            pending_step: pending_step.into(),
+            intent_json,
+            started_at,
+        }
+    }
+}
+
 #[derive(Debug, Queryable, Selectable, Identifiable)]
 #[diesel(table_name = lifecycle_events)]
 #[diesel(primary_key(event_id))]

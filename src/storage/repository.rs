@@ -6,8 +6,8 @@ use crate::domain::{CanonicalPath, OperationId, OperationState, Timestamp, Works
 use crate::schema::{lifecycle_events, operations, repo_worktrees, workspaces};
 
 use super::models::{
-    EventRow, NewEvent, NewOperation, NewRepoWorktree, NewWorkspace, OperationRow, RepoWorktreeRow,
-    WorkspaceRow,
+    EventRow, NewEvent, NewOperation, NewRepoWorktree, NewWorkspace, OperationIntent, OperationRow,
+    RepoWorktreeRow, WorkspaceRow,
 };
 
 pub fn insert_workspace(
@@ -69,6 +69,29 @@ pub fn insert_operation(
         .find(&value.id)
         .select(OperationRow::as_select())
         .first(connection)
+}
+
+pub fn persist_operation_intent(
+    connection: &mut SqliteConnection,
+    intent: &OperationIntent,
+) -> QueryResult<OperationRow> {
+    insert_operation(
+        connection,
+        &NewOperation {
+            id: intent.id,
+            workspace_id: intent.workspace_id,
+            kind: intent.kind.clone(),
+            state: OperationState::Running,
+            owner_id: intent.owner_id.clone(),
+            lease_expires_at: intent.lease_expires_at.clone(),
+            last_heartbeat_at: intent.started_at.clone(),
+            started_at: intent.started_at.clone(),
+            finished_at: None,
+            pending_step: intent.pending_step.clone(),
+            intent_json: intent.intent_json.clone(),
+            error_json: None,
+        },
+    )
 }
 
 pub fn find_operation(
@@ -248,6 +271,48 @@ mod tests {
             1
         );
         assert_eq!(event.operation_id, operation_id);
+
+        drop(connection);
+        fs::remove_file(database_path).expect("temporary database should be removable");
+    }
+
+    #[test]
+    fn operation_intent_is_persisted_before_any_workflow_step() {
+        let database_path =
+            std::env::temp_dir().join(format!("trees-{}.sqlite", WorkspaceId::new()));
+        let mut connection = database::connect(&database_path).expect("database should open");
+        let workspace_id = WorkspaceId::new();
+        let workspace_path = CanonicalPath::resolve(".").expect("workspace path should resolve");
+        let now = Timestamp::now();
+
+        insert_workspace(
+            &mut connection,
+            &NewWorkspace {
+                id: workspace_id,
+                canonical_path: workspace_path,
+                state: WorkspaceState::Creating,
+                created_at: now.clone(),
+                updated_at: now,
+                last_reconciled_at: None,
+            },
+        )
+        .expect("workspace should be inserted");
+
+        let intent = OperationIntent::new(
+            workspace_id,
+            "create",
+            "test-owner",
+            Timestamp::now(),
+            "attach repo",
+            JsonDocument::parse(r#"{"target":"repo"}"#).unwrap(),
+        );
+        let operation = persist_operation_intent(&mut connection, &intent)
+            .expect("operation intent should be persisted");
+
+        assert_eq!(operation.id, intent.id);
+        assert_eq!(operation.state, OperationState::Running);
+        assert_eq!(operation.owner_id, "test-owner");
+        assert_eq!(operation.pending_step, "attach repo");
 
         drop(connection);
         fs::remove_file(database_path).expect("temporary database should be removable");
