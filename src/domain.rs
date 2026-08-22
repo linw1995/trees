@@ -461,6 +461,12 @@ impl Timestamp {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    pub fn has_expired(&self) -> bool {
+        OffsetDateTime::parse(self.as_str(), &Rfc3339)
+            .map(|value| value <= OffsetDateTime::now_utc())
+            .unwrap_or(true)
+    }
 }
 
 impl FromStr for Timestamp {

@@ -26,13 +26,13 @@ pub struct CreateRequest {
     pub repositories: Vec<PathBuf>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct CreationPlan {
     pub workspace_path: CanonicalPath,
     pub repositories: Vec<RepositoryPlan>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct RepositoryPlan {
     pub source_path: CanonicalPath,
     pub repository_identity: CanonicalPath,

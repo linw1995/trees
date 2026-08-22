@@ -2,11 +2,15 @@ use std::fmt;
 
 use diesel::sqlite::SqliteConnection;
 
-use crate::domain::{JsonDocument, OperationId, RepoWorktreeState, WorkspaceId, WorkspaceState};
+use crate::domain::{
+    JsonDocument, OperationId, OperationState, RepoWorktreeState, Timestamp, WorkspaceId,
+    WorkspaceState,
+};
 use crate::git::GitError;
 use crate::storage::{
-    find_workspace, list_repo_worktrees, record_repo_worktree_transition,
-    record_workspace_transition, update_workspace_observation, TransitionMetadata,
+    append_event, finalize_creation, find_running_operation, find_workspace, list_repo_worktrees,
+    record_operation_transition, record_repo_worktree_transition, record_workspace_transition,
+    update_workspace_observation, EventDraft, TransitionMetadata,
 };
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -109,6 +113,174 @@ pub fn reconcile_workspace(
     })
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum RecoveryOutcome {
+    NoRunningOperation,
+    LeaseActive,
+    Succeeded,
+    RolledBack,
+    Failed,
+}
+
+pub fn recover_expired_operation(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+) -> Result<RecoveryOutcome, ReconciliationError> {
+    let operation = match find_running_operation(connection, workspace_id)
+        .map_err(ReconciliationError::Database)?
+    {
+        Some(operation) => operation,
+        None => return Ok(RecoveryOutcome::NoRunningOperation),
+    };
+    if !operation.lease_expires_at.has_expired() {
+        return Ok(RecoveryOutcome::LeaseActive);
+    }
+
+    let workspace =
+        find_workspace(connection, workspace_id).map_err(ReconciliationError::Database)?;
+    let repositories =
+        list_repo_worktrees(connection, workspace_id).map_err(ReconciliationError::Database)?;
+    let observations = repositories
+        .iter()
+        .map(|repository| {
+            crate::git::list_worktrees(&repository.source_path)
+                .ok()
+                .and_then(|worktrees| {
+                    worktrees.into_iter().find(|worktree| {
+                        worktree.path.as_path() == repository.worktree_path.as_path()
+                    })
+                })
+        })
+        .collect::<Vec<_>>();
+    let complete = !repositories.is_empty()
+        && repositories
+            .iter()
+            .zip(&observations)
+            .all(|(repository, worktree)| {
+                worktree.as_ref().is_some_and(|worktree| {
+                    worktree.detached && worktree.head.as_deref() == repository.last_head.as_deref()
+                })
+            });
+
+    if complete {
+        for (repository, worktree) in repositories.iter().zip(&observations) {
+            let head = worktree.as_ref().and_then(|worktree| worktree.head.clone());
+            if repository.state != RepoWorktreeState::Attached
+                || head.as_deref() != repository.last_head.as_deref()
+            {
+                record_repo_worktree_transition(
+                    connection,
+                    &repository.id,
+                    &operation.id,
+                    RepoWorktreeState::Attached,
+                    head,
+                    TransitionMetadata::new("worktree_recovered", "recovery"),
+                )
+                .map_err(ReconciliationError::Database)?;
+            }
+        }
+        finalize_creation(connection, workspace_id, &operation.id)
+            .map_err(ReconciliationError::Database)?;
+        append_recovery_event(
+            connection,
+            &operation.id,
+            OperationState::Succeeded,
+            "operation_recovered",
+        )?;
+        return Ok(RecoveryOutcome::Succeeded);
+    }
+
+    let error_json = json_error("operation did not complete before its lease expired");
+    let mut errors = Vec::new();
+    for (repository, worktree) in repositories.iter().zip(&observations) {
+        if worktree.is_some() {
+            if let Err(error) = crate::git::remove_worktree(
+                &repository.source_path,
+                repository.worktree_path.as_path(),
+            ) {
+                errors.push(error.to_string());
+            }
+        }
+        if let Err(error) = record_repo_worktree_transition(
+            connection,
+            &repository.id,
+            &operation.id,
+            RepoWorktreeState::Failed,
+            None,
+            TransitionMetadata::new("worktree_recovery_rollback", "recovery")
+                .with_error(error_json.clone()),
+        ) {
+            errors.push(error.to_string());
+        }
+    }
+    if workspace.canonical_path.as_path().exists() {
+        if let Err(error) = std::fs::remove_dir(&workspace.canonical_path) {
+            errors.push(error.to_string());
+        }
+    }
+
+    let operation_state = if errors.is_empty() {
+        OperationState::RolledBack
+    } else {
+        OperationState::Failed
+    };
+    if let Err(error) = record_operation_transition(
+        connection,
+        &operation.id,
+        operation_state,
+        "recovery rollback complete",
+        None,
+        TransitionMetadata::new("operation_recovered", "recovery").with_error(error_json.clone()),
+    ) {
+        errors.push(error.to_string());
+    }
+    record_workspace_transition(
+        connection,
+        workspace_id,
+        &operation.id,
+        WorkspaceState::Failed,
+        TransitionMetadata::new("workspace_recovery_failed", "recovery").with_error(error_json),
+    )
+    .map_err(ReconciliationError::Database)?;
+    append_recovery_event(
+        connection,
+        &operation.id,
+        operation_state,
+        "operation_recovered",
+    )?;
+
+    if errors.is_empty() {
+        Ok(RecoveryOutcome::RolledBack)
+    } else {
+        Ok(RecoveryOutcome::Failed)
+    }
+}
+
+fn append_recovery_event(
+    connection: &mut SqliteConnection,
+    operation_id: &OperationId,
+    state: OperationState,
+    event_type: &str,
+) -> Result<(), ReconciliationError> {
+    append_event(
+        connection,
+        &EventDraft {
+            operation_id: *operation_id,
+            entity_type: "operation".to_owned(),
+            entity_id: operation_id.to_string(),
+            event_type: event_type.to_owned(),
+            source: "recovery".to_owned(),
+            occurred_at: Timestamp::now(),
+            previous_state: Some(OperationState::Running.to_string()),
+            current_state: Some(state.to_string()),
+            details_json: None,
+            error_json: None,
+        },
+    )
+    .map(|_| ())
+    .map_err(ReconciliationError::Database)
+}
+
 enum Observation {
     Attached {
         head: Option<String>,
@@ -202,6 +374,8 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
+    use diesel::prelude::*;
+
     use super::*;
     use crate::workspace::{execute_creation, initialize_creation, prepare_create, CreateRequest};
 
@@ -217,6 +391,43 @@ mod tests {
             .output()
             .expect("git should run");
         assert!(output.status.success());
+    }
+
+    fn setup_context() -> (
+        PathBuf,
+        diesel::sqlite::SqliteConnection,
+        crate::workspace::CreationContext,
+    ) {
+        let root = test_root();
+        let source = root.join("repo");
+        fs::create_dir_all(&source).expect("repository should be created");
+        run_git(&source, &["init", "-q"]);
+        run_git(&source, &["config", "user.email", "trees@example.invalid"]);
+        run_git(&source, &["config", "user.name", "trees tests"]);
+        fs::write(source.join("README"), "test\n").expect("test file should be written");
+        run_git(&source, &["add", "README"]);
+        run_git(&source, &["commit", "-qm", "initial"]);
+        let plan = prepare_create(&CreateRequest {
+            workspace_path: root.join("workspace"),
+            repositories: vec![source],
+        })
+        .expect("creation plan should be prepared");
+        let database_path = root.join("state.sqlite");
+        let mut connection =
+            crate::database::connect(&database_path).expect("database should open");
+        let context =
+            initialize_creation(&mut connection, plan).expect("creation should initialize");
+        (root, connection, context)
+    }
+
+    fn expire_operation(
+        connection: &mut diesel::sqlite::SqliteConnection,
+        operation_id: &OperationId,
+    ) {
+        diesel::update(crate::schema::operations::table.find(operation_id))
+            .set(crate::schema::operations::lease_expires_at.eq(Timestamp::now()))
+            .execute(connection)
+            .expect("operation lease should be updated");
     }
 
     #[test]
@@ -292,6 +503,73 @@ mod tests {
 
         drop(connection);
         fs::remove_file(database_path).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn recovers_a_completed_git_operation() {
+        let (root, mut connection, context) = setup_context();
+        execute_creation(&mut connection, &context).expect("creation should execute");
+        expire_operation(&mut connection, &context.operation_id);
+
+        assert_eq!(
+            recover_expired_operation(&mut connection, &context.workspace_id).unwrap(),
+            RecoveryOutcome::Succeeded
+        );
+        assert_eq!(
+            crate::storage::find_operation(&mut connection, &context.operation_id)
+                .unwrap()
+                .state,
+            OperationState::Succeeded
+        );
+        assert!(
+            crate::storage::list_events_for_operation(&mut connection, &context.operation_id)
+                .unwrap()
+                .iter()
+                .any(|event| event.event_type == "operation_recovered")
+        );
+
+        for repository in &context.repositories {
+            crate::git::remove_worktree(
+                &repository.plan.source_path,
+                &repository.plan.worktree_path,
+            )
+            .expect("recovered worktree should be removable");
+        }
+        drop(connection);
+        fs::remove_file(root.join("state.sqlite")).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn rolls_back_a_partial_expired_operation() {
+        let (root, mut connection, context) = setup_context();
+        execute_creation(&mut connection, &context).expect("creation should execute");
+        let first = &context.repositories[0];
+        crate::git::remove_worktree(&first.plan.source_path, &first.plan.worktree_path)
+            .expect("external partial removal should succeed");
+        expire_operation(&mut connection, &context.operation_id);
+
+        assert_eq!(
+            recover_expired_operation(&mut connection, &context.workspace_id).unwrap(),
+            RecoveryOutcome::RolledBack
+        );
+        assert!(!context.plan.workspace_path.as_path().exists());
+        assert_eq!(
+            crate::storage::find_operation(&mut connection, &context.operation_id)
+                .unwrap()
+                .state,
+            OperationState::RolledBack
+        );
+        assert!(
+            crate::storage::list_repo_worktrees(&mut connection, &context.workspace_id)
+                .unwrap()
+                .iter()
+                .all(|repository| repository.state == RepoWorktreeState::Failed)
+        );
+
+        drop(connection);
+        fs::remove_file(root.join("state.sqlite")).expect("state database should be removable");
         fs::remove_dir_all(root).expect("test root should be removable");
     }
 }
