@@ -1,9 +1,20 @@
 use std::fmt;
 use std::path::PathBuf;
 
-use crate::domain::CanonicalPath;
+use diesel::sqlite::SqliteConnection;
+use serde::Serialize;
+
+use crate::domain::{
+    CanonicalPath, JsonDocument, RepoWorktreeId, RepoWorktreeState, Timestamp, WorkspaceId,
+    WorkspaceState,
+};
 use crate::git::{self, GitError};
 use crate::naming::{self, NamingError, WorktreePlan};
+use crate::storage::{
+    append_event, find_workspace_by_path, insert_repo_worktree, insert_workspace,
+    persist_operation_intent, with_short_transaction, EventDraft, NewRepoWorktree, NewWorkspace,
+    OperationIntent,
+};
 use crate::validation::{self, ValidationError};
 
 #[derive(Debug, Clone)]
@@ -12,18 +23,32 @@ pub struct CreateRequest {
     pub repositories: Vec<PathBuf>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CreationPlan {
     pub workspace_path: CanonicalPath,
     pub repositories: Vec<RepositoryPlan>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RepositoryPlan {
     pub source_path: CanonicalPath,
     pub repository_identity: CanonicalPath,
     pub worktree_path: PathBuf,
     pub head: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct TrackedRepository {
+    pub id: RepoWorktreeId,
+    pub plan: RepositoryPlan,
+}
+
+#[derive(Debug, Clone)]
+pub struct CreationContext {
+    pub workspace_id: WorkspaceId,
+    pub operation_id: crate::domain::OperationId,
+    pub plan: CreationPlan,
+    pub repositories: Vec<TrackedRepository>,
 }
 
 pub fn prepare_create(request: &CreateRequest) -> Result<CreationPlan, WorkspaceError> {
@@ -50,11 +75,136 @@ fn repository_plan(plan: WorktreePlan) -> Result<RepositoryPlan, WorkspaceError>
     })
 }
 
+pub fn initialize_creation(
+    connection: &mut SqliteConnection,
+    plan: CreationPlan,
+) -> Result<CreationContext, WorkspaceError> {
+    if find_workspace_by_path(connection, &plan.workspace_path)
+        .map_err(WorkspaceError::Database)?
+        .is_some()
+    {
+        return Err(WorkspaceError::AlreadyManaged(plan.workspace_path));
+    }
+
+    let workspace_id = WorkspaceId::new();
+    let owner_id = format!("process:{}", std::process::id());
+    let operation_intent = OperationIntent::new(
+        workspace_id,
+        "create",
+        owner_id,
+        Timestamp::after_seconds(300),
+        "prepare worktrees",
+        JsonDocument::from_serializable(&plan).map_err(WorkspaceError::Json)?,
+    );
+    let repositories = plan
+        .repositories
+        .iter()
+        .map(|repository| TrackedRepository {
+            id: RepoWorktreeId::new(),
+            plan: repository.clone(),
+        })
+        .collect::<Vec<_>>();
+    let now = Timestamp::now();
+
+    with_short_transaction(connection, |connection| {
+        insert_workspace(
+            connection,
+            &NewWorkspace {
+                id: workspace_id,
+                canonical_path: plan.workspace_path.clone(),
+                state: WorkspaceState::Creating,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+                last_reconciled_at: None,
+            },
+        )?;
+        for repository in &repositories {
+            insert_repo_worktree(
+                connection,
+                &NewRepoWorktree {
+                    id: repository.id,
+                    workspace_id,
+                    repository_identity: repository.plan.repository_identity.clone(),
+                    source_path: repository.plan.source_path.clone(),
+                    worktree_path: CanonicalPath::from_absolute(&repository.plan.worktree_path)
+                        .map_err(|error| {
+                            diesel::result::Error::QueryBuilderError(Box::new(error))
+                        })?,
+                    state: RepoWorktreeState::Pending,
+                    last_head: Some(repository.plan.head.clone()),
+                    last_observed_at: now.clone(),
+                },
+            )?;
+        }
+        persist_operation_intent(connection, &operation_intent)?;
+
+        append_event(
+            connection,
+            &EventDraft {
+                operation_id: operation_intent.id,
+                entity_type: "workspace".to_owned(),
+                entity_id: workspace_id.to_string(),
+                event_type: "workspace_created".to_owned(),
+                source: "trees".to_owned(),
+                occurred_at: now.clone(),
+                previous_state: None,
+                current_state: Some(WorkspaceState::Creating.to_string()),
+                details_json: None,
+                error_json: None,
+            },
+        )?;
+        for repository in &repositories {
+            append_event(
+                connection,
+                &EventDraft {
+                    operation_id: operation_intent.id,
+                    entity_type: "repo_worktree".to_owned(),
+                    entity_id: repository.id.to_string(),
+                    event_type: "worktree_planned".to_owned(),
+                    source: "trees".to_owned(),
+                    occurred_at: now.clone(),
+                    previous_state: None,
+                    current_state: Some(RepoWorktreeState::Pending.to_string()),
+                    details_json: None,
+                    error_json: None,
+                },
+            )?;
+        }
+        append_event(
+            connection,
+            &EventDraft {
+                operation_id: operation_intent.id,
+                entity_type: "operation".to_owned(),
+                entity_id: operation_intent.id.to_string(),
+                event_type: "operation_started".to_owned(),
+                source: "trees".to_owned(),
+                occurred_at: now,
+                previous_state: None,
+                current_state: Some("running".to_owned()),
+                details_json: None,
+                error_json: None,
+            },
+        )?;
+        Ok::<(), diesel::result::Error>(())
+    })
+    .map_err(WorkspaceError::Database)?;
+
+    Ok(CreationContext {
+        workspace_id,
+        operation_id: operation_intent.id,
+        plan,
+        repositories,
+    })
+}
+
 #[derive(Debug)]
 pub enum WorkspaceError {
     Validation(ValidationError),
     Naming(NamingError),
     Git(GitError),
+    Database(diesel::result::Error),
+    Json(crate::domain::JsonDocumentError),
+    AlreadyManaged(CanonicalPath),
 }
 
 impl fmt::Display for WorkspaceError {
@@ -63,6 +213,9 @@ impl fmt::Display for WorkspaceError {
             Self::Validation(error) => error.fmt(formatter),
             Self::Naming(error) => error.fmt(formatter),
             Self::Git(error) => error.fmt(formatter),
+            Self::Database(error) => write!(formatter, "database operation failed: {error}"),
+            Self::Json(error) => error.fmt(formatter),
+            Self::AlreadyManaged(path) => write!(formatter, "workspace is already managed: {path}"),
         }
     }
 }
@@ -73,6 +226,9 @@ impl std::error::Error for WorkspaceError {
             Self::Validation(error) => Some(error),
             Self::Naming(error) => Some(error),
             Self::Git(error) => Some(error),
+            Self::Database(error) => Some(error),
+            Self::Json(error) => Some(error),
+            Self::AlreadyManaged(_) => None,
         }
     }
 }
@@ -150,6 +306,39 @@ mod tests {
                 .worktree_path
                 .starts_with(plan.workspace_path.as_path())
         }));
+        let database_path = root.join("state.sqlite");
+        let mut connection =
+            crate::database::connect(&database_path).expect("database should open");
+        let context =
+            initialize_creation(&mut connection, plan).expect("creation should initialize");
+        let workspace =
+            crate::storage::find_workspace_by_path(&mut connection, &context.plan.workspace_path)
+                .unwrap()
+                .unwrap();
+        assert_eq!(workspace.state, WorkspaceState::Creating);
+        assert_eq!(
+            crate::storage::list_repo_worktrees(&mut connection, &context.workspace_id)
+                .unwrap()
+                .iter()
+                .filter(|worktree| worktree.state == RepoWorktreeState::Pending)
+                .count(),
+            2
+        );
+        assert_eq!(
+            crate::storage::find_running_operation(&mut connection, &context.workspace_id)
+                .unwrap()
+                .unwrap()
+                .id,
+            context.operation_id
+        );
+        assert_eq!(
+            crate::storage::list_events_for_operation(&mut connection, &context.operation_id)
+                .unwrap()
+                .len(),
+            4
+        );
+        drop(connection);
+        fs::remove_file(database_path).expect("state database should be removable");
         fs::remove_dir_all(root).expect("test root should be removable");
     }
 }

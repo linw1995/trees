@@ -437,7 +437,15 @@ pub struct Timestamp(String);
 
 impl Timestamp {
     pub fn now() -> Self {
-        let value = OffsetDateTime::now_utc()
+        Self::from_datetime(OffsetDateTime::now_utc())
+    }
+
+    pub fn after_seconds(seconds: i64) -> Self {
+        Self::from_datetime(OffsetDateTime::now_utc() + time::Duration::seconds(seconds))
+    }
+
+    fn from_datetime(value: OffsetDateTime) -> Self {
+        let value = value
             .format(&Rfc3339)
             .expect("RFC 3339 formatting should be infallible");
         Self(value)
