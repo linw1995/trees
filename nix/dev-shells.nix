@@ -8,6 +8,7 @@
     ];
     packages = with pkgs; [
       git
+      diesel-cli
       harper
       prek
     ];
