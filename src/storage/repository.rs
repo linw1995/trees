@@ -371,6 +371,97 @@ pub fn record_operation_transition(
     })
 }
 
+pub fn persist_operation_step_intent(
+    connection: &mut SqliteConnection,
+    operation_id: &OperationId,
+    pending_step: impl Into<String>,
+    intent_json: JsonDocument,
+) -> QueryResult<()> {
+    let pending_step = pending_step.into();
+    with_short_transaction(connection, |connection| {
+        let updated = diesel::update(operations::table.find(operation_id))
+            .set((
+                operations::pending_step.eq(pending_step),
+                operations::intent_json.eq(intent_json),
+                operations::last_heartbeat_at.eq(Timestamp::now()),
+                operations::lease_expires_at.eq(Timestamp::after_seconds(300)),
+            ))
+            .execute(connection)?;
+        if updated == 1 {
+            Ok(())
+        } else {
+            Err(diesel::result::Error::NotFound)
+        }
+    })
+}
+
+pub fn record_worktree_step_result(
+    connection: &mut SqliteConnection,
+    worktree_id: &RepoWorktreeId,
+    operation_id: &OperationId,
+    state: RepoWorktreeState,
+    last_head: Option<String>,
+    pending_step: impl Into<String>,
+    metadata: TransitionMetadata,
+) -> QueryResult<()> {
+    let pending_step = pending_step.into();
+    with_short_transaction(connection, |connection| {
+        let previous_state = repo_worktrees::table
+            .find(worktree_id)
+            .select(repo_worktrees::state)
+            .first::<RepoWorktreeState>(connection)?;
+        let operation_event_type = format!("operation_step_{}", metadata.event_type);
+        let occurred_at = Timestamp::now();
+
+        diesel::update(repo_worktrees::table.find(worktree_id))
+            .set((
+                repo_worktrees::state.eq(state),
+                repo_worktrees::last_head.eq(last_head),
+                repo_worktrees::last_observed_at.eq(&occurred_at),
+            ))
+            .execute(connection)?;
+        diesel::update(operations::table.find(operation_id))
+            .set((
+                operations::pending_step.eq(pending_step),
+                operations::last_heartbeat_at.eq(&occurred_at),
+                operations::lease_expires_at.eq(Timestamp::after_seconds(300)),
+                operations::error_json.eq(metadata.error_json.clone()),
+            ))
+            .execute(connection)?;
+        append_event(
+            connection,
+            &EventDraft {
+                operation_id: *operation_id,
+                entity_type: "repo_worktree".to_owned(),
+                entity_id: worktree_id.to_string(),
+                event_type: metadata.event_type,
+                source: metadata.source.clone(),
+                occurred_at: occurred_at.clone(),
+                previous_state: Some(previous_state.to_string()),
+                current_state: Some(state.to_string()),
+                details_json: metadata.details_json.clone(),
+                error_json: metadata.error_json.clone(),
+            },
+        )?;
+        append_event(
+            connection,
+            &EventDraft {
+                operation_id: *operation_id,
+                entity_type: "operation".to_owned(),
+                entity_id: operation_id.to_string(),
+                event_type: operation_event_type,
+                source: metadata.source,
+                occurred_at,
+                previous_state: Some(OperationState::Running.to_string()),
+                current_state: Some(OperationState::Running.to_string()),
+                details_json: metadata.details_json,
+                error_json: metadata.error_json,
+            },
+        )?;
+        Ok(())
+    })
+}
+
 pub fn list_events_for_operation(
     connection: &mut SqliteConnection,
     operation_id: &OperationId,

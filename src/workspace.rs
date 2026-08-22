@@ -1,4 +1,5 @@
 use std::fmt;
+use std::fs;
 use std::path::PathBuf;
 
 use diesel::sqlite::SqliteConnection;
@@ -12,8 +13,9 @@ use crate::git::{self, GitError};
 use crate::naming::{self, NamingError, WorktreePlan};
 use crate::storage::{
     append_event, find_workspace_by_path, insert_repo_worktree, insert_workspace,
-    persist_operation_intent, with_short_transaction, EventDraft, NewRepoWorktree, NewWorkspace,
-    OperationIntent,
+    persist_operation_intent, persist_operation_step_intent, record_worktree_step_result,
+    with_short_transaction, EventDraft, NewRepoWorktree, NewWorkspace, OperationIntent,
+    TransitionMetadata,
 };
 use crate::validation::{self, ValidationError};
 
@@ -197,6 +199,45 @@ pub fn initialize_creation(
     })
 }
 
+pub fn execute_creation(
+    connection: &mut SqliteConnection,
+    context: &CreationContext,
+) -> Result<(), WorkspaceError> {
+    fs::create_dir(&context.plan.workspace_path).map_err(|source| WorkspaceError::Io {
+        path: context.plan.workspace_path.clone().into_path_buf(),
+        source,
+    })?;
+
+    for repository in &context.repositories {
+        let intent_json =
+            JsonDocument::from_serializable(&repository.plan).map_err(WorkspaceError::Json)?;
+        persist_operation_step_intent(
+            connection,
+            &context.operation_id,
+            format!("attach {}", repository.plan.source_path),
+            intent_json,
+        )
+        .map_err(WorkspaceError::Database)?;
+        git::add_detached_worktree(&repository.plan.source_path, &repository.plan.worktree_path)?;
+        let worktree =
+            git::find_worktree(&repository.plan.source_path, &repository.plan.worktree_path)?;
+        record_worktree_step_result(
+            connection,
+            &repository.id,
+            &context.operation_id,
+            RepoWorktreeState::Attached,
+            worktree.head,
+            "worktree attached",
+            TransitionMetadata::new("worktree_attached", "trees").with_details(
+                JsonDocument::from_serializable(&repository.plan).map_err(WorkspaceError::Json)?,
+            ),
+        )
+        .map_err(WorkspaceError::Database)?;
+    }
+
+    Ok(())
+}
+
 #[derive(Debug)]
 pub enum WorkspaceError {
     Validation(ValidationError),
@@ -205,6 +246,10 @@ pub enum WorkspaceError {
     Database(diesel::result::Error),
     Json(crate::domain::JsonDocumentError),
     AlreadyManaged(CanonicalPath),
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
 }
 
 impl fmt::Display for WorkspaceError {
@@ -216,6 +261,13 @@ impl fmt::Display for WorkspaceError {
             Self::Database(error) => write!(formatter, "database operation failed: {error}"),
             Self::Json(error) => error.fmt(formatter),
             Self::AlreadyManaged(path) => write!(formatter, "workspace is already managed: {path}"),
+            Self::Io { path, source } => {
+                write!(
+                    formatter,
+                    "workspace filesystem operation failed for {}: {source}",
+                    path.display()
+                )
+            }
         }
     }
 }
@@ -229,6 +281,7 @@ impl std::error::Error for WorkspaceError {
             Self::Database(error) => Some(error),
             Self::Json(error) => Some(error),
             Self::AlreadyManaged(_) => None,
+            Self::Io { source, .. } => Some(source),
         }
     }
 }
@@ -311,6 +364,12 @@ mod tests {
             crate::database::connect(&database_path).expect("database should open");
         let context =
             initialize_creation(&mut connection, plan).expect("creation should initialize");
+        execute_creation(&mut connection, &context).expect("creation should execute");
+        assert!(context.plan.workspace_path.as_path().exists());
+        assert!(context
+            .repositories
+            .iter()
+            .all(|repository| repository.plan.worktree_path.exists()));
         let workspace =
             crate::storage::find_workspace_by_path(&mut connection, &context.plan.workspace_path)
                 .unwrap()
@@ -320,7 +379,7 @@ mod tests {
             crate::storage::list_repo_worktrees(&mut connection, &context.workspace_id)
                 .unwrap()
                 .iter()
-                .filter(|worktree| worktree.state == RepoWorktreeState::Pending)
+                .filter(|worktree| worktree.state == RepoWorktreeState::Attached)
                 .count(),
             2
         );
@@ -335,8 +394,15 @@ mod tests {
             crate::storage::list_events_for_operation(&mut connection, &context.operation_id)
                 .unwrap()
                 .len(),
-            4
+            8
         );
+        for repository in &context.repositories {
+            crate::git::remove_worktree(
+                &repository.plan.source_path,
+                &repository.plan.worktree_path,
+            )
+            .expect("created worktree should be removable");
+        }
         drop(connection);
         fs::remove_file(database_path).expect("state database should be removable");
         fs::remove_dir_all(root).expect("test root should be removable");

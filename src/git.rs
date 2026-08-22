@@ -61,6 +61,16 @@ pub fn list_worktrees(repository: &CanonicalPath) -> Result<Vec<WorktreeInfo>, G
     parse_worktree_list(repository, &output)
 }
 
+pub fn find_worktree(
+    repository: &CanonicalPath,
+    worktree_path: &Path,
+) -> Result<WorktreeInfo, GitError> {
+    list_worktrees(repository)?
+        .into_iter()
+        .find(|worktree| worktree.path.as_path() == worktree_path)
+        .ok_or_else(|| GitError::WorktreeNotFound(worktree_path.to_owned()))
+}
+
 pub fn add_detached_worktree(
     repository: &CanonicalPath,
     worktree_path: &Path,
@@ -242,6 +252,7 @@ pub enum GitError {
         output: String,
     },
     Canonicalize(CanonicalPathError),
+    WorktreeNotFound(PathBuf),
 }
 
 impl fmt::Display for GitError {
@@ -269,6 +280,9 @@ impl fmt::Display for GitError {
                 )
             }
             Self::Canonicalize(error) => error.fmt(formatter),
+            Self::WorktreeNotFound(path) => {
+                write!(formatter, "Git did not report worktree: {}", path.display())
+            }
         }
     }
 }
