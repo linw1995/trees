@@ -272,6 +272,23 @@ mod tests {
                 .state,
             WorkspaceState::Degraded
         );
+        let event_count =
+            crate::storage::list_events_for_operation(&mut connection, &context.operation_id)
+                .unwrap()
+                .len();
+        let repeated = reconcile_workspace(
+            &mut connection,
+            &context.workspace_id,
+            &context.operation_id,
+        )
+        .expect("repeated reconciliation should succeed");
+        assert_eq!(repeated.changed_worktrees, 0);
+        assert_eq!(
+            crate::storage::list_events_for_operation(&mut connection, &context.operation_id)
+                .unwrap()
+                .len(),
+            event_count
+        );
 
         drop(connection);
         fs::remove_file(database_path).expect("state database should be removable");

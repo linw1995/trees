@@ -33,7 +33,7 @@
 ## 5. Reconciliation and Recovery
 
 - [x] 5.1 Reconcile Git's authoritative worktree metadata at relevant operation boundaries; verify externally removed or changed worktrees update snapshots and produce events
-- [ ] 5.2 Make reconciliation idempotent; verify unchanged observations do not append duplicate events
+- [x] 5.2 Make reconciliation idempotent; verify unchanged observations do not append duplicate events
 - [ ] 5.3 Recover non-terminal operations after process interruption or lease expiry; verify complete, absent, and partial Git results converge to terminal operation states
 
 ## 6. Verification
