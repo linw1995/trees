@@ -9,6 +9,7 @@ name = "trees"
 path = "src/main.rs"
 
 [dependencies]
+clap = { version = "4", features = ["derive"] }
 diesel = { version = "2.3", features = ["sqlite"] }
 diesel_migrations = "2.3"
 libsqlite3-sys = { version = "0.37", features = ["bundled"] }
