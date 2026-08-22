@@ -8,10 +8,10 @@ use crate::domain::{
 };
 use crate::git::GitError;
 use crate::storage::{
-    append_event, finalize_creation, find_running_operation, find_workspace, list_repo_worktrees,
-    record_operation_transition, record_repo_worktree_transition, record_workspace_transition,
-    update_workspace_observation, EventDraft, OperationRow, RepoWorktreeRow, TransitionMetadata,
-    WorkspaceRow,
+    append_event, claim_expired_operation, finalize_creation, find_operation,
+    find_running_operation, find_workspace, list_repo_worktrees, record_operation_transition,
+    record_repo_worktree_transition, record_workspace_transition, update_workspace_observation,
+    EventDraft, OperationRow, RepoWorktreeRow, TransitionMetadata, WorkspaceRow,
 };
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -206,6 +206,22 @@ pub fn recover_expired_operation(
     if !operation.lease_expires_at.has_expired() {
         return Ok(RecoveryOutcome::LeaseActive);
     }
+    let recovery_owner = format!("recovery:process:{}", std::process::id());
+    let recovery_lease = Timestamp::after_seconds(300);
+    if !claim_expired_operation(
+        connection,
+        &operation.id,
+        &operation.owner_id,
+        &operation.lease_expires_at,
+        &recovery_owner,
+        &recovery_lease,
+    )
+    .map_err(ReconciliationError::Database)?
+    {
+        return Ok(RecoveryOutcome::LeaseActive);
+    }
+    let operation =
+        find_operation(connection, &operation.id).map_err(ReconciliationError::Database)?;
 
     let workspace =
         find_workspace(connection, workspace_id).map_err(ReconciliationError::Database)?;

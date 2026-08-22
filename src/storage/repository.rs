@@ -217,6 +217,33 @@ pub fn find_running_operation(
         .optional()
 }
 
+pub fn claim_expired_operation(
+    connection: &mut SqliteConnection,
+    operation_id: &OperationId,
+    owner_id: &str,
+    lease_expires_at: &Timestamp,
+    new_owner_id: &str,
+    new_lease_expires_at: &Timestamp,
+) -> QueryResult<bool> {
+    let now = Timestamp::now();
+    let updated = diesel::update(
+        operations::table
+            .filter(operations::id.eq(operation_id))
+            .filter(operations::state.eq(OperationState::Running))
+            .filter(operations::owner_id.eq(owner_id))
+            .filter(operations::lease_expires_at.eq(lease_expires_at))
+            .filter(operations::lease_expires_at.le(&now)),
+    )
+    .set((
+        operations::owner_id.eq(new_owner_id),
+        operations::last_heartbeat_at.eq(&now),
+        operations::lease_expires_at.eq(new_lease_expires_at),
+    ))
+    .execute(connection)?;
+
+    Ok(updated == 1)
+}
+
 pub fn insert_event(connection: &mut SqliteConnection, value: &NewEvent) -> QueryResult<EventRow> {
     diesel::insert_into(lifecycle_events::table)
         .values(value)
@@ -784,6 +811,75 @@ mod tests {
         ));
         begin_operation(&mut connection, &intent(second_workspace_id))
             .expect("different workspace should start concurrently");
+
+        drop(connection);
+        fs::remove_file(database_path).expect("temporary database should be removable");
+    }
+
+    #[test]
+    fn expired_operation_can_be_claimed_only_once() {
+        let database_path =
+            std::env::temp_dir().join(format!("trees-{}.sqlite", WorkspaceId::new()));
+        let mut connection = database::connect(&database_path).expect("database should open");
+        let workspace_id = WorkspaceId::new();
+        let workspace_path = CanonicalPath::resolve(".").expect("workspace path should resolve");
+        let now = Timestamp::now();
+        insert_workspace(
+            &mut connection,
+            &NewWorkspace {
+                id: workspace_id,
+                canonical_path: workspace_path,
+                state: WorkspaceState::Creating,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+                last_reconciled_at: None,
+            },
+        )
+        .expect("workspace should be inserted");
+        let operation_id = OperationId::new();
+        insert_operation(
+            &mut connection,
+            &NewOperation {
+                id: operation_id,
+                workspace_id,
+                kind: "create".to_owned(),
+                state: OperationState::Running,
+                owner_id: "original-owner".to_owned(),
+                lease_expires_at: now.clone(),
+                last_heartbeat_at: now.clone(),
+                started_at: now.clone(),
+                finished_at: None,
+                pending_step: "attach".to_owned(),
+                intent_json: JsonDocument::parse(r#"{"target":"repo"}"#).unwrap(),
+                error_json: None,
+            },
+        )
+        .expect("operation should be inserted");
+
+        let new_lease = Timestamp::after_seconds(300);
+        assert!(claim_expired_operation(
+            &mut connection,
+            &operation_id,
+            "original-owner",
+            &now,
+            "recovery-owner",
+            &new_lease,
+        )
+        .expect("expired operation should be claimable"));
+        assert!(!claim_expired_operation(
+            &mut connection,
+            &operation_id,
+            "original-owner",
+            &now,
+            "other-owner",
+            &Timestamp::after_seconds(300),
+        )
+        .expect("the same expired operation should not be claimable twice"));
+
+        let operation = find_operation(&mut connection, &operation_id)
+            .expect("claimed operation should be readable");
+        assert_eq!(operation.owner_id, "recovery-owner");
+        assert_eq!(operation.lease_expires_at, new_lease);
 
         drop(connection);
         fs::remove_file(database_path).expect("temporary database should be removable");

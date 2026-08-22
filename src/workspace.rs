@@ -231,8 +231,10 @@ pub struct CreationResult {
 }
 
 pub fn create(request: CreateRequest) -> Result<CreationResult, WorkspaceError> {
-    let plan = prepare_create(&request)?;
+    let workspace_path = validation::resolve_workspace_path(&request.workspace_path)?;
     let mut connection = crate::database::open_default().map_err(WorkspaceError::DatabaseOpen)?;
+    reconcile_before_creation(&mut connection, &workspace_path)?;
+    let plan = prepare_create(&request)?;
     create_with_connection(&mut connection, plan)
 }
 
@@ -240,6 +242,7 @@ pub fn create_with_connection(
     connection: &mut SqliteConnection,
     plan: CreationPlan,
 ) -> Result<CreationResult, WorkspaceError> {
+    reconcile_before_creation(connection, &plan.workspace_path)?;
     let context = initialize_creation(connection, plan)?;
     reconciliation::reconcile_workspace(connection, &context.workspace_id, &context.operation_id)
         .map_err(WorkspaceError::Reconciliation)?;
@@ -256,6 +259,29 @@ pub fn create_with_connection(
             .map(|repository| repository.plan.worktree_path)
             .collect(),
     })
+}
+
+fn reconcile_before_creation(
+    connection: &mut SqliteConnection,
+    workspace_path: &CanonicalPath,
+) -> Result<(), WorkspaceError> {
+    let Some(workspace) =
+        find_workspace_by_path(connection, workspace_path).map_err(WorkspaceError::Database)?
+    else {
+        return Ok(());
+    };
+
+    match reconciliation::recover_expired_operation(connection, &workspace.id)
+        .map_err(WorkspaceError::Reconciliation)?
+    {
+        reconciliation::RecoveryOutcome::LeaseActive => {
+            Err(WorkspaceError::OperationActive(workspace.id))
+        }
+        reconciliation::RecoveryOutcome::NoRunningOperation
+        | reconciliation::RecoveryOutcome::Succeeded
+        | reconciliation::RecoveryOutcome::RolledBack
+        | reconciliation::RecoveryOutcome::Failed => Ok(()),
+    }
 }
 
 fn execute_repository_step(
@@ -407,6 +433,7 @@ pub enum WorkspaceError {
     Database(diesel::result::Error),
     DatabaseOpen(crate::database::DatabaseError),
     Reconciliation(ReconciliationError),
+    OperationActive(WorkspaceId),
     Json(crate::domain::JsonDocumentError),
     AlreadyManaged(CanonicalPath),
     Rollback {
@@ -433,6 +460,12 @@ impl fmt::Display for WorkspaceError {
                 write!(formatter, "failed to open lifecycle database: {error}")
             }
             Self::Reconciliation(error) => write!(formatter, "reconciliation failed: {error}"),
+            Self::OperationActive(workspace_id) => {
+                write!(
+                    formatter,
+                    "workspace has an active operation: {workspace_id}"
+                )
+            }
             Self::Json(error) => error.fmt(formatter),
             Self::AlreadyManaged(path) => write!(formatter, "workspace is already managed: {path}"),
             Self::Rollback { primary, rollback } => {
@@ -468,6 +501,7 @@ impl std::error::Error for WorkspaceError {
             Self::Database(error) => Some(error),
             Self::DatabaseOpen(error) => Some(error),
             Self::Reconciliation(error) => Some(error),
+            Self::OperationActive(_) => None,
             Self::Json(error) => Some(error),
             Self::AlreadyManaged(_) => None,
             Self::Rollback { primary, .. } => Some(primary),
@@ -499,6 +533,8 @@ impl From<GitError> for WorkspaceError {
 mod tests {
     use std::fs;
     use std::process::Command;
+
+    use diesel::prelude::*;
 
     use super::*;
 
@@ -663,6 +699,90 @@ mod tests {
     }
 
     #[test]
+    fn rejects_creation_when_an_existing_operation_is_active() {
+        let root = test_root();
+        let source = root.join("source");
+        repository(&source);
+        let plan = prepare_create(&CreateRequest {
+            workspace_path: root.join("workspace"),
+            repositories: vec![source],
+        })
+        .expect("creation plan should be prepared");
+        let database_path = root.join("state.sqlite");
+        let mut connection =
+            crate::database::connect(&database_path).expect("database should open");
+        let context = initialize_creation(&mut connection, plan)
+            .expect("initial operation should be persisted");
+
+        let error = create_with_connection(&mut connection, context.plan.clone())
+            .expect_err("active operation should reject a competing creation");
+        assert!(matches!(
+            error,
+            WorkspaceError::OperationActive(workspace_id) if workspace_id == context.workspace_id
+        ));
+        assert_eq!(
+            crate::storage::find_operation(&mut connection, &context.operation_id)
+                .unwrap()
+                .state,
+            OperationState::Running
+        );
+        assert!(!context.plan.workspace_path.as_path().exists());
+
+        drop(connection);
+        fs::remove_file(database_path).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn recovers_an_expired_operation_before_rejecting_a_duplicate_creation() {
+        let root = test_root();
+        let source = root.join("source");
+        repository(&source);
+        let plan = prepare_create(&CreateRequest {
+            workspace_path: root.join("workspace"),
+            repositories: vec![source],
+        })
+        .expect("creation plan should be prepared");
+        let database_path = root.join("state.sqlite");
+        let mut connection =
+            crate::database::connect(&database_path).expect("database should open");
+        let context = initialize_creation(&mut connection, plan)
+            .expect("initial operation should be persisted");
+        execute_creation(&mut connection, &context).expect("Git steps should complete");
+        diesel::update(crate::schema::operations::table.find(&context.operation_id))
+            .set(crate::schema::operations::lease_expires_at.eq(Timestamp::now()))
+            .execute(&mut connection)
+            .expect("operation lease should expire");
+
+        let error = create_with_connection(&mut connection, context.plan.clone())
+            .expect_err("recovered workspace should remain managed");
+        assert!(matches!(error, WorkspaceError::AlreadyManaged(_)));
+        assert_eq!(
+            crate::storage::find_operation(&mut connection, &context.operation_id)
+                .unwrap()
+                .state,
+            OperationState::Succeeded
+        );
+        assert!(
+            crate::storage::list_events_for_operation(&mut connection, &context.operation_id)
+                .unwrap()
+                .iter()
+                .any(|event| event.event_type == "operation_recovered")
+        );
+
+        for repository in &context.repositories {
+            crate::git::remove_worktree(
+                &repository.plan.source_path,
+                &repository.plan.worktree_path,
+            )
+            .expect("recovered worktree should be removable");
+        }
+        drop(connection);
+        fs::remove_file(database_path).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
     fn formats_workspace_errors_and_sources() {
         let path = CanonicalPath::resolve(".").expect("workspace path should resolve");
         let primary = WorkspaceError::AlreadyManaged(path.clone());
@@ -674,6 +794,7 @@ mod tests {
             WorkspaceError::DatabaseOpen(crate::database::DatabaseError::Path(
                 crate::paths::PathError::HomeDirectoryUnavailable,
             )),
+            WorkspaceError::OperationActive(WorkspaceId::new()),
             WorkspaceError::Json(JsonDocument::parse("not json").unwrap_err()),
             primary,
             WorkspaceError::Rollback {

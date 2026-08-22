@@ -19,7 +19,7 @@ pub fn validate_create(
         return Err(ValidationError::NoRepositories);
     }
 
-    let workspace_path = resolve_nonexistent_path(workspace_path)?;
+    let workspace_path = resolve_workspace_path(workspace_path)?;
     if workspace_path.as_path().exists() {
         return Err(ValidationError::WorkspaceExists(
             workspace_path.into_path_buf(),
@@ -65,7 +65,7 @@ pub fn validate_create(
     })
 }
 
-fn resolve_nonexistent_path(path: &Path) -> Result<CanonicalPath, ValidationError> {
+pub fn resolve_workspace_path(path: &Path) -> Result<CanonicalPath, ValidationError> {
     if path.exists() {
         return CanonicalPath::resolve(path).map_err(ValidationError::Canonicalize);
     }
