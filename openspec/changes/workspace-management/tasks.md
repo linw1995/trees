@@ -39,5 +39,5 @@
 ## 6. Verification
 
 - [x] 6.1 Add unit and migration tests for paths, identities, states, JSON details, connection setup, constraints, and persistence operations
-- [ ] 6.2 Add integration tests covering workspace layout, preserved source repositories, snapshots, event ordering, failures, steps taken to roll back, external changes, and recovery
+- [x] 6.2 Add integration tests covering workspace layout, preserved source repositories, snapshots, event ordering, failures, steps taken to roll back, external changes, and recovery
 - [ ] 6.3 Run the foundation `prek` checks and the complete Rust/SQLite test suite; verify no user-facing `status` or `history` command is introduced by this change
