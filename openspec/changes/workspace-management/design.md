@@ -48,8 +48,8 @@ The proposed schema uses these logical columns:
 
 - `workspaces`: `id`, `canonical_path`, `state`, `created_at`, `updated_at`, and `last_reconciled_at`.
 - `repo_worktrees`: `id`, `workspace_id`, `repository_identity`, `source_path`, `worktree_path`, `state`, `last_head`, and `last_observed_at`.
-- `operations`: `id`, `workspace_id`, `kind`, `state`, `started_at`, `finished_at`, and `intent_json`.
-- `lifecycle_events`: the confirmed event identity/state fields plus `details_json` and `error_text`.
+- `operations`: `id`, `workspace_id`, `kind`, `state`, `owner_id`, `lease_expires_at`, `last_heartbeat_at`, `started_at`, `finished_at`, `pending_step`, `intent_json`, and `error_json`.
+- `lifecycle_events`: the confirmed event identity/state fields plus `details_json` and `error_json`.
 
 Foreign keys connect repo worktrees and operations to workspaces. A workspace path is unique; a workspace worktree path and repository identity are each unique within that workspace.
 
@@ -134,4 +134,4 @@ There is no existing lifecycle database or workspace format to migrate. A later 
 
 ## Open Questions
 
-The raw SQL prohibition applies to runtime database access, while `diesel_migrations` migration files remain allowed because they are the migration mechanism. The remaining implementation choices are the database column layout, indexes, and storage encoding for structured details and errors. The state names and core event fields are fixed by these requirements.
+The raw SQL prohibition applies to runtime database access, while `diesel_migrations` migration files remain allowed because they are the migration mechanism. The first migration fixes the relational columns, indexes, constraints, immutable event triggers, and JSON error encoding. The state names and core event fields are fixed by these requirements.
