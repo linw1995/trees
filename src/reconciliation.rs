@@ -124,29 +124,38 @@ fn observe_repository(repository: &RepoWorktreeRow) -> Observation {
                 Some(worktree) => {
                     match crate::git::inspect_worktree_identity(repository.worktree_path.as_path())
                     {
-                        Ok(identity) if identity != repository.repository_identity => {
-                            Observation::Diverged {
-                                head: worktree.head,
-                                branch: worktree.branch,
-                                reason: Some(format!(
-                                    "worktree identity changed from {} to {}",
-                                    repository.repository_identity, identity
-                                )),
+                        Ok(identity) => {
+                            let fingerprint = crate::git::ObservationFingerprint::from_worktree(
+                                identity, worktree,
+                            );
+                            if fingerprint.repository_identity != repository.repository_identity {
+                                Observation::Diverged {
+                                    head: fingerprint.head,
+                                    branch: fingerprint.branch,
+                                    reason: Some(format!(
+                                        "worktree identity changed from {} to {}",
+                                        repository.repository_identity,
+                                        fingerprint.repository_identity
+                                    )),
+                                }
+                            } else if fingerprint.matches_attached(
+                                &repository.repository_identity,
+                                &repository.worktree_path,
+                                repository.last_head.as_deref(),
+                            ) {
+                                Observation::Attached {
+                                    head: fingerprint.head,
+                                }
+                            } else {
+                                Observation::Diverged {
+                                    head: fingerprint.head,
+                                    branch: fingerprint.branch,
+                                    reason: Some(
+                                        "worktree observation fingerprint changed".to_owned(),
+                                    ),
+                                }
                             }
                         }
-                        Ok(_)
-                            if worktree.detached
-                                && worktree.head.as_deref() == repository.last_head.as_deref() =>
-                        {
-                            Observation::Attached {
-                                head: worktree.head,
-                            }
-                        }
-                        Ok(_) => Observation::Diverged {
-                            head: worktree.head,
-                            branch: worktree.branch,
-                            reason: Some("worktree revision or branch changed".to_owned()),
-                        },
                         Err(error) => Observation::Diverged {
                             head: worktree.head,
                             branch: worktree.branch,

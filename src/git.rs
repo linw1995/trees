@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+
 use crate::domain::{CanonicalPath, CanonicalPathError};
 
 #[derive(Debug, Clone)]
@@ -21,6 +23,71 @@ pub struct WorktreeInfo {
     pub detached: bool,
     pub bare: bool,
     pub prunable: Option<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ObservationFingerprint {
+    pub repository_identity: CanonicalPath,
+    pub worktree_identity: CanonicalPath,
+    pub head: Option<String>,
+    pub detached: Option<bool>,
+    pub branch: Option<String>,
+    pub existence: WorktreeExistence,
+    pub prunable: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorktreeExistence {
+    Present,
+    Missing,
+    Prunable,
+}
+
+impl ObservationFingerprint {
+    pub fn from_worktree(repository_identity: CanonicalPath, worktree: WorktreeInfo) -> Self {
+        let existence = if worktree.prunable.is_some() {
+            WorktreeExistence::Prunable
+        } else {
+            WorktreeExistence::Present
+        };
+        Self {
+            repository_identity,
+            worktree_identity: worktree.path,
+            head: worktree.head,
+            detached: Some(worktree.detached),
+            branch: worktree.branch,
+            existence,
+            prunable: worktree.prunable,
+        }
+    }
+
+    pub fn missing(repository_identity: CanonicalPath, worktree_identity: CanonicalPath) -> Self {
+        Self {
+            repository_identity,
+            worktree_identity,
+            head: None,
+            detached: None,
+            branch: None,
+            existence: WorktreeExistence::Missing,
+            prunable: None,
+        }
+    }
+
+    pub fn matches_attached(
+        &self,
+        repository_identity: &CanonicalPath,
+        worktree_identity: &CanonicalPath,
+        expected_head: Option<&str>,
+    ) -> bool {
+        self.repository_identity == *repository_identity
+            && self.worktree_identity == *worktree_identity
+            && self.head.as_deref() == expected_head
+            && self.detached == Some(true)
+            && self.branch.is_none()
+            && self.existence == WorktreeExistence::Present
+            && self.prunable.is_none()
+    }
 }
 
 pub fn inspect_repository(repository: &CanonicalPath) -> Result<RepositoryInfo, GitError> {
@@ -524,5 +591,40 @@ mod tests {
         )
         .expect_err("heartbeat failure should stop the command");
         assert!(matches!(error, GitError::Heartbeat(message) if message == "lease lost"));
+    }
+
+    #[test]
+    fn observation_fingerprints_round_trip_and_compare_typed_fields() {
+        let (root, repository) = repository();
+        let repository_identity =
+            inspect_repository_identity(&repository).expect("repository identity should exist");
+        let worktree_identity = CanonicalPath::from_absolute(root.join("workspace"))
+            .expect("worktree identity should be absolute");
+        let fingerprint = ObservationFingerprint::from_worktree(
+            repository_identity.clone(),
+            WorktreeInfo {
+                path: worktree_identity.clone(),
+                head: Some("abc123".to_owned()),
+                branch: None,
+                detached: true,
+                bare: false,
+                prunable: None,
+            },
+        );
+        let encoded = serde_json::to_string(&fingerprint).expect("fingerprint should serialize");
+        let decoded: ObservationFingerprint =
+            serde_json::from_str(&encoded).expect("fingerprint should deserialize");
+        assert_eq!(decoded, fingerprint);
+        assert!(fingerprint.matches_attached(
+            &repository_identity,
+            &worktree_identity,
+            Some("abc123")
+        ));
+
+        let mut changed = fingerprint.clone();
+        changed.branch = Some("refs/heads/feature".to_owned());
+        assert_ne!(changed, fingerprint);
+
+        fs::remove_dir_all(root).expect("test root should be removable");
     }
 }
