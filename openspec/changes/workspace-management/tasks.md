@@ -20,7 +20,7 @@
 - [x] 3.1 Define the Clap command boundary and keep parsing errors separate from workspace orchestration; verify the reviewed command shape
 - [x] 3.2 Validate repository inputs, target safety, and source/worktree relationships before creating an operation
 - [x] 3.3 Derive direct child names from repository names and reject collisions before any worktree is created
-- [ ] 3.4 Implement Git worktree inspection, detached checkout from current `HEAD`, and worktree removal operations; verify source repositories remain outside the workspace
+- [x] 3.4 Implement Git worktree inspection, detached checkout from current `HEAD`, and worktree removal operations; verify source repositories remain outside the workspace
 
 ## 4. Workspace Creation Workflow
 

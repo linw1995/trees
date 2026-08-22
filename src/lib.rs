@@ -1,6 +1,7 @@
 pub mod cli;
 pub mod database;
 pub mod domain;
+pub mod git;
 pub mod naming;
 pub mod paths;
 pub mod schema;
