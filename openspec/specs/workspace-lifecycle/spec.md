@@ -1,6 +1,7 @@
-# workspace-lifecycle Specification
+# Workspace Lifecycle Specification
 
 ## Purpose
+
 This capability defines durable lifecycle tracking for workspaces and their repo worktrees, including changes made outside the CLI and failures during multi-repository operations.
 
 ## Requirements

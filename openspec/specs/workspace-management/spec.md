@@ -1,6 +1,7 @@
-# workspace-management Specification
+# Workspace Management Specification
 
 ## Purpose
+
 This capability defines how `trees` creates a workspace that physically associates multiple independent Git repositories through direct child worktrees.
 
 ## Requirements
