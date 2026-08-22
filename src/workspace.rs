@@ -51,6 +51,7 @@ pub struct TrackedRepository {
 pub struct CreationContext {
     pub workspace_id: WorkspaceId,
     pub operation_id: crate::domain::OperationId,
+    owner_id: String,
     pub plan: CreationPlan,
     pub repositories: Vec<TrackedRepository>,
 }
@@ -196,6 +197,7 @@ pub fn initialize_creation(
     Ok(CreationContext {
         workspace_id,
         operation_id: operation_intent.id,
+        owner_id: operation_intent.owner_id,
         plan,
         repositories,
     })
@@ -298,7 +300,19 @@ fn execute_repository_step(
         intent_json,
     )
     .map_err(WorkspaceError::Database)?;
-    git::add_detached_worktree(&repository.plan.source_path, &repository.plan.worktree_path)?;
+    let operation_id = context.operation_id;
+    let owner_id = context.owner_id.clone();
+    git::add_detached_worktree_with_heartbeat(
+        &repository.plan.source_path,
+        &repository.plan.worktree_path,
+        || match crate::storage::renew_operation_lease(connection, &operation_id, &owner_id) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(GitError::Heartbeat(
+                "operation lease is no longer owned".to_owned(),
+            )),
+            Err(error) => Err(GitError::Heartbeat(error.to_string())),
+        },
+    )?;
     let worktree =
         git::find_worktree(&repository.plan.source_path, &repository.plan.worktree_path)?;
     record_worktree_step_result(

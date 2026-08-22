@@ -1,7 +1,8 @@
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use crate::domain::{CanonicalPath, CanonicalPathError};
 
@@ -82,6 +83,28 @@ pub fn add_detached_worktree(
             worktree_path.as_os_str().to_owned(),
             arg("HEAD"),
         ],
+    )?;
+    Ok(())
+}
+
+pub fn add_detached_worktree_with_heartbeat<F>(
+    repository: &CanonicalPath,
+    worktree_path: &Path,
+    heartbeat: F,
+) -> Result<(), GitError>
+where
+    F: FnMut() -> Result<(), GitError>,
+{
+    run_git_with_heartbeat(
+        repository.as_path(),
+        &[
+            arg("worktree"),
+            arg("add"),
+            arg("--detach"),
+            worktree_path.as_os_str().to_owned(),
+            arg("HEAD"),
+        ],
+        heartbeat,
     )?;
     Ok(())
 }
@@ -221,28 +244,117 @@ fn arg(value: &str) -> OsString {
 }
 
 fn run_git(repository: &Path, args: &[OsString]) -> Result<String, GitError> {
-    let operation = args
-        .iter()
-        .map(|value| value.to_string_lossy())
-        .collect::<Vec<_>>()
-        .join(" ");
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repository)
+    let mut command_args = Vec::with_capacity(args.len() + 2);
+    command_args.push(arg("-C"));
+    command_args.push(repository.as_os_str().to_owned());
+    command_args.extend_from_slice(args);
+    let operation = command_operation("git", &command_args);
+    run_command("git", &command_args, &operation)
+}
+
+fn run_git_with_heartbeat<F>(
+    repository: &Path,
+    args: &[OsString],
+    heartbeat: F,
+) -> Result<String, GitError>
+where
+    F: FnMut() -> Result<(), GitError>,
+{
+    let mut command_args = Vec::with_capacity(args.len() + 2);
+    command_args.push(arg("-C"));
+    command_args.push(repository.as_os_str().to_owned());
+    command_args.extend_from_slice(args);
+    let operation = command_operation("git", &command_args);
+    run_command_with_heartbeat(
+        "git",
+        &command_args,
+        &operation,
+        Duration::from_secs(1),
+        heartbeat,
+    )
+}
+
+fn run_command(program: &str, args: &[OsString], operation: &str) -> Result<String, GitError> {
+    let output = Command::new(program)
         .args(args)
         .output()
         .map_err(|source| GitError::Io {
-            operation: operation.clone(),
+            operation: operation.to_owned(),
             source,
         })?;
     if !output.status.success() {
         return Err(GitError::CommandFailed {
-            operation,
+            operation: operation.to_owned(),
             status: output.status.code(),
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         });
     }
-    String::from_utf8(output.stdout).map_err(|_| GitError::InvalidUtf8 { operation })
+    String::from_utf8(output.stdout).map_err(|_| GitError::InvalidUtf8 {
+        operation: operation.to_owned(),
+    })
+}
+
+fn run_command_with_heartbeat<F>(
+    program: &str,
+    args: &[OsString],
+    operation: &str,
+    poll_interval: Duration,
+    mut heartbeat: F,
+) -> Result<String, GitError>
+where
+    F: FnMut() -> Result<(), GitError>,
+{
+    let mut child = Command::new(program)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|source| GitError::Io {
+            operation: operation.to_owned(),
+            source,
+        })?;
+
+    loop {
+        match child.try_wait().map_err(|source| GitError::Io {
+            operation: operation.to_owned(),
+            source,
+        })? {
+            Some(_) => break,
+            None => {
+                std::thread::sleep(poll_interval);
+                if let Err(error) = heartbeat() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(error);
+                }
+            }
+        }
+    }
+
+    let output = child.wait_with_output().map_err(|source| GitError::Io {
+        operation: operation.to_owned(),
+        source,
+    })?;
+    if !output.status.success() {
+        return Err(GitError::CommandFailed {
+            operation: operation.to_owned(),
+            status: output.status.code(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    String::from_utf8(output.stdout).map_err(|_| GitError::InvalidUtf8 {
+        operation: operation.to_owned(),
+    })
+}
+
+fn command_operation(program: &str, args: &[OsString]) -> String {
+    std::iter::once(program.to_owned())
+        .chain(
+            args.iter()
+                .map(|value| value.to_string_lossy().into_owned()),
+        )
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[derive(Debug)]
@@ -263,6 +375,7 @@ pub enum GitError {
         operation: String,
         output: String,
     },
+    Heartbeat(String),
     Canonicalize(CanonicalPathError),
     WorktreeNotFound(PathBuf),
 }
@@ -291,6 +404,7 @@ impl fmt::Display for GitError {
                     "git {operation} returned invalid output: {output:?}"
                 )
             }
+            Self::Heartbeat(error) => write!(formatter, "Git heartbeat failed: {error}"),
             Self::Canonicalize(error) => error.fmt(formatter),
             Self::WorktreeNotFound(path) => {
                 write!(formatter, "Git did not report worktree: {}", path.display())
@@ -313,6 +427,7 @@ impl std::error::Error for GitError {
 mod tests {
     use std::fs;
     use std::process::Command;
+    use std::time::Duration;
 
     use super::*;
 
@@ -379,5 +494,35 @@ mod tests {
             .iter()
             .any(|worktree| worktree.path.as_path() == worktree_path));
         fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn polls_a_long_running_command_and_invokes_heartbeat() {
+        let mut heartbeats = 0;
+        run_command_with_heartbeat(
+            "sleep",
+            &[OsString::from("0.15")],
+            "sleep 0.15",
+            Duration::from_millis(20),
+            || {
+                heartbeats += 1;
+                Ok(())
+            },
+        )
+        .expect("long-running command should complete");
+        assert!(heartbeats >= 2);
+    }
+
+    #[test]
+    fn stops_waiting_when_heartbeat_fails() {
+        let error = run_command_with_heartbeat(
+            "sleep",
+            &[OsString::from("5")],
+            "sleep 5",
+            Duration::from_millis(20),
+            || Err(GitError::Heartbeat("lease lost".to_owned())),
+        )
+        .expect_err("heartbeat failure should stop the command");
+        assert!(matches!(error, GitError::Heartbeat(message) if message == "lease lost"));
     }
 }

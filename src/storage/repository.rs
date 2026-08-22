@@ -244,6 +244,28 @@ pub fn claim_expired_operation(
     Ok(updated == 1)
 }
 
+pub fn renew_operation_lease(
+    connection: &mut SqliteConnection,
+    operation_id: &OperationId,
+    owner_id: &str,
+) -> QueryResult<bool> {
+    let heartbeat_at = Timestamp::now();
+    let lease_expires_at = Timestamp::after_seconds(300);
+    let updated = diesel::update(
+        operations::table
+            .filter(operations::id.eq(operation_id))
+            .filter(operations::state.eq(OperationState::Running))
+            .filter(operations::owner_id.eq(owner_id)),
+    )
+    .set((
+        operations::last_heartbeat_at.eq(&heartbeat_at),
+        operations::lease_expires_at.eq(&lease_expires_at),
+    ))
+    .execute(connection)?;
+
+    Ok(updated == 1)
+}
+
 pub fn insert_event(connection: &mut SqliteConnection, value: &NewEvent) -> QueryResult<EventRow> {
     diesel::insert_into(lifecycle_events::table)
         .values(value)
@@ -880,6 +902,63 @@ mod tests {
             .expect("claimed operation should be readable");
         assert_eq!(operation.owner_id, "recovery-owner");
         assert_eq!(operation.lease_expires_at, new_lease);
+
+        drop(connection);
+        fs::remove_file(database_path).expect("temporary database should be removable");
+    }
+
+    #[test]
+    fn active_operation_lease_renews_only_for_its_owner() {
+        let database_path =
+            std::env::temp_dir().join(format!("trees-{}.sqlite", WorkspaceId::new()));
+        let mut connection = database::connect(&database_path).expect("database should open");
+        let workspace_id = WorkspaceId::new();
+        let workspace_path = CanonicalPath::resolve(".").expect("workspace path should resolve");
+        let now = Timestamp::now();
+        insert_workspace(
+            &mut connection,
+            &NewWorkspace {
+                id: workspace_id,
+                canonical_path: workspace_path,
+                state: WorkspaceState::Creating,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+                last_reconciled_at: None,
+            },
+        )
+        .expect("workspace should be inserted");
+        let operation_id = OperationId::new();
+        let lease_expires_at = Timestamp::after_seconds(300);
+        insert_operation(
+            &mut connection,
+            &NewOperation {
+                id: operation_id,
+                workspace_id,
+                kind: "create".to_owned(),
+                state: OperationState::Running,
+                owner_id: "owner".to_owned(),
+                lease_expires_at: lease_expires_at.clone(),
+                last_heartbeat_at: now.clone(),
+                started_at: now,
+                finished_at: None,
+                pending_step: "attach".to_owned(),
+                intent_json: JsonDocument::parse(r#"{"target":"repo"}"#).unwrap(),
+                error_json: None,
+            },
+        )
+        .expect("operation should be inserted");
+
+        assert!(
+            renew_operation_lease(&mut connection, &operation_id, "owner")
+                .expect("owner should renew the lease")
+        );
+        assert!(
+            !renew_operation_lease(&mut connection, &operation_id, "other-owner")
+                .expect("a different owner should not renew the lease")
+        );
+        let operation = find_operation(&mut connection, &operation_id)
+            .expect("renewed operation should be readable");
+        assert!(operation.lease_expires_at >= lease_expires_at);
 
         drop(connection);
         fs::remove_file(database_path).expect("temporary database should be removable");
