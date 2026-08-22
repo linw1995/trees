@@ -1,6 +1,7 @@
 use diesel::prelude::*;
-use diesel::result::QueryResult;
+use diesel::result::{DatabaseErrorKind, Error, QueryResult};
 use diesel::sqlite::SqliteConnection;
+use std::fmt;
 
 use crate::domain::{CanonicalPath, OperationId, OperationState, Timestamp, WorkspaceId};
 use crate::schema::{lifecycle_events, operations, repo_worktrees, workspaces};
@@ -92,6 +93,49 @@ pub fn persist_operation_intent(
             error_json: None,
         },
     )
+}
+
+pub fn begin_operation(
+    connection: &mut SqliteConnection,
+    intent: &OperationIntent,
+) -> Result<OperationRow, OperationIntentError> {
+    persist_operation_intent(connection, intent).map_err(|error| match error {
+        Error::DatabaseError(DatabaseErrorKind::UniqueViolation, _) => {
+            OperationIntentError::WorkspaceBusy(intent.workspace_id)
+        }
+        error => OperationIntentError::Database(error),
+    })
+}
+
+#[derive(Debug)]
+pub enum OperationIntentError {
+    WorkspaceBusy(WorkspaceId),
+    Database(diesel::result::Error),
+}
+
+impl fmt::Display for OperationIntentError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WorkspaceBusy(workspace_id) => {
+                write!(
+                    formatter,
+                    "workspace already has a running operation: {workspace_id}"
+                )
+            }
+            Self::Database(error) => {
+                write!(formatter, "failed to persist operation intent: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for OperationIntentError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::WorkspaceBusy(_) => None,
+            Self::Database(error) => Some(error),
+        }
+    }
 }
 
 pub fn find_operation(
@@ -313,6 +357,64 @@ mod tests {
         assert_eq!(operation.state, OperationState::Running);
         assert_eq!(operation.owner_id, "test-owner");
         assert_eq!(operation.pending_step, "attach repo");
+
+        drop(connection);
+        fs::remove_file(database_path).expect("temporary database should be removable");
+    }
+
+    #[test]
+    fn running_operations_are_exclusive_per_workspace() {
+        let database_path =
+            std::env::temp_dir().join(format!("trees-{}.sqlite", WorkspaceId::new()));
+        let mut connection = database::connect(&database_path).expect("database should open");
+        let first_workspace_id = WorkspaceId::new();
+        let second_workspace_id = WorkspaceId::new();
+        let now = Timestamp::now();
+        let workspace_paths = [
+            (
+                first_workspace_id,
+                CanonicalPath::resolve(".").expect("workspace path should resolve"),
+            ),
+            (
+                second_workspace_id,
+                CanonicalPath::resolve("/tmp").expect("temporary path should resolve"),
+            ),
+        ];
+
+        for (workspace_id, workspace_path) in workspace_paths {
+            insert_workspace(
+                &mut connection,
+                &NewWorkspace {
+                    id: workspace_id,
+                    canonical_path: workspace_path,
+                    state: WorkspaceState::Creating,
+                    created_at: now.clone(),
+                    updated_at: now.clone(),
+                    last_reconciled_at: None,
+                },
+            )
+            .expect("workspace should be inserted");
+        }
+
+        let intent = |workspace_id| {
+            OperationIntent::new(
+                workspace_id,
+                "create",
+                "test-owner",
+                Timestamp::now(),
+                "attach repo",
+                JsonDocument::parse(r#"{"target":"repo"}"#).unwrap(),
+            )
+        };
+
+        begin_operation(&mut connection, &intent(first_workspace_id))
+            .expect("first operation should start");
+        assert!(matches!(
+            begin_operation(&mut connection, &intent(first_workspace_id)),
+            Err(OperationIntentError::WorkspaceBusy(id)) if id == first_workspace_id
+        ));
+        begin_operation(&mut connection, &intent(second_workspace_id))
+            .expect("different workspace should start concurrently");
 
         drop(connection);
         fs::remove_file(database_path).expect("temporary database should be removable");

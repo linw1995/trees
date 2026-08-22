@@ -11,7 +11,7 @@
 
 - [x] 2.1 Implement Diesel models and repository operations for workspace snapshots, repo-worktree snapshots, operations, and lifecycle events
 - [x] 2.2 Persist operation intent, owner identity, lease expiry, and heartbeat before any Git mutation; verify a failed intent transaction prevents Git access
-- [ ] 2.3 Enforce one non-terminal operation per workspace while allowing operations for different workspaces to run concurrently
+- [x] 2.3 Enforce one non-terminal operation per workspace while allowing operations for different workspaces to run concurrently
 - [ ] 2.4 Keep Git processes outside SQLite transactions; verify snapshot, event, and operation-step updates commit atomically in short transactions
 - [ ] 2.5 Record successful transitions, failures, and rollback steps; verify current snapshots and immutable events remain consistent
 

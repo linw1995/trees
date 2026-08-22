@@ -5,3 +5,4 @@ pub use models::{
     EventRow, NewEvent, NewOperation, NewRepoWorktree, NewWorkspace, OperationIntent, OperationRow,
     RepoWorktreeRow, WorkspaceRow,
 };
+pub use repository::OperationIntentError;
