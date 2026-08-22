@@ -5,7 +5,7 @@
 - [x] 1.3 Define migrations for the four lifecycle entities, UUID v7 text identities, JSON text details, exact state vocabulary, immutable events, indexes, and constraints; verify both migration directions
 - [x] 1.4 Define typed lifecycle states, stable identities, canonical path handling, UUID v7 conversion, and JSON validation; verify invalid values cannot reach persistence
 - [x] 1.5 Configure writable SQLite connections with foreign keys, WAL, and a five-second busy timeout; verify read/write connection setup
-- [ ] 1.6 Enforce the no-runtime-raw-SQL rule with source checks or review tooling; verify application database access uses Diesel schema and query builder APIs
+- [x] 1.6 Enforce the no-runtime-raw-SQL rule with source checks or review tooling; verify application database access uses Diesel schema and query builder APIs
 
 ## 2. Typed Persistence Operations
 

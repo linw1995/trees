@@ -26,6 +26,12 @@ repos:
 
   - repo: local
     hooks:
+      - id: runtime-sql-boundary
+        name: runtime SQL boundary
+        entry: bash scripts/check-runtime-sql.sh
+        language: system
+        pass_filenames: false
+        files: ^src/.*\.rs$
       - id: harper
         name: harper
         entry: harper-cli lint --no-color --format compact --user-dict-path .harper-dictionary.txt
