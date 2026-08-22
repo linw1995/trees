@@ -25,16 +25,16 @@
 ## 4. Workspace Creation Workflow
 
 - [x] 4.1 Implement the reviewed `trees create <workspace-path> --repo <repository-path>...` orchestration using the typed CLI, persistence, and Git layers
-- [x] 4.2 Reconcile the workspace before and after the create operation, then persist `creating`, `pending`, and `running` states at the appropriate boundaries
+- [ ] 4.2 Reconcile the workspace before and after the create operation, then persist `creating`, `pending`, and `running` states at the appropriate boundaries
 - [x] 4.3 Execute each Git mutation only after its intent is committed, and record the resulting snapshot, event, and operation step in a short transaction
 - [x] 4.4 Clean up worktrees created earlier when a later repository fails; record failure and rollback events and avoid reporting a partial workspace as successful
 - [x] 4.5 Finalize successful creation as `ready`, `attached`, and `succeeded`; verify multiple direct child worktrees are present
 
 ## 5. Reconciliation and Recovery
 
-- [x] 5.1 Reconcile Git's authoritative worktree metadata at relevant operation boundaries; verify externally removed or changed worktrees update snapshots and produce events
+- [ ] 5.1 Reconcile Git's authoritative worktree metadata at relevant operation boundaries; verify externally removed or changed worktrees update snapshots and produce events
 - [x] 5.2 Make reconciliation idempotent; verify unchanged observations do not append duplicate events
-- [x] 5.3 Recover non-terminal operations after process interruption or lease expiry; verify complete, absent, and partial Git results converge to terminal operation states
+- [ ] 5.3 Recover non-terminal operations after process interruption or lease expiry; verify complete, absent, and partial Git results converge to terminal operation states
 
 ## 6. Verification
 
