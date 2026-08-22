@@ -24,7 +24,7 @@
 
 ## 4. Workspace Creation Workflow
 
-- [ ] 4.1 Implement the reviewed `trees create <workspace-path> --repo <repository-path>...` orchestration using the typed CLI, persistence, and Git layers
+- [x] 4.1 Implement the reviewed `trees create <workspace-path> --repo <repository-path>...` orchestration using the typed CLI, persistence, and Git layers
 - [ ] 4.2 Reconcile the workspace before and after the create operation, then persist `creating`, `pending`, and `running` states at the appropriate boundaries
 - [ ] 4.3 Execute each Git mutation only after its intent is committed, and record the resulting snapshot, event, and operation step in a short transaction
 - [ ] 4.4 Clean up worktrees created earlier when a later repository fails; record failure and rollback events and avoid reporting a partial workspace as successful
