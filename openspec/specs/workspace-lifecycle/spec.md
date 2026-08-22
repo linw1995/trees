@@ -1,0 +1,180 @@
+# workspace-lifecycle Specification
+
+## Purpose
+This capability defines durable lifecycle tracking for workspaces and their repo worktrees, including changes made outside the CLI and failures during multi-repository operations.
+
+## Requirements
+
+### Requirement: Persist Current Lifecycle State in SQLite
+
+The system SHALL persist a current state snapshot for each managed workspace and each repository worktree association in one global SQLite database named `db.sqlite`. The database SHALL be stored in the platform-standard application state directory for `trees`, outside the workspace directory, without per-workspace database isolation.
+
+The expected locations are `$XDG_STATE_HOME/trees/db.sqlite` with a `~/.local/state/trees/db.sqlite` fallback on Linux, `~/Library/Application Support/trees/db.sqlite` on macOS, and `%LOCALAPPDATA%\\trees\\db.sqlite` on Windows.
+
+#### Scenario: Record a Workspace and Its Worktree Associations
+
+- **WHEN** a workspace operation creates or updates repository worktrees
+- **THEN** the SQLite state contains the workspace identity, each source repository identity, each direct child worktree path, the current lifecycle state, and the latest observation timestamp
+
+#### Scenario: Keep Lifecycle Storage Outside the Workspace
+
+- **WHEN** the workspace directory is inspected
+- **THEN** lifecycle SQLite data is not required to be placed inside that directory or inside any repo worktree
+
+### Requirement: Initialize SQLite Connection Defaults
+
+Writable SQLite connections SHALL enable foreign key enforcement, WAL journaling, and a five-second busy timeout during connection initialization. These fixed connection setup statements are the only runtime SQL exception; application reads and writes SHALL continue to use Diesel query builder APIs.
+
+#### Scenario: Configure a Writable Connection
+
+- **WHEN** the lifecycle database is opened for writing
+- **THEN** foreign keys are enforced, WAL mode is enabled, and a concurrent writer waits up to five seconds before returning a lock error
+
+#### Scenario: Keep Read Queries Type-Safe
+
+- **WHEN** application code reads or mutates lifecycle records
+- **THEN** it uses Diesel schema/query builder operations rather than ad hoc SQL strings
+
+### Requirement: Model Lifecycle Entities and States
+
+The system SHALL model four lifecycle entities: workspace, repo worktree, operation, and event. Workspace states SHALL include `creating`, `ready`, `degraded`, and `failed`. Repo worktree states SHALL include `pending`, `attached`, `missing`, `diverged`, and `failed`. Operation states SHALL include `running`, `succeeded`, `failed`, and `rolled_back`.
+
+#### Scenario: Initialize State for a New Workspace
+
+- **WHEN** a create operation begins for a new workspace
+- **THEN** the workspace snapshot is `creating`, each requested repo worktree is `pending`, and the operation is `running`
+
+#### Scenario: Mark a Successful Workspace
+
+- **WHEN** all requested worktrees are attached and the operation completes
+- **THEN** the workspace is `ready`, each repo worktree is `attached`, and the operation is `succeeded`
+
+#### Scenario: Mark a Workspace with an External Divergence
+
+- **WHEN** reconciliation detects a recorded repo worktree no longer matches Git metadata
+- **THEN** the affected repo worktree is `diverged` or `missing` as appropriate, and the workspace is `degraded`
+
+### Requirement: Serialize Mutations Per Workspace
+
+The system SHALL allow at most one non-terminal operation for a workspace at a time. A workspace operation SHALL carry an owner identity, lease expiry, and last heartbeat timestamp. Operations for different workspaces MAY run concurrently.
+
+#### Scenario: Reject a Concurrent Workspace Mutation
+
+- **WHEN** a workspace already has a non-terminal operation with an unexpired lease
+- **THEN** a second mutation is rejected without changing Git state
+
+#### Scenario: Recover an Expired Lease
+
+- **WHEN** a workspace operation lease has expired
+- **THEN** the next relevant invocation reconciles the operation before starting a new mutation
+
+### Requirement: Store JSON Details as Text
+
+The system SHALL store structured event details and error details as canonical JSON text in SQLite. The application SHALL serialize and validate these values before persistence; it SHALL NOT depend on a native SQLite JSON column type. JSON1 functions MAY be used by migrations or typed query expressions where needed.
+
+#### Scenario: Persist Structured Event Details
+
+- **WHEN** a lifecycle event contains structured details
+- **THEN** the database stores valid JSON text that can be decoded by a later application version
+
+#### Scenario: Reject Invalid JSON Details
+
+- **WHEN** event details cannot be serialized as valid JSON
+- **THEN** the event transaction fails and no invalid details are persisted
+
+### Requirement: Use Stable Entity Identities
+
+The system SHALL assign a UUID v7 to each workspace, operation, and lifecycle event. UUID v7 values SHALL be generated by the application and stored as canonical text in SQLite. A repository identity SHALL be based on the canonical Git common directory, and a worktree identity SHALL be based on its canonical worktree path. Reconciliation SHALL use these identities rather than display names alone.
+
+#### Scenario: Reconcile a Repository with a Changed Display Name
+
+- **WHEN** the same canonical source repository is observed with a different display name
+- **THEN** reconciliation retains the repository identity and records only the relevant metadata change
+
+#### Scenario: Store a Time-Ordered Identifier
+
+- **WHEN** a new workspace, operation, or event is created
+- **THEN** its identifier is a valid UUID v7 represented as canonical text with an approximately time-ordered index value, while `occurred_at` remains authoritative for event chronology
+
+### Requirement: Append Immutable Lifecycle Events
+
+The system SHALL append an immutable event for every lifecycle transition that it records. Each event SHALL identify an event, operation, entity, event type, occurrence time, source, previous state, current state, and any failure or rollback detail. A failed operation and each rollback step SHALL remain recorded even when the final filesystem state is restored.
+
+#### Scenario: Record a Failed Operation and Rollback
+
+- **WHEN** a later repository worktree operation fails after an earlier worktree was created
+- **THEN** the event log contains the operation failure and the rollback steps, including which entities were affected and whether the rollback completed
+
+#### Scenario: Preserve Event History
+
+- **WHEN** a later reconciliation observes a new state for an entity
+- **THEN** the new event is appended and prior events are not overwritten or deleted
+
+### Requirement: Persist Structured Event Fields
+
+Each lifecycle event SHALL contain `event_id`, `operation_id`, `entity_type`, `entity_id`, `event_type`, `source`, `occurred_at`, `previous_state`, `current_state`, and structured details or error information. The event record SHALL distinguish events produced by `trees` operations from events produced by external reconciliation.
+
+#### Scenario: Record an External Reconciliation Event
+
+- **WHEN** reconciliation observes an external worktree change
+- **THEN** the event records the entity identity, external source, previous state, current state, and observation time
+
+### Requirement: Persist Operation Intent Before Git Mutation
+
+Before performing any Git worktree mutation, the system SHALL persist the operation as `running` together with its owner identity, lease, intended targets, and pending mutation step. If SQLite cannot commit this intent, the system SHALL NOT mutate Git state.
+
+#### Scenario: Refuse to Mutate Git Without a Persisted Intent
+
+- **WHEN** SQLite cannot persist the operation intent
+- **THEN** no Git worktree mutation is attempted and the error is returned to the caller
+
+#### Scenario: Record a Worktree Intent
+
+- **WHEN** an operation is about to create a direct child worktree
+- **THEN** the operation record identifies the source repository, target worktree path, and pending step before `git worktree add` is invoked
+
+### Requirement: Keep Git Mutations Outside Long Database Transactions
+
+The system SHALL commit operation intent before invoking Git and SHALL commit the resulting snapshot, event, and operation state in a separate short SQLite transaction after the Git step. A database transaction SHALL NOT remain open while waiting for a Git process.
+
+#### Scenario: Commit a Git Step Result
+
+- **WHEN** a Git worktree step completes
+- **THEN** snapshot changes, the lifecycle event, and the operation step result are committed atomically in one short SQLite transaction
+
+### Requirement: Recover Unfinished Operations
+
+Before starting a relevant workspace operation, the system SHALL find persisted operations that remain `running` and reconcile their intended mutations with Git's actual worktree metadata. Recovery SHALL append an event describing the resolution and SHALL finish each recovered operation as `succeeded`, `failed`, or `rolled_back`.
+
+#### Scenario: Recover Git Success After Process Interruption
+
+- **WHEN** Git created the intended worktree but the process stopped before the terminal SQLite event was committed
+- **THEN** the next reconciliation marks the operation `succeeded` and appends an operation-recovered event
+
+#### Scenario: Recover Partial Git Mutation
+
+- **WHEN** only some intended worktrees exist for a `running` operation
+- **THEN** reconciliation rolls back or records the partial result, marks the operation `rolled_back` or `failed`, and updates the workspace state accordingly
+
+### Requirement: Reconcile External Git Changes at Operation Boundaries
+
+Before and after each relevant workspace operation, the system SHALL reconcile the recorded repo-worktree state with Git's authoritative worktree metadata. A divergence caused outside the CLI SHALL update the current snapshot and append an externally observed lifecycle event. Repeating reconciliation without a new divergence SHALL be idempotent and SHALL NOT append duplicate events.
+
+#### Scenario: Detect an Externally Removed Worktree
+
+- **WHEN** a repository worktree is removed outside `trees` and a later relevant operation reconciles the workspace
+- **THEN** the system records the missing worktree in the current snapshot and appends an external-change event
+
+#### Scenario: Ignore an Unchanged Observation
+
+- **WHEN** reconciliation observes the same Git worktree state as the stored snapshot
+- **THEN** the current snapshot remains unchanged and no duplicate lifecycle event is appended
+
+### Requirement: Keep Lifecycle Tracking Independent from Query Commands
+
+This capability SHALL persist lifecycle state and events for recovery, diagnostics, and future consumers without requiring a user-facing `status` or `history` command in this change.
+
+#### Scenario: Track Without Exposing a Query Command
+
+- **WHEN** a workspace operation completes successfully
+- **THEN** the SQLite snapshot and event log are updated even though this change does not add a status or history CLI command
