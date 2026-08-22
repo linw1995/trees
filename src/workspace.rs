@@ -12,11 +12,11 @@ use crate::domain::{
 use crate::git::{self, GitError};
 use crate::naming::{self, NamingError, WorktreePlan};
 use crate::storage::{
-    append_event, find_workspace_by_path, insert_repo_worktree, insert_workspace,
-    persist_operation_intent, persist_operation_step_intent, record_operation_transition,
-    record_repo_worktree_transition, record_workspace_transition, record_worktree_step_result,
-    with_short_transaction, EventDraft, NewRepoWorktree, NewWorkspace, OperationIntent,
-    TransitionMetadata,
+    append_event, finalize_creation as finalize_persisted_creation, find_workspace_by_path,
+    insert_repo_worktree, insert_workspace, persist_operation_intent,
+    persist_operation_step_intent, record_operation_transition, record_repo_worktree_transition,
+    record_workspace_transition, record_worktree_step_result, with_short_transaction, EventDraft,
+    NewRepoWorktree, NewWorkspace, OperationIntent, TransitionMetadata,
 };
 use crate::validation::{self, ValidationError};
 
@@ -223,6 +223,36 @@ pub fn execute_creation(
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+pub struct CreationResult {
+    pub workspace_path: CanonicalPath,
+    pub worktree_paths: Vec<PathBuf>,
+}
+
+pub fn create(request: CreateRequest) -> Result<CreationResult, WorkspaceError> {
+    let plan = prepare_create(&request)?;
+    let mut connection = crate::database::open_default().map_err(WorkspaceError::DatabaseOpen)?;
+    create_with_connection(&mut connection, plan)
+}
+
+pub fn create_with_connection(
+    connection: &mut SqliteConnection,
+    plan: CreationPlan,
+) -> Result<CreationResult, WorkspaceError> {
+    let context = initialize_creation(connection, plan)?;
+    execute_creation(connection, &context)?;
+    finalize_persisted_creation(connection, &context.workspace_id, &context.operation_id)
+        .map_err(WorkspaceError::Database)?;
+    Ok(CreationResult {
+        workspace_path: context.plan.workspace_path,
+        worktree_paths: context
+            .repositories
+            .into_iter()
+            .map(|repository| repository.plan.worktree_path)
+            .collect(),
+    })
+}
+
 fn execute_repository_step(
     connection: &mut SqliteConnection,
     context: &CreationContext,
@@ -367,6 +397,7 @@ pub enum WorkspaceError {
     Naming(NamingError),
     Git(GitError),
     Database(diesel::result::Error),
+    DatabaseOpen(crate::database::DatabaseError),
     Json(crate::domain::JsonDocumentError),
     AlreadyManaged(CanonicalPath),
     Rollback {
@@ -389,6 +420,9 @@ impl fmt::Display for WorkspaceError {
             Self::Naming(error) => error.fmt(formatter),
             Self::Git(error) => error.fmt(formatter),
             Self::Database(error) => write!(formatter, "database operation failed: {error}"),
+            Self::DatabaseOpen(error) => {
+                write!(formatter, "failed to open lifecycle database: {error}")
+            }
             Self::Json(error) => error.fmt(formatter),
             Self::AlreadyManaged(path) => write!(formatter, "workspace is already managed: {path}"),
             Self::Rollback { primary, rollback } => {
@@ -422,6 +456,7 @@ impl std::error::Error for WorkspaceError {
             Self::Naming(error) => Some(error),
             Self::Git(error) => Some(error),
             Self::Database(error) => Some(error),
+            Self::DatabaseOpen(error) => Some(error),
             Self::Json(error) => Some(error),
             Self::AlreadyManaged(_) => None,
             Self::Rollback { primary, .. } => Some(primary),
@@ -510,6 +545,12 @@ mod tests {
         let context =
             initialize_creation(&mut connection, plan).expect("creation should initialize");
         execute_creation(&mut connection, &context).expect("creation should execute");
+        finalize_persisted_creation(
+            &mut connection,
+            &context.workspace_id,
+            &context.operation_id,
+        )
+        .expect("creation should finalize");
         assert!(context.plan.workspace_path.as_path().exists());
         assert!(context
             .repositories
@@ -519,7 +560,7 @@ mod tests {
             crate::storage::find_workspace_by_path(&mut connection, &context.plan.workspace_path)
                 .unwrap()
                 .unwrap();
-        assert_eq!(workspace.state, WorkspaceState::Creating);
+        assert_eq!(workspace.state, WorkspaceState::Ready);
         assert_eq!(
             crate::storage::list_repo_worktrees(&mut connection, &context.workspace_id)
                 .unwrap()
@@ -529,17 +570,22 @@ mod tests {
             2
         );
         assert_eq!(
-            crate::storage::find_running_operation(&mut connection, &context.workspace_id)
-                .unwrap()
+            crate::storage::find_operation(&mut connection, &context.operation_id)
                 .unwrap()
                 .id,
             context.operation_id
         );
         assert_eq!(
+            crate::storage::find_operation(&mut connection, &context.operation_id)
+                .unwrap()
+                .state,
+            OperationState::Succeeded
+        );
+        assert_eq!(
             crate::storage::list_events_for_operation(&mut connection, &context.operation_id)
                 .unwrap()
                 .len(),
-            8
+            10
         );
         for repository in &context.repositories {
             crate::git::remove_worktree(

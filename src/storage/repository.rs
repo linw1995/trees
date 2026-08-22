@@ -462,6 +462,73 @@ pub fn record_worktree_step_result(
     })
 }
 
+pub fn finalize_creation(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+    operation_id: &OperationId,
+) -> QueryResult<()> {
+    with_short_transaction(connection, |connection| {
+        let operation = operations::table
+            .find(operation_id)
+            .select(OperationRow::as_select())
+            .first(connection)?;
+        let workspace = workspaces::table
+            .find(workspace_id)
+            .select(WorkspaceRow::as_select())
+            .first(connection)?;
+        let occurred_at = Timestamp::now();
+
+        diesel::update(operations::table.find(operation_id))
+            .set((
+                operations::state.eq(OperationState::Succeeded),
+                operations::pending_step.eq("complete"),
+                operations::last_heartbeat_at.eq(&occurred_at),
+                operations::lease_expires_at.eq(&occurred_at),
+                operations::finished_at.eq(&occurred_at),
+                operations::error_json.eq::<Option<JsonDocument>>(None),
+            ))
+            .execute(connection)?;
+        diesel::update(workspaces::table.find(workspace_id))
+            .set((
+                workspaces::state.eq(WorkspaceState::Ready),
+                workspaces::updated_at.eq(&occurred_at),
+                workspaces::last_reconciled_at.eq(&occurred_at),
+            ))
+            .execute(connection)?;
+        append_event(
+            connection,
+            &EventDraft {
+                operation_id: *operation_id,
+                entity_type: "operation".to_owned(),
+                entity_id: operation.id.to_string(),
+                event_type: "operation_succeeded".to_owned(),
+                source: "trees".to_owned(),
+                occurred_at: occurred_at.clone(),
+                previous_state: Some(operation.state.to_string()),
+                current_state: Some(OperationState::Succeeded.to_string()),
+                details_json: None,
+                error_json: None,
+            },
+        )?;
+        append_event(
+            connection,
+            &EventDraft {
+                operation_id: *operation_id,
+                entity_type: "workspace".to_owned(),
+                entity_id: workspace.id.to_string(),
+                event_type: "workspace_ready".to_owned(),
+                source: "trees".to_owned(),
+                occurred_at,
+                previous_state: Some(workspace.state.to_string()),
+                current_state: Some(WorkspaceState::Ready.to_string()),
+                details_json: None,
+                error_json: None,
+            },
+        )?;
+        Ok(())
+    })
+}
+
 pub fn list_events_for_operation(
     connection: &mut SqliteConnection,
     operation_id: &OperationId,
