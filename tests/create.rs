@@ -105,7 +105,7 @@ fn creates_direct_child_worktrees_and_tracks_events() {
         .unwrap();
     assert_eq!(operation.state, OperationState::Succeeded);
     let events = list_events_for_operation(&mut connection, &operation.id).unwrap();
-    assert_eq!(events.len(), 10);
+    assert_eq!(events.len(), 11);
     assert!(events
         .windows(2)
         .all(|pair| pair[0].occurred_at <= pair[1].occurred_at));

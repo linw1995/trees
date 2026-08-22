@@ -51,6 +51,11 @@ pub fn reconcile_workspace(
                         head: worktree.head,
                         branch: worktree.branch,
                     },
+                    None if repository.state == RepoWorktreeState::Pending => {
+                        Observation::Pending {
+                            head: repository.last_head.clone(),
+                        }
+                    }
                     None => Observation::Missing,
                 }
             }
@@ -320,6 +325,9 @@ enum Observation {
     Attached {
         head: Option<String>,
     },
+    Pending {
+        head: Option<String>,
+    },
     Diverged {
         head: Option<String>,
         branch: Option<String>,
@@ -339,6 +347,7 @@ impl Observation {
     ) {
         match self {
             Self::Attached { head } => (RepoWorktreeState::Attached, head, None, None),
+            Self::Pending { head } => (RepoWorktreeState::Pending, head, None, None),
             Self::Diverged { head, branch } => (
                 RepoWorktreeState::Diverged,
                 head,

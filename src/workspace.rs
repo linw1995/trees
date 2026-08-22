@@ -11,6 +11,7 @@ use crate::domain::{
 };
 use crate::git::{self, GitError};
 use crate::naming::{self, NamingError, WorktreePlan};
+use crate::reconciliation::{self, ReconciliationError};
 use crate::storage::{
     append_event, finalize_creation as finalize_persisted_creation, find_workspace_by_path,
     insert_repo_worktree, insert_workspace, persist_operation_intent,
@@ -240,7 +241,11 @@ pub fn create_with_connection(
     plan: CreationPlan,
 ) -> Result<CreationResult, WorkspaceError> {
     let context = initialize_creation(connection, plan)?;
+    reconciliation::reconcile_workspace(connection, &context.workspace_id, &context.operation_id)
+        .map_err(WorkspaceError::Reconciliation)?;
     execute_creation(connection, &context)?;
+    reconciliation::reconcile_workspace(connection, &context.workspace_id, &context.operation_id)
+        .map_err(WorkspaceError::Reconciliation)?;
     finalize_persisted_creation(connection, &context.workspace_id, &context.operation_id)
         .map_err(WorkspaceError::Database)?;
     Ok(CreationResult {
@@ -281,7 +286,10 @@ fn execute_repository_step(
             JsonDocument::from_serializable(&repository.plan).map_err(WorkspaceError::Json)?,
         ),
     )
-    .map_err(WorkspaceError::Database)
+    .map_err(WorkspaceError::Database)?;
+    reconciliation::reconcile_workspace(connection, &context.workspace_id, &context.operation_id)
+        .map_err(WorkspaceError::Reconciliation)?;
+    Ok(())
 }
 
 fn fail_creation(
@@ -398,6 +406,7 @@ pub enum WorkspaceError {
     Git(GitError),
     Database(diesel::result::Error),
     DatabaseOpen(crate::database::DatabaseError),
+    Reconciliation(ReconciliationError),
     Json(crate::domain::JsonDocumentError),
     AlreadyManaged(CanonicalPath),
     Rollback {
@@ -423,6 +432,7 @@ impl fmt::Display for WorkspaceError {
             Self::DatabaseOpen(error) => {
                 write!(formatter, "failed to open lifecycle database: {error}")
             }
+            Self::Reconciliation(error) => write!(formatter, "reconciliation failed: {error}"),
             Self::Json(error) => error.fmt(formatter),
             Self::AlreadyManaged(path) => write!(formatter, "workspace is already managed: {path}"),
             Self::Rollback { primary, rollback } => {
@@ -457,6 +467,7 @@ impl std::error::Error for WorkspaceError {
             Self::Git(error) => Some(error),
             Self::Database(error) => Some(error),
             Self::DatabaseOpen(error) => Some(error),
+            Self::Reconciliation(error) => Some(error),
             Self::Json(error) => Some(error),
             Self::AlreadyManaged(_) => None,
             Self::Rollback { primary, .. } => Some(primary),
@@ -585,7 +596,7 @@ mod tests {
             crate::storage::list_events_for_operation(&mut connection, &context.operation_id)
                 .unwrap()
                 .len(),
-            10
+            11
         );
         for repository in &context.repositories {
             crate::git::remove_worktree(
