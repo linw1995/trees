@@ -13,7 +13,7 @@
 ## 3. CLI Integration
 
 - [x] 3.1 Add `Codex` command arguments to the Clap boundary with a required workspace path and optional executable override; verify valid parsing and rejection of missing paths in CLI unit tests
-- [ ] 3.2 Reconcile the workspace before resolving managed-worktree roots, then validate attached worktrees and reuse canonical path and repository ordering rules; verify unknown, non-ready, empty, externally removed, and invalid-root cases fail before spawning Codex
+- [x] 3.2 Reconcile the workspace before resolving managed-worktree roots, then validate attached worktrees and reuse canonical path and repository ordering rules; verify unknown, non-ready, empty, externally removed, and invalid-root cases fail before spawning Codex
 - [ ] 3.3 Wire `trees codex` dispatch to project synchronization and thread startup without changing Git or lifecycle snapshot state; verify the command produces no Git mutations in an integration test
 - [ ] 3.4 Hand the returned thread identifier to the configured executable's `resume` command with terminal inheritance and the primary root as the working directory; verify child arguments, inherited configuration, and exit-status propagation with a fake executable
 - [ ] 3.5 Report missing binaries, unsupported app-server methods, malformed responses, and failed handoff with actionable errors while retaining already-created Codex state for retry; verify each failure path with process-boundary tests
