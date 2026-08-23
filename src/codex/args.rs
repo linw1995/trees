@@ -335,4 +335,90 @@ mod tests {
             "developer_instructions=\"User context\\n\\n--- Trees workspace context ---\\nTrees manifest\""
         );
     }
+
+    #[test]
+    fn preserves_existing_cwd_and_add_dir_argument_forms() {
+        let merged = merge_codex_args(
+            &args(&[
+                "--cd=/workspace",
+                "--add-dir=/workspace/one",
+                "--add-dir",
+                "/workspace/two",
+                "--config",
+                "model=\"gpt-5.5\"",
+            ]),
+            Path::new("/fallback"),
+            &[
+                PathBuf::from("/workspace/one"),
+                PathBuf::from("/workspace/two"),
+            ],
+            "Trees workspace context",
+        )
+        .expect("Codex arguments should merge");
+
+        assert!(merged.contains(&OsString::from("--cd=/workspace")));
+        assert!(merged.contains(&OsString::from("--add-dir=/workspace/one")));
+        assert!(merged.contains(&OsString::from("--add-dir")));
+        assert!(merged.contains(&OsString::from("model=\"gpt-5.5\"")));
+        assert!(!merged.contains(&OsString::from("/fallback")));
+    }
+
+    #[test]
+    fn rejects_missing_or_empty_add_dir_values() {
+        assert_eq!(
+            merge_codex_args(
+                &args(&["--add-dir"]),
+                Path::new("/workspace"),
+                &[],
+                "context"
+            ),
+            Err(CodexArgumentError::MissingValue {
+                option: "--add-dir".to_owned()
+            })
+        );
+        assert_eq!(
+            merge_codex_args(
+                &args(&["--add-dir="]),
+                Path::new("/workspace"),
+                &[],
+                "context"
+            ),
+            Err(CodexArgumentError::EmptyValue {
+                option: "--add-dir".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn preserves_non_developer_config_and_missing_config_values() {
+        let merged = merge_codex_args(
+            &args(&["--config", "model=\"gpt-5.5\"", "-c"]),
+            Path::new("/workspace"),
+            &[],
+            "context",
+        )
+        .expect("non-developer config should be preserved");
+
+        assert!(merged
+            .windows(2)
+            .any(|pair| { pair[0] == "--config" && pair[1] == "model=\"gpt-5.5\"" }));
+        assert!(merged.contains(&OsString::from("-c")));
+    }
+
+    #[test]
+    fn parses_equals_form_developer_instructions() {
+        let merged = merge_codex_args(
+            &args(&["--config=developer_instructions=\"User context\""]),
+            Path::new("/workspace"),
+            &[],
+            "Trees workspace context",
+        )
+        .expect("developer instructions should merge");
+
+        assert!(merged.iter().any(|argument| {
+            argument
+                .to_string_lossy()
+                .contains("developer_instructions=\"User context")
+        }));
+    }
 }
