@@ -5,7 +5,7 @@
 
 ## 2. App-Server Protocol Client
 
-- [ ] 2.1 Implement a bounded newline-delimited JSON app-server transport that spawns `codex app-server --stdio`, performs the experimental `initialize` handshake, matches responses by request ID while tolerating notifications, and reports malformed-message, timeout, EOF, and process errors; verify behavior with a fake app-server fixture
+- [x] 2.1 Implement a bounded newline-delimited JSON app-server transport that spawns `codex app-server --stdio`, performs the experimental `initialize` handshake, matches responses by request ID while tolerating notifications, and reports malformed-message, timeout, EOF, and process errors; verify behavior with a fake app-server fixture
 - [ ] 2.2 Implement project synchronization using `project/create`, `project/list`, and `project/update`; verify initial creation, idempotent reuse, complete root replacement, and recreation with a fresh key after a deleted project response
 - [ ] 2.3 Implement project-bound thread startup with `thread/start`, using the first worktree root as `cwd` and all worktree roots as runtime workspace roots; verify the emitted JSON request contains the expected project identifier and ordered roots
 - [ ] 2.4 Ensure the setup process shuts down after standard input closes, waits for confirmed process exit before handoff, bounds captured standard error, and terminates or reaps failed children; verify no child process remains and no `resume` occurs after an unconfirmed shutdown

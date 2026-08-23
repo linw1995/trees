@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 
 use crate::domain::WorkspaceId;
 
+pub mod app_server;
+
 pub const WORKSPACE_METADATA_KEY: &str = "treesWorkspaceId";
 
 pub fn project_idempotency_key(workspace_id: &WorkspaceId) -> String {
