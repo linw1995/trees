@@ -44,16 +44,25 @@ Each repository becomes a direct child worktree under `./workspace`. The source 
 Launch an interactive Codex session for a managed workspace:
 
 ```sh
-trees codex ./workspace
+trees codex -C ./workspace
 ```
 
-Trees reconciles the workspace with Git before launching Codex. The Codex project roots are the managed worktree directories under `./workspace`, in deterministic order; the original repository paths are not used as roots. Repeated launches reuse the workspace's Codex project, synchronize its complete root list, and create a new durable thread for each session.
+Trees reads the workspace from the forwarded Codex `-C` or `--cd` argument. If neither is present, it uses the current directory. Trees reconciles the workspace with Git before launching Codex. The Codex project roots are the managed worktree directories under the workspace, in deterministic order; the original repository paths are not used as roots. Repeated launches reuse the workspace's Codex project, synchronize its complete root list, and create a new durable thread for each session.
 
 By default, Trees resolves `codex` from `PATH`. Use `--codex-bin` when Codex is installed at a custom path or when selecting a controlled executable:
 
 ```sh
-trees codex ./workspace --codex-bin /path/to/codex
+trees codex --codex-bin /path/to/codex -C ./workspace
 ```
+
+Native Codex arguments are forwarded directly without an extra `--` separator:
+
+```sh
+trees codex -C ./workspace --model gpt-5.5 --sandbox workspace-write
+trees codex --model gpt-5.5
+```
+
+Forwarded `--add-dir` values are merged with the workspace's managed worktree roots. Trees preserves the model, sandbox, approval, profile, prompt, and other native Codex arguments while adding the workspace context required for the multi-root handoff.
 
 The setup app-server is short-lived. After the project and thread are persisted, Trees hands the thread to `codex resume` and keeps the terminal attached to Codex. This command does not open or navigate the Codex Desktop UI. Codex authentication, model, approval, and sandbox settings are inherited from the user's normal configuration; Trees does not add bypass or unrestricted-access flags.
 
