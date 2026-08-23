@@ -25,7 +25,7 @@ pub struct PreparedLaunch {
     pub codex_home: PathBuf,
     pub project_id: String,
     pub thread_id: String,
-    pub primary_root: PathBuf,
+    pub cwd: PathBuf,
     pub runtime_roots: Vec<PathBuf>,
 }
 
@@ -56,6 +56,7 @@ fn prepare_with_app_server(
         let thread = start_thread_with_instructions(
             &mut app_server,
             &project.project.id,
+            workspace.path.as_path(),
             &workspace.roots,
             Some(&developer_instructions),
             SETUP_REQUEST_TIMEOUT,
@@ -141,7 +142,7 @@ fn prepared_launch(
         codex_home: project.codex_home,
         project_id: project.project.id,
         thread_id,
-        primary_root: workspace.roots[0].clone(),
+        cwd: workspace.path.as_path().to_path_buf(),
         runtime_roots: workspace.roots.clone(),
     }
 }
@@ -155,16 +156,17 @@ pub fn handoff(
         .arg("resume")
         .arg(&prepared.thread_id)
         .arg("--cd")
-        .arg(&prepared.primary_root);
+        .arg(&prepared.cwd);
 
     // The CLI opens a new app-server connection for `resume` and does not carry
-    // runtimeWorkspaceRoots over from the earlier thread/start request.
-    for root in prepared.runtime_roots.iter().skip(1) {
+    // runtimeWorkspaceRoots over from the earlier thread/start request. The
+    // workspace container is the cwd, so every managed worktree is additional.
+    for root in &prepared.runtime_roots {
         command.arg("--add-dir").arg(root);
     }
 
     command
-        .current_dir(&prepared.primary_root)
+        .current_dir(&prepared.cwd)
         .status()
         .map_err(|source| CodexLaunchError::Handoff {
             executable: codex_bin.to_owned(),
@@ -343,7 +345,7 @@ printf '%s\n' '{"id":4,"result":{"thread":{"id":"thread-id"}}}'
         .expect("thread request should be JSON");
         assert_eq!(request["method"], "thread/start");
         assert_eq!(request["params"]["projectId"], "project-id");
-        assert_eq!(request["params"]["cwd"], "/workspace/one");
+        assert_eq!(request["params"]["cwd"], "/workspace");
         assert_eq!(
             request["params"]["runtimeWorkspaceRoots"],
             json!(["/workspace/one", "/workspace/two"])
@@ -436,7 +438,9 @@ printf '%s\n' '{"id":4,"result":{"thread":{"id":"thread-id"}}}'
             std::env::temp_dir().join(format!("trees-codex-handoff-{}", uuid::Uuid::now_v7()));
         fs::create_dir_all(&root).expect("handoff root should be created");
         let capture = root.join("capture");
+        let first = root.join("one");
         let secondary = root.join("secondary");
+        fs::create_dir_all(&first).expect("first root should be created");
         fs::create_dir_all(&secondary).expect("secondary root should be created");
         let executable = root.join("fake-codex");
         fs::write(
@@ -459,8 +463,8 @@ printf '%s\n' '{"id":4,"result":{"thread":{"id":"thread-id"}}}'
             codex_home: root.join("codex-home"),
             project_id: "project-id".to_owned(),
             thread_id: "thread-id".to_owned(),
-            primary_root: root.clone(),
-            runtime_roots: vec![root.clone(), secondary.clone()],
+            cwd: root.clone(),
+            runtime_roots: vec![root.join("one"), secondary.clone()],
         };
         let status = handoff(&executable, &prepared).expect("handoff should start");
 
@@ -473,9 +477,11 @@ printf '%s\n' '{"id":4,"result":{"thread":{"id":"thread-id"}}}'
         assert_eq!(lines[2], "--cd");
         assert_eq!(Path::new(lines[3]), root.as_path());
         assert_eq!(lines[4], "--add-dir");
-        assert_eq!(Path::new(lines[5]), secondary.as_path());
-        assert_eq!(Path::new(&lines[6][4..]), canonical_root.as_path());
-        assert!(lines[7].starts_with("PATH="));
+        assert_eq!(Path::new(lines[5]), first.as_path());
+        assert_eq!(lines[6], "--add-dir");
+        assert_eq!(Path::new(lines[7]), secondary.as_path());
+        assert_eq!(Path::new(&lines[8][4..]), canonical_root.as_path());
+        assert!(lines[9].starts_with("PATH="));
 
         fs::remove_dir_all(root).expect("handoff test root should be removable");
     }
@@ -561,8 +567,8 @@ printf '%s\n' 'not-json'
             codex_home: root.join("codex-home"),
             project_id: "project-id".to_owned(),
             thread_id: "thread-id".to_owned(),
-            primary_root: root.clone(),
-            runtime_roots: vec![root.clone()],
+            cwd: root.clone(),
+            runtime_roots: vec![root.join("one")],
         };
         let executable = root.join("missing-codex");
 

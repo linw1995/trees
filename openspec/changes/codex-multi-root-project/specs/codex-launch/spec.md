@@ -73,12 +73,12 @@ The command SHALL use a deterministic idempotency key derived from the Trees wor
 
 ### Requirement: Start a Project-Bound Codex Thread
 
-After project synchronization succeeds, the command SHALL start a durable Codex thread assigned to the project. The thread SHALL use the first worktree root as its working directory and SHALL receive all worktree roots as runtime workspace roots. The command SHALL preserve the user's configured approval, sandbox, model, and authentication settings unless explicitly overridden by a future command option.
+After project synchronization succeeds, the command SHALL start a durable Codex thread assigned to the project. The thread SHALL use the workspace container as its working directory and SHALL receive all managed worktree roots as runtime workspace roots. The command SHALL preserve the user's configured approval, sandbox, model, and authentication settings unless explicitly overridden by a future command option.
 
 #### Scenario: Start a Thread for All Roots
 
 - **WHEN** project synchronization returns a valid project identifier
-- **THEN** the command starts a thread with that `projectId`, the first worktree root as `cwd`, and every worktree root in the runtime workspace root list
+- **THEN** the command starts a thread with that `projectId`, the workspace container as `cwd`, and every worktree root in the runtime workspace root list
 
 ### Requirement: Expose the Logical Monorepo Context
 
@@ -103,8 +103,8 @@ Before starting the thread, the command SHALL obtain the effective user develope
 
 The command SHALL hand the newly started thread to the configured Codex
 executable by invoking its interactive resume command with the returned thread
-identifier. It SHALL pass the first worktree root as the resume command's
-`--cd` value and SHALL pass each additional worktree root as an `--add-dir`
+identifier. It SHALL pass the workspace container as the resume command's
+`--cd` value and SHALL pass every managed worktree root as an `--add-dir`
 value. The resume client opens a new app-server connection and does not inherit
 runtime roots from `thread/start`. By default, the executable SHALL be resolved
 as `codex` from `PATH`; an explicit executable override SHALL be supported. The
@@ -113,7 +113,7 @@ command SHALL return the Codex client's exit status.
 #### Scenario: Resume the Created Thread
 
 - **WHEN** app-server returns a durable thread identifier
-- **THEN** the command invokes the Codex client's resume operation for that identifier with the primary root as `--cd` and each additional worktree root as `--add-dir`
+- **THEN** the command invokes the Codex client's resume operation for that identifier with the workspace container as `--cd` and every worktree root as `--add-dir`
   while keeping the user's terminal attached to the interactive session
 
 #### Scenario: Codex Executable Is Missing

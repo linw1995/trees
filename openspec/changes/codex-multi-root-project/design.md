@@ -68,7 +68,7 @@ After `thread/start` returns, Trees starts the same executable with
 `resume <thread-id>` and attaches the current terminal. The setup process is
 no longer needed because the project and thread are persisted in the shared
 Codex home. The launcher sets the process working directory and explicit
-`--cd` value to the first worktree root, then passes each additional worktree
+`--cd` value to the workspace container, then passes every managed worktree
 root as `--add-dir`.
 
 This repetition is intentional. The CLI opens a new app-server connection for

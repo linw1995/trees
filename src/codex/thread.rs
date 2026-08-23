@@ -1,5 +1,5 @@
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -22,15 +22,17 @@ pub struct ThreadSummary {
 pub fn start_thread<R: RpcClient>(
     rpc: &mut R,
     project_id: &str,
+    cwd: &Path,
     roots: &[PathBuf],
     timeout: Duration,
 ) -> Result<ThreadStartResponse, ThreadStartError> {
-    start_thread_with_instructions(rpc, project_id, roots, None, timeout)
+    start_thread_with_instructions(rpc, project_id, cwd, roots, None, timeout)
 }
 
 pub fn start_thread_with_instructions<R: RpcClient>(
     rpc: &mut R,
     project_id: &str,
+    cwd: &Path,
     roots: &[PathBuf],
     developer_instructions: Option<&str>,
     timeout: Duration,
@@ -39,6 +41,12 @@ pub fn start_thread_with_instructions<R: RpcClient>(
         return Err(ThreadStartError::InvalidInput(
             "project identifier must not be empty".to_owned(),
         ));
+    }
+    if !cwd.is_absolute() {
+        return Err(ThreadStartError::InvalidInput(format!(
+            "thread cwd must be absolute: {}",
+            cwd.display()
+        )));
     }
     if roots.is_empty() {
         return Err(ThreadStartError::InvalidInput(
@@ -54,7 +62,7 @@ pub fn start_thread_with_instructions<R: RpcClient>(
 
     let mut params = json!({
         "projectId": project_id,
-        "cwd": roots[0],
+        "cwd": cwd,
         "runtimeWorkspaceRoots": roots
     });
     if let Some(developer_instructions) = developer_instructions {
@@ -156,14 +164,20 @@ mod tests {
             PathBuf::from("/workspace/two"),
         ];
 
-        let response = start_thread(&mut rpc, "project-id", &roots, Duration::from_secs(1))
-            .expect("thread should start");
+        let response = start_thread(
+            &mut rpc,
+            "project-id",
+            Path::new("/workspace"),
+            &roots,
+            Duration::from_secs(1),
+        )
+        .expect("thread should start");
 
         assert_eq!(response.thread.id, "thread-id");
         assert_eq!(rpc.method.as_deref(), Some("thread/start"));
         let params = rpc.params.expect("request params should be captured");
         assert_eq!(params["projectId"], "project-id");
-        assert_eq!(params["cwd"], "/workspace/one");
+        assert_eq!(params["cwd"], "/workspace");
         assert_eq!(params["runtimeWorkspaceRoots"][0], "/workspace/one");
         assert_eq!(params["runtimeWorkspaceRoots"][1], "/workspace/two");
     }
@@ -178,6 +192,7 @@ mod tests {
         start_thread_with_instructions(
             &mut rpc,
             "project-id",
+            Path::new("/workspace"),
             &[PathBuf::from("/workspace/one")],
             Some("Treat this as one logical monorepo."),
             Duration::from_secs(1),
@@ -198,6 +213,7 @@ mod tests {
         let error = start_thread(
             &mut rpc,
             "",
+            Path::new("/workspace"),
             &[PathBuf::from("/workspace/one")],
             Duration::from_secs(1),
         )

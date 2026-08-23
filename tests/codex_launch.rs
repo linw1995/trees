@@ -240,6 +240,7 @@ fn synchronize(
     let thread = start_thread(
         rpc,
         &project.project.id,
+        workspace.path.as_path(),
         &workspace.roots,
         Duration::from_secs(1),
     )
