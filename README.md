@@ -1,11 +1,7 @@
 # Trees
 
-## Project Structure
+Trees is a Rust CLI for managing coding workspaces composed of Git worktrees.
 
-- `Cargo.toml`: Rust package metadata.
-- `src/`: Rust source files.
-- `flake.nix`: Flake entry point.
-- `nix/`: Flake modules for outputs, packages, development shells, and Rust toolchains.
-- `.github/`: GitHub Actions workflows and reusable actions.
-- `.pre-commit-config.yaml`: Repository lint hooks.
-- `openspec/`: Project planning artifacts.
+Each workspace contains one direct child worktree for every source repository. Trees records workspace lifecycle state and immutable events in a shared SQLite database.
+
+The development environment is provided by Nix Flake.
