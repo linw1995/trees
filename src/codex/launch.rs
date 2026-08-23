@@ -186,6 +186,33 @@ mod tests {
     use super::*;
 
     #[cfg(unix)]
+    fn prepared_workspace(root: &Path) -> PreparedWorkspace {
+        PreparedWorkspace {
+            id: crate::domain::WorkspaceId::new(),
+            path: crate::domain::CanonicalPath::resolve(root)
+                .expect("test workspace should be canonical"),
+            name: "workspace".to_owned(),
+            roots: vec![root.to_owned()],
+        }
+    }
+
+    #[cfg(unix)]
+    fn fake_app_server(root: &Path, script: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let executable = root.join("fake-codex");
+        fs::write(&executable, format!("#!/bin/sh\n{script}\n"))
+            .expect("fake app-server should be written");
+        let mut permissions = fs::metadata(&executable)
+            .expect("fake app-server metadata should be available")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&executable, permissions)
+            .expect("fake app-server should be executable");
+        executable
+    }
+
+    #[cfg(unix)]
     #[test]
     fn hands_thread_to_resume_with_inherited_terminal_context() {
         use std::os::unix::fs::PermissionsExt;
@@ -228,5 +255,99 @@ mod tests {
         assert!(!lines[3].is_empty());
 
         fs::remove_dir_all(root).expect("handoff test root should be removable");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reports_missing_app_server_binary() {
+        let root =
+            std::env::temp_dir().join(format!("trees-codex-missing-{}", uuid::Uuid::now_v7()));
+        fs::create_dir_all(&root).expect("test workspace should be created");
+        let executable = root.join("missing-codex");
+        let workspace = prepared_workspace(&root);
+
+        let error = prepare_with_app_server(&executable, &workspace)
+            .expect_err("missing app-server should fail before setup");
+        let message = error.to_string();
+
+        assert!(message.contains("missing-codex"));
+        assert!(message.contains("failed to start"));
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reports_unsupported_app_server_method() {
+        let root =
+            std::env::temp_dir().join(format!("trees-codex-unsupported-{}", uuid::Uuid::now_v7()));
+        fs::create_dir_all(&root).expect("test workspace should be created");
+        let executable = fake_app_server(
+            &root,
+            r#"
+IFS= read -r request
+printf '%s\n' '{"id":1,"result":{"codexHome":"/tmp/codex"}}'
+IFS= read -r request
+IFS= read -r request
+printf '%s\n' '{"id":2,"error":{"code":-32601,"message":"Method not found"}}'
+            "#,
+        );
+        let workspace = prepared_workspace(&root);
+
+        let error = prepare_with_app_server(&executable, &workspace)
+            .expect_err("unsupported app-server method should fail setup");
+        let message = error.to_string();
+
+        assert!(message.contains("project/create"));
+        assert!(message.contains("Method not found"));
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reports_malformed_app_server_response() {
+        let root =
+            std::env::temp_dir().join(format!("trees-codex-malformed-{}", uuid::Uuid::now_v7()));
+        fs::create_dir_all(&root).expect("test workspace should be created");
+        let executable = fake_app_server(
+            &root,
+            r#"
+IFS= read -r request
+printf '%s\n' 'not-json'
+            "#,
+        );
+        let workspace = prepared_workspace(&root);
+
+        let error = prepare_with_app_server(&executable, &workspace)
+            .expect_err("malformed app-server response should fail setup");
+        let message = error.to_string();
+
+        assert!(message.contains("initialize"));
+        assert!(message.contains("not-json"));
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reports_failed_resume_handoff_with_thread_context() {
+        let root = std::env::temp_dir().join(format!(
+            "trees-codex-handoff-error-{}",
+            uuid::Uuid::now_v7()
+        ));
+        fs::create_dir_all(&root).expect("test workspace should be created");
+        let prepared = PreparedLaunch {
+            codex_home: root.join("codex-home"),
+            project_id: "project-id".to_owned(),
+            thread_id: "thread-id".to_owned(),
+            primary_root: root.clone(),
+        };
+        let executable = root.join("missing-codex");
+
+        let error = handoff(&executable, &prepared).expect_err("missing resume binary should fail");
+        let message = error.to_string();
+
+        assert!(message.contains("project-id"));
+        assert!(message.contains("thread-id"));
+        assert!(message.contains("missing-codex"));
+        fs::remove_dir_all(root).expect("test root should be removable");
     }
 }
