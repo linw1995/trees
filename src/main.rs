@@ -1,4 +1,4 @@
-use std::process::ExitCode;
+use std::process::{ExitCode, ExitStatus};
 
 use clap::Parser;
 
@@ -24,20 +24,27 @@ fn main() -> ExitCode {
             }
         }
         trees::cli::Command::Codex(arguments) => {
-            match trees::codex::launch::prepare_launch(trees::codex::launch::LaunchRequest {
+            match trees::codex::launch::launch(trees::codex::launch::LaunchRequest {
                 workspace_path: arguments.workspace_path,
                 codex_bin: arguments.codex_bin,
             }) {
-                Ok(result) => {
-                    println!("Prepared Codex project: {}", result.project_id);
-                    println!("Prepared Codex thread: {}", result.thread_id);
-                    ExitCode::SUCCESS
-                }
+                Ok(status) => exit_code(status),
                 Err(error) => {
                     eprintln!("Error: {error}");
                     ExitCode::FAILURE
                 }
             }
         }
+    }
+}
+
+fn exit_code(status: ExitStatus) -> ExitCode {
+    if status.success() {
+        return ExitCode::SUCCESS;
+    }
+
+    match status.code() {
+        Some(code) if (0..=u8::MAX as i32).contains(&code) => ExitCode::from(code as u8),
+        _ => ExitCode::FAILURE,
     }
 }
