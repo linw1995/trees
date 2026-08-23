@@ -20,6 +20,17 @@ pub struct AppServerProcess {
     stderr: StderrTail,
 }
 
+pub trait RpcClient {
+    fn request(
+        &mut self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, AppServerError>;
+
+    fn notify(&mut self, method: &str, params: Value) -> Result<(), AppServerError>;
+}
+
 impl AppServerProcess {
     pub fn spawn(executable: &Path) -> Result<Self, AppServerError> {
         let mut child = Command::new(executable)
@@ -93,6 +104,21 @@ impl AppServerProcess {
             }
             thread::sleep(Duration::from_millis(10));
         }
+    }
+}
+
+impl RpcClient for AppServerProcess {
+    fn request(
+        &mut self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, AppServerError> {
+        Self::request(self, method, params, timeout)
+    }
+
+    fn notify(&mut self, method: &str, params: Value) -> Result<(), AppServerError> {
+        Self::notify(self, method, params)
     }
 }
 

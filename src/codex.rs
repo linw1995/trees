@@ -4,6 +4,7 @@ use crate::domain::WorkspaceId;
 
 pub mod app_server;
 pub mod project;
+pub mod project_sync;
 
 pub const WORKSPACE_METADATA_KEY: &str = "treesWorkspaceId";
 
