@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -7,6 +8,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::codex::app_server::{AppServerError, AppServerProcess, RpcClient};
+use crate::codex::lock::{WorkspaceLock, WorkspaceLockError};
 use crate::codex::project_sync::{ProjectSession, ProjectSyncError, ProjectSynchronizer};
 use crate::codex::thread::{start_thread_with_instructions, ThreadStartError};
 use crate::codex::workspace::{prepare, PreparedWorkspace, WorkspacePreparationError};
@@ -21,6 +23,13 @@ pub struct LaunchRequest {
 }
 
 #[derive(Debug, Clone)]
+pub struct ResumeRequest {
+    pub workspace_path: PathBuf,
+    pub codex_bin: PathBuf,
+    pub codex_args: Vec<OsString>,
+}
+
+#[derive(Debug, Clone)]
 pub struct PreparedLaunch {
     pub codex_home: PathBuf,
     pub project_id: String,
@@ -30,10 +39,28 @@ pub struct PreparedLaunch {
     pub developer_instructions: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct PreparedResume {
+    pub codex_home: PathBuf,
+    pub project_id: String,
+    pub cwd: PathBuf,
+    pub runtime_roots: Vec<PathBuf>,
+    pub developer_instructions: String,
+    pub codex_args: Vec<OsString>,
+}
+
 pub fn launch(request: LaunchRequest) -> Result<ExitStatus, CodexLaunchError> {
+    let _lock = WorkspaceLock::acquire(&request.workspace_path).map_err(CodexLaunchError::Lock)?;
     let codex_bin = request.codex_bin.clone();
     let prepared = prepare_launch(request)?;
     handoff(&codex_bin, &prepared)
+}
+
+pub fn resume(request: ResumeRequest) -> Result<ExitStatus, CodexLaunchError> {
+    let _lock = WorkspaceLock::acquire(&request.workspace_path).map_err(CodexLaunchError::Lock)?;
+    let codex_bin = request.codex_bin.clone();
+    let prepared = prepare_resume(request)?;
+    resume_handoff(&codex_bin, &prepared)
 }
 
 pub fn prepare_launch(request: LaunchRequest) -> Result<PreparedLaunch, CodexLaunchError> {
@@ -41,6 +68,13 @@ pub fn prepare_launch(request: LaunchRequest) -> Result<PreparedLaunch, CodexLau
     let workspace =
         prepare(&mut connection, &request.workspace_path).map_err(CodexLaunchError::Workspace)?;
     prepare_with_app_server(&request.codex_bin, &workspace)
+}
+
+pub fn prepare_resume(request: ResumeRequest) -> Result<PreparedResume, CodexLaunchError> {
+    let mut connection = crate::database::open_default().map_err(CodexLaunchError::DatabaseOpen)?;
+    let workspace =
+        prepare(&mut connection, &request.workspace_path).map_err(CodexLaunchError::Workspace)?;
+    prepare_resume_with_app_server(&request.codex_bin, &workspace, request.codex_args)
 }
 
 fn prepare_with_app_server(
@@ -74,6 +108,41 @@ fn prepare_with_app_server(
     let shutdown_result = app_server.shutdown(SETUP_SHUTDOWN_TIMEOUT);
     match (setup_result, shutdown_result) {
         (Ok(launch), Ok(status)) if status.success() => Ok(launch),
+        (Ok(_), Ok(status)) => Err(CodexLaunchError::SetupProcessExit(status)),
+        (Ok(_), Err(error)) => Err(CodexLaunchError::Shutdown(error)),
+        (Err(error), Ok(_)) => Err(error),
+        (Err(error), Err(shutdown)) => Err(CodexLaunchError::SetupAndShutdown {
+            setup: Box::new(error),
+            shutdown,
+        }),
+    }
+}
+
+fn prepare_resume_with_app_server(
+    codex_bin: &Path,
+    workspace: &PreparedWorkspace,
+    codex_args: Vec<OsString>,
+) -> Result<PreparedResume, CodexLaunchError> {
+    let mut app_server = AppServerProcess::spawn(codex_bin).map_err(CodexLaunchError::AppServer)?;
+    let setup_result = (|| {
+        let project = ProjectSynchronizer::new(&mut app_server, SETUP_REQUEST_TIMEOUT)
+            .synchronize(&workspace.id, &workspace.name, &workspace.roots)
+            .map_err(CodexLaunchError::Project)?;
+        let developer_instructions =
+            workspace_developer_instructions(&mut app_server, workspace, SETUP_REQUEST_TIMEOUT)?;
+        Ok::<PreparedResume, CodexLaunchError>(PreparedResume {
+            codex_home: project.codex_home,
+            project_id: project.project.id,
+            cwd: workspace.path.as_path().to_path_buf(),
+            runtime_roots: workspace.roots.clone(),
+            developer_instructions,
+            codex_args,
+        })
+    })();
+
+    let shutdown_result = app_server.shutdown(SETUP_SHUTDOWN_TIMEOUT);
+    match (setup_result, shutdown_result) {
+        (Ok(resume), Ok(status)) if status.success() => Ok(resume),
         (Ok(_), Ok(status)) => Err(CodexLaunchError::SetupProcessExit(status)),
         (Ok(_), Err(error)) => Err(CodexLaunchError::Shutdown(error)),
         (Err(error), Ok(_)) => Err(error),
@@ -184,6 +253,34 @@ pub fn handoff(
         })
 }
 
+pub fn resume_handoff(
+    codex_bin: &Path,
+    prepared: &PreparedResume,
+) -> Result<ExitStatus, CodexLaunchError> {
+    let mut command = Command::new(codex_bin);
+    command.arg("resume").args(&prepared.codex_args);
+    command
+        .arg("--config")
+        .arg(developer_instructions_config(
+            &prepared.developer_instructions,
+        ))
+        .arg("--cd")
+        .arg(&prepared.cwd);
+
+    for root in &prepared.runtime_roots {
+        command.arg("--add-dir").arg(root);
+    }
+
+    command
+        .current_dir(&prepared.cwd)
+        .status()
+        .map_err(|source| CodexLaunchError::ResumeHandoff {
+            executable: codex_bin.to_owned(),
+            project_id: prepared.project_id.clone(),
+            source,
+        })
+}
+
 fn developer_instructions_config(instructions: &str) -> String {
     format!(
         "developer_instructions={}",
@@ -195,6 +292,7 @@ fn developer_instructions_config(instructions: &str) -> String {
 pub enum CodexLaunchError {
     DatabaseOpen(crate::database::DatabaseError),
     Workspace(WorkspacePreparationError),
+    Lock(WorkspaceLockError),
     AppServer(AppServerError),
     Config(AppServerError),
     InvalidConfigResponse(String),
@@ -206,6 +304,11 @@ pub enum CodexLaunchError {
         executable: PathBuf,
         project_id: String,
         thread_id: String,
+        source: io::Error,
+    },
+    ResumeHandoff {
+        executable: PathBuf,
+        project_id: String,
         source: io::Error,
     },
     SetupAndShutdown {
@@ -221,6 +324,7 @@ impl fmt::Display for CodexLaunchError {
                 write!(formatter, "failed to open Trees database: {error}")
             }
             Self::Workspace(error) => error.fmt(formatter),
+            Self::Lock(error) => error.fmt(formatter),
             Self::AppServer(error) => error.fmt(formatter),
             Self::Config(error) => error.fmt(formatter),
             Self::InvalidConfigResponse(message) => formatter.write_str(message),
@@ -245,6 +349,15 @@ impl fmt::Display for CodexLaunchError {
                 "failed to resume Codex thread {thread_id} for project {project_id} using {}: {source}",
                 executable.display()
             ),
+            Self::ResumeHandoff {
+                executable,
+                project_id,
+                source,
+            } => write!(
+                formatter,
+                "failed to open a Codex resume picker for project {project_id} using {}: {source}",
+                executable.display()
+            ),
             Self::SetupAndShutdown { setup, shutdown } => write!(
                 formatter,
                 "Codex setup failed: {setup}; setup app-server shutdown also failed: {shutdown}"
@@ -258,12 +371,14 @@ impl std::error::Error for CodexLaunchError {
         match self {
             Self::DatabaseOpen(error) => Some(error),
             Self::Workspace(error) => Some(error),
+            Self::Lock(error) => Some(error),
             Self::AppServer(error) => Some(error),
             Self::Config(error) => Some(error),
             Self::Project(error) => Some(error),
             Self::Thread(error) => Some(error),
             Self::Shutdown(error) => Some(error),
             Self::Handoff { source, .. } => Some(source),
+            Self::ResumeHandoff { source, .. } => Some(source),
             Self::SetupAndShutdown { setup, .. } => Some(setup),
             Self::SetupProcessExit(_) | Self::InvalidConfigResponse(_) => None,
         }
@@ -505,6 +620,113 @@ printf '%s\n' '{"id":4,"result":{"thread":{"id":"thread-id"}}}'
         assert!(lines[11].starts_with("PATH="));
 
         fs::remove_dir_all(root).expect("handoff test root should be removable");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hands_off_to_native_resume_picker_without_a_session_id() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "trees-codex-picker-handoff-{}",
+            uuid::Uuid::now_v7()
+        ));
+        fs::create_dir_all(&root).expect("handoff root should be created");
+        let capture = root.join("capture");
+        let secondary = root.join("secondary");
+        fs::create_dir_all(&secondary).expect("secondary root should be created");
+        let executable = root.join("fake-codex");
+        fs::write(
+            &executable,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf 'PWD=%s\\n' \"$PWD\" >> '{}'\nexit 9\n",
+                capture.display(),
+                capture.display()
+            ),
+        )
+        .expect("fake executable should be written");
+        let mut permissions = fs::metadata(&executable)
+            .expect("fake executable metadata should be available")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&executable, permissions)
+            .expect("fake executable should be executable");
+
+        let prepared = PreparedResume {
+            codex_home: root.join("codex-home"),
+            project_id: "project-id".to_owned(),
+            cwd: root.clone(),
+            runtime_roots: vec![root.clone(), secondary.clone()],
+            developer_instructions: "workspace instructions".to_owned(),
+            codex_args: vec![
+                OsString::from("--all"),
+                OsString::from("--profile"),
+                OsString::from("work"),
+            ],
+        };
+        let status = resume_handoff(&executable, &prepared).expect("picker handoff should start");
+
+        assert_eq!(status.code(), Some(9));
+        let captured = fs::read_to_string(&capture).expect("fake executable should capture input");
+        let lines: Vec<_> = captured.lines().collect();
+        assert_eq!(lines[0], "resume");
+        assert_eq!(lines[1], "--all");
+        assert_eq!(lines[2], "--profile");
+        assert_eq!(lines[3], "work");
+        assert_eq!(lines[4], "--config");
+        assert_eq!(
+            lines[5],
+            "developer_instructions=\"workspace instructions\""
+        );
+        assert_eq!(lines[6], "--cd");
+        assert_eq!(Path::new(lines[7]), root.as_path());
+        assert_eq!(lines[8], "--add-dir");
+        assert_eq!(Path::new(lines[9]), root.as_path());
+        assert_eq!(lines[10], "--add-dir");
+        assert_eq!(Path::new(lines[11]), secondary.as_path());
+
+        fs::remove_dir_all(root).expect("handoff root should be removable");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepares_resume_context_without_starting_a_new_thread() {
+        let root =
+            std::env::temp_dir().join(format!("trees-codex-picker-setup-{}", uuid::Uuid::now_v7()));
+        fs::create_dir_all(&root).expect("setup root should be created");
+        let capture = root.join("requests");
+        let script = format!(
+            r#"
+IFS= read -r request
+printf '%s\n' "$request" > '{capture}'
+printf '%s\n' '{{"id":1,"result":{{"codexHome":"/tmp/codex"}}}}'
+# Consume the initialized notification before reading the next request.
+IFS= read -r request
+IFS= read -r request
+printf '%s\n' "$request" >> '{capture}'
+printf '%s\n' '{{"id":2,"result":{{"project":{{"id":"project-id","name":"workspace","roots":[{{"path":"/workspace/one"}},{{"path":"/workspace/two"}}],"metadata":{{}}}}}}}}'
+IFS= read -r request
+printf '%s\n' "$request" >> '{capture}'
+printf '%s\n' '{{"id":3,"result":{{"config":{{"developer_instructions":"Keep user rules."}}}}}}'
+"#,
+            capture = capture.display()
+        );
+        let executable = fake_app_server(&root, &script);
+        let workspace = workspace_for_context();
+
+        let prepared = prepare_resume_with_app_server(&executable, &workspace, Vec::new())
+            .expect("resume setup should succeed");
+
+        assert_eq!(prepared.project_id, "project-id");
+        assert_eq!(prepared.cwd, PathBuf::from("/workspace"));
+        assert!(prepared.developer_instructions.contains("Keep user rules."));
+        let requests = fs::read_to_string(&capture).expect("requests should be captured");
+        assert!(requests.contains("initialize"));
+        assert!(requests.contains("project/create"));
+        assert!(requests.contains("config/read"));
+        assert!(!requests.contains("thread/start"));
+
+        fs::remove_dir_all(root).expect("setup root should be removable");
     }
 
     #[cfg(unix)]

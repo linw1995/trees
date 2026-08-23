@@ -33,15 +33,31 @@ fn run_create(arguments: trees::cli::CreateArgs) -> ExitCode {
 }
 
 fn run_codex(arguments: trees::cli::CodexArgs) -> ExitCode {
-    if arguments.subcommand.is_some() || !arguments.codex_args.is_empty() {
-        eprintln!("Error: native Codex handoff is not implemented yet");
-        return ExitCode::FAILURE;
-    }
+    let trees::cli::CodexArgs {
+        codex_bin,
+        subcommand,
+        codex_args,
+    } = arguments;
 
-    match trees::codex::launch::launch(trees::codex::launch::LaunchRequest {
-        workspace_path: std::path::PathBuf::from("."),
-        codex_bin: arguments.codex_bin,
-    }) {
+    let result = match subcommand {
+        None if !codex_args.is_empty() => {
+            eprintln!("Error: native Codex launch arguments are not implemented yet");
+            return ExitCode::FAILURE;
+        }
+        None => trees::codex::launch::launch(trees::codex::launch::LaunchRequest {
+            workspace_path: std::path::PathBuf::from("."),
+            codex_bin,
+        }),
+        Some(trees::cli::CodexSubcommand::Resume(resume)) => {
+            trees::codex::launch::resume(trees::codex::launch::ResumeRequest {
+                workspace_path: std::path::PathBuf::from("."),
+                codex_bin,
+                codex_args: resume.codex_args,
+            })
+        }
+    };
+
+    match result {
         Ok(status) => exit_code(status),
         Err(error) => {
             eprintln!("Error: {error}");
