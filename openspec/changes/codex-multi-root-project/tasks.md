@@ -20,7 +20,7 @@
 
 ## 4. Documentation and Verification
 
-- [ ] 4.1 Document `trees codex <workspace-path>`, managed-worktree root behavior, project reuse, executable override, and the terminal-only launch boundary in `README.md`; verify the examples match the implemented CLI help
+- [x] 4.1 Document `trees codex <workspace-path>`, managed-worktree root behavior, project reuse, executable override, and the terminal-only launch boundary in `README.md`; verify the examples match the implemented CLI help
 - [ ] 4.2 Add integration coverage for repeated launch, changed roots, external project deletion, externally removed worktrees, multiple Codex homes, and user security defaults; verify the full scenario suite passes without requiring real Codex authentication
 - [ ] 4.3 Run `openspec validate codex-multi-root-project --strict` and resolve all structural or scenario errors
 - [ ] 4.4 Run `cargo test --all-targets --all-features`, `prek -a`, and `nix flake check --no-build`; verify the repository remains clean apart from the intended change artifacts

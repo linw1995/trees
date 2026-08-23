@@ -41,6 +41,22 @@ trees create ./workspace --repo /path/to/api --repo /path/to/web
 
 Each repository becomes a direct child worktree under `./workspace`. The source repositories remain at their original paths.
 
+Launch an interactive Codex session for a managed workspace:
+
+```sh
+trees codex ./workspace
+```
+
+Trees reconciles the workspace with Git before launching Codex. The Codex project roots are the managed worktree directories under `./workspace`, in deterministic order; the original repository paths are not used as roots. Repeated launches reuse the workspace's Codex project, synchronize its complete root list, and create a new durable thread for each session.
+
+By default, Trees resolves `codex` from `PATH`. Use `--codex-bin` when Codex is installed at a custom path or when selecting a controlled executable:
+
+```sh
+trees codex ./workspace --codex-bin /path/to/codex
+```
+
+The setup app-server is short-lived. After the project and thread are persisted, Trees hands the thread to `codex resume` and keeps the terminal attached to Codex. This command does not open or navigate the Codex Desktop UI. Codex authentication, model, approval, and sandbox settings are inherited from the user's normal configuration; Trees does not add bypass or unrestricted-access flags.
+
 ## Development
 
 Enter the reproducible development environment with Nix:
