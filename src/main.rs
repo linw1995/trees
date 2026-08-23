@@ -33,8 +33,13 @@ fn run_create(arguments: trees::cli::CreateArgs) -> ExitCode {
 }
 
 fn run_codex(arguments: trees::cli::CodexArgs) -> ExitCode {
+    if arguments.subcommand.is_some() || !arguments.codex_args.is_empty() {
+        eprintln!("Error: native Codex handoff is not implemented yet");
+        return ExitCode::FAILURE;
+    }
+
     match trees::codex::launch::launch(trees::codex::launch::LaunchRequest {
-        workspace_path: arguments.workspace_path,
+        workspace_path: std::path::PathBuf::from("."),
         codex_bin: arguments.codex_bin,
     }) {
         Ok(status) => exit_code(status),

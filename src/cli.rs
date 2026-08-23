@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
@@ -30,11 +31,38 @@ pub struct CreateArgs {
 
 #[derive(Debug, Args)]
 pub struct CodexArgs {
-    #[arg(value_name = "WORKSPACE_PATH")]
-    pub workspace_path: PathBuf,
-
-    #[arg(long = "codex-bin", default_value = "codex", value_name = "PATH")]
+    #[arg(
+        long = "codex-bin",
+        default_value = "codex",
+        value_name = "PATH",
+        global = true
+    )]
     pub codex_bin: PathBuf,
+
+    #[command(subcommand)]
+    pub subcommand: Option<CodexSubcommand>,
+
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        value_name = "CODEX_ARG"
+    )]
+    pub codex_args: Vec<OsString>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum CodexSubcommand {
+    Resume(CodexResumeArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct CodexResumeArgs {
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        value_name = "CODEX_ARG"
+    )]
+    pub codex_args: Vec<OsString>,
 }
 
 #[cfg(test)]
@@ -72,25 +100,73 @@ mod tests {
     }
 
     #[test]
-    fn parses_codex_workspace_and_executable_override() {
+    fn parses_codex_arguments_without_separator() {
         let cli = Cli::try_parse_from([
             "trees",
             "codex",
-            "/tmp/workspace",
             "--codex-bin",
             "/opt/codex",
+            "-C",
+            "/tmp/workspace",
+            "--model",
+            "gpt-5.5",
+            "--add-dir",
+            "/tmp/extra",
         ])
         .expect("codex command should parse");
 
         let Command::Codex(arguments) = cli.command else {
             panic!("expected codex command");
         };
-        assert_eq!(arguments.workspace_path, PathBuf::from("/tmp/workspace"));
+        assert!(arguments.subcommand.is_none());
+        assert_eq!(
+            arguments.codex_args,
+            [
+                OsString::from("-C"),
+                OsString::from("/tmp/workspace"),
+                OsString::from("--model"),
+                OsString::from("gpt-5.5"),
+                OsString::from("--add-dir"),
+                OsString::from("/tmp/extra")
+            ]
+        );
         assert_eq!(arguments.codex_bin, PathBuf::from("/opt/codex"));
     }
 
     #[test]
-    fn requires_codex_workspace_path() {
-        assert!(Cli::try_parse_from(["trees", "codex"]).is_err());
+    fn parses_codex_resume_arguments_without_separator() {
+        let cli = Cli::try_parse_from([
+            "trees",
+            "codex",
+            "resume",
+            "-C",
+            "/tmp/workspace",
+            "--all",
+            "--profile",
+            "work",
+        ])
+        .expect("codex resume command should parse");
+
+        let Command::Codex(arguments) = cli.command else {
+            panic!("expected codex command");
+        };
+        let Some(CodexSubcommand::Resume(resume)) = arguments.subcommand else {
+            panic!("expected resume subcommand");
+        };
+        assert_eq!(
+            resume.codex_args,
+            [
+                OsString::from("-C"),
+                OsString::from("/tmp/workspace"),
+                OsString::from("--all"),
+                OsString::from("--profile"),
+                OsString::from("work")
+            ]
+        );
+    }
+
+    #[test]
+    fn allows_codex_without_a_workspace_argument() {
+        assert!(Cli::try_parse_from(["trees", "codex"]).is_ok());
     }
 }
