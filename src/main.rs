@@ -39,18 +39,30 @@ fn run_codex(arguments: trees::cli::CodexArgs) -> ExitCode {
         codex_args,
     } = arguments;
 
+    let native_args = match &subcommand {
+        None => &codex_args,
+        Some(trees::cli::CodexSubcommand::Resume(resume)) => &resume.codex_args,
+    };
+    let workspace_path = match trees::codex::args::workspace_path_from_codex_args(native_args) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     let result = match subcommand {
         None if !codex_args.is_empty() => {
             eprintln!("Error: native Codex launch arguments are not implemented yet");
             return ExitCode::FAILURE;
         }
         None => trees::codex::launch::launch(trees::codex::launch::LaunchRequest {
-            workspace_path: std::path::PathBuf::from("."),
+            workspace_path,
             codex_bin,
         }),
         Some(trees::cli::CodexSubcommand::Resume(resume)) => {
             trees::codex::launch::resume(trees::codex::launch::ResumeRequest {
-                workspace_path: std::path::PathBuf::from("."),
+                workspace_path,
                 codex_bin,
                 codex_args: resume.codex_args,
             })
