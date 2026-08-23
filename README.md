@@ -57,6 +57,15 @@ trees codex ./workspace --codex-bin /path/to/codex
 
 The setup app-server is short-lived. After the project and thread are persisted, Trees hands the thread to `codex resume` and keeps the terminal attached to Codex. This command does not open or navigate the Codex Desktop UI. Codex authentication, model, approval, and sandbox settings are inherited from the user's normal configuration; Trees does not add bypass or unrestricted-access flags.
 
+Verify the Project roots and optional thread assignment without issuing mutating Trees or Codex RPCs:
+
+```sh
+python3 scripts/check-codex-project.py ./workspace
+python3 scripts/check-codex-project.py ./workspace --thread-id THREAD_ID
+```
+
+The checker compares Trees' managed worktree paths with the Codex Project's persisted roots. It separately checks that an optional thread's `projectId` points to that Project; it does not use `runtimeWorkspaceRoots` as a substitute for Project roots.
+
 ## Development
 
 Enter the reproducible development environment with Nix:
