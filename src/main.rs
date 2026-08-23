@@ -11,6 +11,10 @@ fn main() -> ExitCode {
                 repositories: arguments.repositories,
             })
         }
+        trees::cli::Command::Codex(_) => {
+            eprintln!("Error: codex command is not implemented yet");
+            return ExitCode::FAILURE;
+        }
     };
 
     match result {
