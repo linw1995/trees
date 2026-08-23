@@ -52,13 +52,10 @@ fn run_codex(arguments: trees::cli::CodexArgs) -> ExitCode {
     };
 
     let result = match subcommand {
-        None if !codex_args.is_empty() => {
-            eprintln!("Error: native Codex launch arguments are not implemented yet");
-            return ExitCode::FAILURE;
-        }
         None => trees::codex::launch::launch(trees::codex::launch::LaunchRequest {
             workspace_path,
             codex_bin,
+            codex_args,
         }),
         Some(trees::cli::CodexSubcommand::Resume(resume)) => {
             trees::codex::launch::resume(trees::codex::launch::ResumeRequest {

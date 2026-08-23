@@ -21,7 +21,7 @@
 - [x] 3.6 Append a model-visible logical monorepo manifest to effective developer instructions before `thread/start` and resend it through the `resume` handoff; verify all ordered roots are named and existing instructions are preserved
 - [x] 3.7 Add `trees codex resume [codex-args...]` with native picker delegation without a session identifier, workspace locking, and reuse of the complete resume handoff context; verify picker invocation, no-session setup, and lock-conflict behavior
 - [x] 3.8 Derive the workspace for both commands from forwarded `-C`/`--cd` values, including separated and equals forms, with current-directory fallback and final-Codex-consistent repeated-value semantics
-- [ ] 3.9 Forward native Codex arguments directly without a separator; parse and merge repeatable `--add-dir`, developer-instructions, and native selection arguments, preserve the original argument vector, and verify merged roots and prompts reach the final Codex process unchanged
+- [x] 3.9 Forward native Codex arguments directly without a separator; parse and merge repeatable `--add-dir`, developer-instructions, and native selection arguments, preserve the original argument vector, and verify merged roots and prompts reach the final Codex process unchanged
 
 ## 4. Documentation and Verification
 

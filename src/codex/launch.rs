@@ -8,6 +8,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::codex::app_server::{AppServerError, AppServerProcess, RpcClient};
+use crate::codex::args::merge_codex_args;
 use crate::codex::lock::{WorkspaceLock, WorkspaceLockError};
 use crate::codex::project_sync::{ProjectSession, ProjectSyncError, ProjectSynchronizer};
 use crate::codex::thread::{start_thread_with_instructions, ThreadStartError};
@@ -20,6 +21,7 @@ const SETUP_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct LaunchRequest {
     pub workspace_path: PathBuf,
     pub codex_bin: PathBuf,
+    pub codex_args: Vec<OsString>,
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +39,7 @@ pub struct PreparedLaunch {
     pub cwd: PathBuf,
     pub runtime_roots: Vec<PathBuf>,
     pub developer_instructions: String,
+    pub codex_args: Vec<OsString>,
 }
 
 #[derive(Debug, Clone)]
@@ -67,7 +70,7 @@ pub fn prepare_launch(request: LaunchRequest) -> Result<PreparedLaunch, CodexLau
     let mut connection = crate::database::open_default().map_err(CodexLaunchError::DatabaseOpen)?;
     let workspace =
         prepare(&mut connection, &request.workspace_path).map_err(CodexLaunchError::Workspace)?;
-    prepare_with_app_server(&request.codex_bin, &workspace)
+    prepare_with_app_server_and_args(&request.codex_bin, &workspace, request.codex_args)
 }
 
 pub fn prepare_resume(request: ResumeRequest) -> Result<PreparedResume, CodexLaunchError> {
@@ -77,9 +80,18 @@ pub fn prepare_resume(request: ResumeRequest) -> Result<PreparedResume, CodexLau
     prepare_resume_with_app_server(&request.codex_bin, &workspace, request.codex_args)
 }
 
+#[cfg(test)]
 fn prepare_with_app_server(
     codex_bin: &Path,
     workspace: &PreparedWorkspace,
+) -> Result<PreparedLaunch, CodexLaunchError> {
+    prepare_with_app_server_and_args(codex_bin, workspace, Vec::new())
+}
+
+fn prepare_with_app_server_and_args(
+    codex_bin: &Path,
+    workspace: &PreparedWorkspace,
+    codex_args: Vec<OsString>,
 ) -> Result<PreparedLaunch, CodexLaunchError> {
     let mut app_server = AppServerProcess::spawn(codex_bin).map_err(CodexLaunchError::AppServer)?;
     let setup_result = (|| {
@@ -102,6 +114,7 @@ fn prepare_with_app_server(
             project,
             thread.thread.id,
             developer_instructions,
+            codex_args,
         ))
     })();
 
@@ -209,6 +222,7 @@ fn prepared_launch(
     project: ProjectSession,
     thread_id: String,
     developer_instructions: String,
+    codex_args: Vec<OsString>,
 ) -> PreparedLaunch {
     PreparedLaunch {
         codex_home: project.codex_home,
@@ -217,6 +231,7 @@ fn prepared_launch(
         cwd: workspace.path.as_path().to_path_buf(),
         runtime_roots: workspace.roots.clone(),
         developer_instructions,
+        codex_args,
     }
 }
 
@@ -224,23 +239,16 @@ pub fn handoff(
     codex_bin: &Path,
     prepared: &PreparedLaunch,
 ) -> Result<ExitStatus, CodexLaunchError> {
+    let codex_args = merge_codex_args(
+        &prepared.codex_args,
+        &prepared.cwd,
+        &prepared.runtime_roots,
+        &prepared.developer_instructions,
+    )
+    .map_err(CodexLaunchError::Arguments)?;
     let mut command = Command::new(codex_bin);
-    command
-        .arg("resume")
-        .arg(&prepared.thread_id)
-        .arg("--config")
-        .arg(developer_instructions_config(
-            &prepared.developer_instructions,
-        ))
-        .arg("--cd")
-        .arg(&prepared.cwd);
-
-    // The CLI opens a new app-server connection for `resume` and does not carry
-    // thread/start's developer instructions or runtime roots over automatically.
-    // Re-send both the model context and all managed worktrees at this boundary.
-    for root in &prepared.runtime_roots {
-        command.arg("--add-dir").arg(root);
-    }
+    command.arg("resume").arg(&prepared.thread_id);
+    command.args(codex_args);
 
     command
         .current_dir(&prepared.cwd)
@@ -257,19 +265,15 @@ pub fn resume_handoff(
     codex_bin: &Path,
     prepared: &PreparedResume,
 ) -> Result<ExitStatus, CodexLaunchError> {
+    let codex_args = merge_codex_args(
+        &prepared.codex_args,
+        &prepared.cwd,
+        &prepared.runtime_roots,
+        &prepared.developer_instructions,
+    )
+    .map_err(CodexLaunchError::Arguments)?;
     let mut command = Command::new(codex_bin);
-    command.arg("resume").args(&prepared.codex_args);
-    command
-        .arg("--config")
-        .arg(developer_instructions_config(
-            &prepared.developer_instructions,
-        ))
-        .arg("--cd")
-        .arg(&prepared.cwd);
-
-    for root in &prepared.runtime_roots {
-        command.arg("--add-dir").arg(root);
-    }
+    command.arg("resume").args(codex_args);
 
     command
         .current_dir(&prepared.cwd)
@@ -281,18 +285,12 @@ pub fn resume_handoff(
         })
 }
 
-fn developer_instructions_config(instructions: &str) -> String {
-    format!(
-        "developer_instructions={}",
-        serde_json::to_string(instructions).expect("string serialization should not fail")
-    )
-}
-
 #[derive(Debug)]
 pub enum CodexLaunchError {
     DatabaseOpen(crate::database::DatabaseError),
     Workspace(WorkspacePreparationError),
     Lock(WorkspaceLockError),
+    Arguments(crate::codex::args::CodexArgumentError),
     AppServer(AppServerError),
     Config(AppServerError),
     InvalidConfigResponse(String),
@@ -325,6 +323,7 @@ impl fmt::Display for CodexLaunchError {
             }
             Self::Workspace(error) => error.fmt(formatter),
             Self::Lock(error) => error.fmt(formatter),
+            Self::Arguments(error) => error.fmt(formatter),
             Self::AppServer(error) => error.fmt(formatter),
             Self::Config(error) => error.fmt(formatter),
             Self::InvalidConfigResponse(message) => formatter.write_str(message),
@@ -372,6 +371,7 @@ impl std::error::Error for CodexLaunchError {
             Self::DatabaseOpen(error) => Some(error),
             Self::Workspace(error) => Some(error),
             Self::Lock(error) => Some(error),
+            Self::Arguments(error) => Some(error),
             Self::AppServer(error) => Some(error),
             Self::Config(error) => Some(error),
             Self::Project(error) => Some(error),
@@ -596,6 +596,7 @@ printf '%s\n' '{"id":4,"result":{"thread":{"id":"thread-id"}}}'
             cwd: root.clone(),
             runtime_roots: vec![root.join("one"), secondary.clone()],
             developer_instructions: "workspace instructions".to_owned(),
+            codex_args: vec![OsString::from("--model"), OsString::from("gpt-5.5")],
         };
         let status = handoff(&executable, &prepared).expect("handoff should start");
 
@@ -605,19 +606,21 @@ printf '%s\n' '{"id":4,"result":{"thread":{"id":"thread-id"}}}'
         let canonical_root = fs::canonicalize(&root).expect("handoff root should be canonical");
         assert_eq!(lines[0], "resume");
         assert_eq!(lines[1], "thread-id");
-        assert_eq!(lines[2], "--config");
-        assert_eq!(
-            lines[3],
-            "developer_instructions=\"workspace instructions\""
-        );
+        assert_eq!(lines[2], "--model");
+        assert_eq!(lines[3], "gpt-5.5");
         assert_eq!(lines[4], "--cd");
         assert_eq!(Path::new(lines[5]), root.as_path());
         assert_eq!(lines[6], "--add-dir");
         assert_eq!(Path::new(lines[7]), first.as_path());
         assert_eq!(lines[8], "--add-dir");
         assert_eq!(Path::new(lines[9]), secondary.as_path());
-        assert_eq!(Path::new(&lines[10][4..]), canonical_root.as_path());
-        assert!(lines[11].starts_with("PATH="));
+        assert_eq!(lines[10], "--config");
+        assert_eq!(
+            lines[11],
+            "developer_instructions=\"workspace instructions\""
+        );
+        assert_eq!(Path::new(&lines[12][4..]), canonical_root.as_path());
+        assert!(lines[13].starts_with("PATH="));
 
         fs::remove_dir_all(root).expect("handoff test root should be removable");
     }
@@ -673,17 +676,17 @@ printf '%s\n' '{"id":4,"result":{"thread":{"id":"thread-id"}}}'
         assert_eq!(lines[1], "--all");
         assert_eq!(lines[2], "--profile");
         assert_eq!(lines[3], "work");
-        assert_eq!(lines[4], "--config");
-        assert_eq!(
-            lines[5],
-            "developer_instructions=\"workspace instructions\""
-        );
-        assert_eq!(lines[6], "--cd");
+        assert_eq!(lines[4], "--cd");
+        assert_eq!(Path::new(lines[5]), root.as_path());
+        assert_eq!(lines[6], "--add-dir");
         assert_eq!(Path::new(lines[7]), root.as_path());
         assert_eq!(lines[8], "--add-dir");
-        assert_eq!(Path::new(lines[9]), root.as_path());
-        assert_eq!(lines[10], "--add-dir");
-        assert_eq!(Path::new(lines[11]), secondary.as_path());
+        assert_eq!(Path::new(lines[9]), secondary.as_path());
+        assert_eq!(lines[10], "--config");
+        assert_eq!(
+            lines[11],
+            "developer_instructions=\"workspace instructions\""
+        );
 
         fs::remove_dir_all(root).expect("handoff root should be removable");
     }
@@ -813,6 +816,7 @@ printf '%s\n' 'not-json'
             cwd: root.clone(),
             runtime_roots: vec![root.join("one")],
             developer_instructions: "workspace instructions".to_owned(),
+            codex_args: Vec::new(),
         };
         let executable = root.join("missing-codex");
 
