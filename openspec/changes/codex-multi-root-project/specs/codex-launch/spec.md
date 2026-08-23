@@ -87,12 +87,20 @@ After project synchronization succeeds, the command SHALL start a durable Codex 
 
 ### Requirement: Hand off to the Interactive Codex Client
 
-The command SHALL hand the newly started thread to the configured Codex executable by invoking its interactive resume command with the returned thread identifier. By default, the executable SHALL be resolved as `codex` from `PATH`; an explicit executable override SHALL be supported. The command SHALL return the Codex client's exit status.
+The command SHALL hand the newly started thread to the configured Codex
+executable by invoking its interactive resume command with the returned thread
+identifier. It SHALL pass the first worktree root as the resume command's
+`--cd` value and SHALL pass each additional worktree root as an `--add-dir`
+value. The resume client opens a new app-server connection and does not inherit
+runtime roots from `thread/start`. By default, the executable SHALL be resolved
+as `codex` from `PATH`; an explicit executable override SHALL be supported. The
+command SHALL return the Codex client's exit status.
 
 #### Scenario: Resume the Created Thread
 
 - **WHEN** app-server returns a durable thread identifier
-- **THEN** the command invokes the Codex client's resume operation for that identifier and keeps the user's terminal attached to the interactive session
+- **THEN** the command invokes the Codex client's resume operation for that identifier with the primary root as `--cd` and each additional worktree root as `--add-dir`
+  while keeping the user's terminal attached to the interactive session
 
 #### Scenario: Codex Executable Is Missing
 

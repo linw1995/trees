@@ -57,7 +57,17 @@ Reusing it would require Trees to implement the socket handshake, framing, recon
 
 ### Codex Resume Handoff
 
-After `thread/start` returns, Trees starts the same executable with `resume <thread-id>` and attaches the current terminal. The setup process is no longer needed because the project and thread are persisted in the shared Codex home. The launcher sets the process working directory to the first worktree root; the thread request also carries all worktree roots as runtime workspace roots.
+After `thread/start` returns, Trees starts the same executable with
+`resume <thread-id>` and attaches the current terminal. The setup process is
+no longer needed because the project and thread are persisted in the shared
+Codex home. The launcher sets the process working directory and explicit
+`--cd` value to the first worktree root, then passes each additional worktree
+root as `--add-dir`.
+
+This repetition is intentional. The CLI opens a new app-server connection for
+`resume` and does not automatically carry `runtimeWorkspaceRoots` from the
+earlier `thread/start` request. The thread request and the handoff therefore
+both carry the complete worktree root set.
 
 The user’s normal Codex configuration remains authoritative for model, authentication, approval, and sandbox policy. Trees does not add bypass, danger-full-access, or automatic approval arguments. If a configured policy cannot authorize a root, Codex’s normal permission behavior remains in effect.
 
