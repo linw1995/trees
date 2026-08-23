@@ -241,3 +241,40 @@ impl From<OperationIntentError> for WorkspacePreparationError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_preparation_errors_and_exposes_sources() {
+        let path = PathBuf::from("/tmp/workspace");
+        let canonical_path = CanonicalPath::from_absolute(&path).expect("path should be absolute");
+        let json_error =
+            crate::domain::JsonDocument::parse("not-json").expect_err("JSON should be invalid");
+        let errors = [
+            WorkspacePreparationError::Validation(ValidationError::NoRepositories),
+            WorkspacePreparationError::Database(DieselError::NotFound),
+            WorkspacePreparationError::Reconciliation(ReconciliationError::Database(
+                DieselError::NotFound,
+            )),
+            WorkspacePreparationError::Json(json_error),
+            WorkspacePreparationError::NotManaged(canonical_path.clone()),
+            WorkspacePreparationError::NotReady {
+                path: canonical_path,
+                state: WorkspaceState::Degraded,
+            },
+            WorkspacePreparationError::OperationActive(WorkspaceId::new()),
+            WorkspacePreparationError::NoWorktrees,
+            WorkspacePreparationError::InvalidWorktree {
+                path,
+                reason: "missing".to_owned(),
+            },
+        ];
+
+        for error in errors {
+            assert!(!error.to_string().is_empty());
+            let _ = std::error::Error::source(&error);
+        }
+    }
+}

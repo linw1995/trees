@@ -350,4 +350,47 @@ printf '%s\n' 'not-json'
         assert!(message.contains("missing-codex"));
         fs::remove_dir_all(root).expect("test root should be removable");
     }
+
+    #[test]
+    fn formats_launch_errors_and_exposes_sources() {
+        let errors = [
+            CodexLaunchError::DatabaseOpen(crate::database::DatabaseError::Path(
+                crate::paths::PathError::HomeDirectoryUnavailable,
+            )),
+            CodexLaunchError::Workspace(WorkspacePreparationError::NoWorktrees),
+            CodexLaunchError::AppServer(AppServerError::Transport("closed".to_owned())),
+            CodexLaunchError::Project(ProjectSyncError::InvalidInput("invalid project".to_owned())),
+            CodexLaunchError::Thread(ThreadStartError::InvalidInput("invalid thread".to_owned())),
+            CodexLaunchError::Shutdown(AppServerError::Transport("closed".to_owned())),
+            CodexLaunchError::Handoff {
+                executable: PathBuf::from("codex"),
+                project_id: "project-id".to_owned(),
+                thread_id: "thread-id".to_owned(),
+                source: io::Error::new(io::ErrorKind::NotFound, "missing"),
+            },
+            CodexLaunchError::SetupAndShutdown {
+                setup: Box::new(CodexLaunchError::Thread(ThreadStartError::InvalidInput(
+                    "invalid thread".to_owned(),
+                ))),
+                shutdown: AppServerError::Transport("closed".to_owned()),
+            },
+        ];
+
+        for error in errors {
+            assert!(!error.to_string().is_empty());
+            let _ = std::error::Error::source(&error);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn formats_setup_process_exit_error() {
+        let status = std::process::Command::new("false")
+            .status()
+            .expect("false should run");
+        let error = CodexLaunchError::SetupProcessExit(status);
+
+        assert!(error.to_string().contains("setup app-server"));
+        assert!(std::error::Error::source(&error).is_none());
+    }
 }

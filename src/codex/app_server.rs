@@ -462,4 +462,43 @@ mod tests {
 
         assert!(matches!(error, AppServerError::Timeout { .. }));
     }
+
+    #[test]
+    fn formats_app_server_errors_and_exposes_sources() {
+        let errors = [
+            AppServerError::Spawn {
+                executable: PathBuf::from("codex"),
+                source: io::Error::new(io::ErrorKind::NotFound, "missing"),
+            },
+            AppServerError::Io(io::Error::new(io::ErrorKind::BrokenPipe, "closed")),
+            AppServerError::Json(
+                serde_json::from_str::<Value>("not-json").expect_err("JSON should be invalid"),
+            ),
+            AppServerError::MalformedMessage {
+                method: "initialize".to_owned(),
+                line: "not-json".to_owned(),
+                source: serde_json::from_str::<Value>("not-json")
+                    .expect_err("JSON should be invalid"),
+            },
+            AppServerError::Remote {
+                method: "project/create".to_owned(),
+                error: "method not found".to_owned(),
+            },
+            AppServerError::Timeout {
+                method: "initialize".to_owned(),
+            },
+            AppServerError::Transport("closed".to_owned()),
+            AppServerError::UnexpectedServerRequest {
+                method: "thread/start".to_owned(),
+            },
+            AppServerError::ShutdownTimeout {
+                stderr: "failed".to_owned(),
+            },
+        ];
+
+        for error in errors {
+            assert!(!error.to_string().is_empty());
+            let _ = std::error::Error::source(&error);
+        }
+    }
 }
