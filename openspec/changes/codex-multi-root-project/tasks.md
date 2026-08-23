@@ -29,4 +29,4 @@
 - [x] 4.2 Add integration coverage for repeated launch, changed roots, external project deletion, externally removed worktrees, multiple Codex homes, user security defaults, and model-visible multi-repository context; verify the full scenario suite passes without requiring real Codex authentication
 - [x] 4.3 Run `openspec validate codex-multi-root-project --strict` and resolve all structural or scenario errors
 - [x] 4.4 Run `cargo test --all-targets --all-features`, `prek -a`, and `nix flake check --no-build`; verify the repository remains clean apart from the intended change artifacts
-- [ ] 4.5 Document the no-identifier `trees codex resume [codex-args...]` flow, direct native argument forwarding, workspace derivation from `-C`/`--cd`, and replace the future-resume limitation wording with the managed resume path; verify the examples match the final CLI help
+- [x] 4.5 Document the no-identifier `trees codex resume [codex-args...]` flow, direct native argument forwarding, workspace derivation from `-C`/`--cd`, and replace the future-resume limitation wording with the managed resume path; verify the examples match the final CLI help
