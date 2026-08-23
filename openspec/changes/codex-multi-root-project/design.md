@@ -68,13 +68,15 @@ After `thread/start` returns, Trees starts the same executable with
 `resume <thread-id>` and attaches the current terminal. The setup process is
 no longer needed because the project and thread are persisted in the shared
 Codex home. The launcher sets the process working directory and explicit
-`--cd` value to the workspace container, then passes every managed worktree
-root as `--add-dir`.
+`--cd` value to the workspace container, passes every managed worktree root as
+`--add-dir`, and passes the same merged monorepo context as a
+`developer_instructions` configuration override.
 
 This repetition is intentional. The CLI opens a new app-server connection for
-`resume` and does not automatically carry `runtimeWorkspaceRoots` from the
-earlier `thread/start` request. The thread request and the handoff therefore
-both carry the complete worktree root set.
+`resume` and does not automatically carry `runtimeWorkspaceRoots` or
+request-level developer instructions from the earlier `thread/start` request.
+The thread request and the handoff therefore both carry the complete workspace
+context.
 
 The user’s normal Codex configuration remains authoritative for model, authentication, approval, and sandbox policy. Trees does not add bypass, danger-full-access, or automatic approval arguments. If a configured policy cannot authorize a root, Codex’s normal permission behavior remains in effect.
 

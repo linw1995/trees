@@ -27,6 +27,7 @@ pub struct PreparedLaunch {
     pub thread_id: String,
     pub cwd: PathBuf,
     pub runtime_roots: Vec<PathBuf>,
+    pub developer_instructions: String,
 }
 
 pub fn launch(request: LaunchRequest) -> Result<ExitStatus, CodexLaunchError> {
@@ -66,6 +67,7 @@ fn prepare_with_app_server(
             workspace,
             project,
             thread.thread.id,
+            developer_instructions,
         ))
     })();
 
@@ -137,6 +139,7 @@ fn prepared_launch(
     workspace: &PreparedWorkspace,
     project: ProjectSession,
     thread_id: String,
+    developer_instructions: String,
 ) -> PreparedLaunch {
     PreparedLaunch {
         codex_home: project.codex_home,
@@ -144,6 +147,7 @@ fn prepared_launch(
         thread_id,
         cwd: workspace.path.as_path().to_path_buf(),
         runtime_roots: workspace.roots.clone(),
+        developer_instructions,
     }
 }
 
@@ -155,12 +159,16 @@ pub fn handoff(
     command
         .arg("resume")
         .arg(&prepared.thread_id)
+        .arg("--config")
+        .arg(developer_instructions_config(
+            &prepared.developer_instructions,
+        ))
         .arg("--cd")
         .arg(&prepared.cwd);
 
     // The CLI opens a new app-server connection for `resume` and does not carry
-    // runtimeWorkspaceRoots over from the earlier thread/start request. The
-    // workspace container is the cwd, so every managed worktree is additional.
+    // thread/start's developer instructions or runtime roots over automatically.
+    // Re-send both the model context and all managed worktrees at this boundary.
     for root in &prepared.runtime_roots {
         command.arg("--add-dir").arg(root);
     }
@@ -174,6 +182,13 @@ pub fn handoff(
             thread_id: prepared.thread_id.clone(),
             source,
         })
+}
+
+fn developer_instructions_config(instructions: &str) -> String {
+    format!(
+        "developer_instructions={}",
+        serde_json::to_string(instructions).expect("string serialization should not fail")
+    )
 }
 
 #[derive(Debug)]
@@ -465,6 +480,7 @@ printf '%s\n' '{"id":4,"result":{"thread":{"id":"thread-id"}}}'
             thread_id: "thread-id".to_owned(),
             cwd: root.clone(),
             runtime_roots: vec![root.join("one"), secondary.clone()],
+            developer_instructions: "workspace instructions".to_owned(),
         };
         let status = handoff(&executable, &prepared).expect("handoff should start");
 
@@ -474,14 +490,19 @@ printf '%s\n' '{"id":4,"result":{"thread":{"id":"thread-id"}}}'
         let canonical_root = fs::canonicalize(&root).expect("handoff root should be canonical");
         assert_eq!(lines[0], "resume");
         assert_eq!(lines[1], "thread-id");
-        assert_eq!(lines[2], "--cd");
-        assert_eq!(Path::new(lines[3]), root.as_path());
-        assert_eq!(lines[4], "--add-dir");
-        assert_eq!(Path::new(lines[5]), first.as_path());
+        assert_eq!(lines[2], "--config");
+        assert_eq!(
+            lines[3],
+            "developer_instructions=\"workspace instructions\""
+        );
+        assert_eq!(lines[4], "--cd");
+        assert_eq!(Path::new(lines[5]), root.as_path());
         assert_eq!(lines[6], "--add-dir");
-        assert_eq!(Path::new(lines[7]), secondary.as_path());
-        assert_eq!(Path::new(&lines[8][4..]), canonical_root.as_path());
-        assert!(lines[9].starts_with("PATH="));
+        assert_eq!(Path::new(lines[7]), first.as_path());
+        assert_eq!(lines[8], "--add-dir");
+        assert_eq!(Path::new(lines[9]), secondary.as_path());
+        assert_eq!(Path::new(&lines[10][4..]), canonical_root.as_path());
+        assert!(lines[11].starts_with("PATH="));
 
         fs::remove_dir_all(root).expect("handoff test root should be removable");
     }
@@ -569,6 +590,7 @@ printf '%s\n' 'not-json'
             thread_id: "thread-id".to_owned(),
             cwd: root.clone(),
             runtime_roots: vec![root.join("one")],
+            developer_instructions: "workspace instructions".to_owned(),
         };
         let executable = root.join("missing-codex");
 

@@ -104,17 +104,19 @@ Before starting the thread, the command SHALL obtain the effective user develope
 The command SHALL hand the newly started thread to the configured Codex
 executable by invoking its interactive resume command with the returned thread
 identifier. It SHALL pass the workspace container as the resume command's
-`--cd` value and SHALL pass every managed worktree root as an `--add-dir`
-value. The resume client opens a new app-server connection and does not inherit
-runtime roots from `thread/start`. By default, the executable SHALL be resolved
-as `codex` from `PATH`; an explicit executable override SHALL be supported. The
-command SHALL return the Codex client's exit status.
+`--cd` value, every managed worktree root as an `--add-dir` value, and the
+merged logical monorepo context as a `developer_instructions` configuration override.
+The resume client opens a new app-server connection and does not inherit
+runtime roots or request-level developer instructions from `thread/start`. By
+default, the executable SHALL be resolved as `codex` from `PATH`; an explicit
+executable override SHALL be supported. The command SHALL return the Codex
+client's exit status.
 
 #### Scenario: Resume the Created Thread
 
 - **WHEN** app-server returns a durable thread identifier
 - **THEN** the command invokes the Codex client's resume operation for that identifier with the workspace container as `--cd` and every worktree root as `--add-dir`
-  while keeping the user's terminal attached to the interactive session
+  It also passes the logical monorepo context as a developer instructions override while keeping the user's terminal attached
 
 #### Scenario: Codex Executable Is Missing
 
