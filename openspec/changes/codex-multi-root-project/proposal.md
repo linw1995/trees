@@ -4,7 +4,9 @@ Trees already persists the worktrees that make up a workspace, but users still h
 
 ## What Changes
 
-- Add a `trees codex <workspace-path>` subcommand with an optional Codex executable override for local installations and tests.
+- Add a `trees codex [codex-args...]` subcommand with an optional Codex executable override for local installations and tests; Trees derives the workspace from forwarded `-C`/`--cd` and defaults to the current directory.
+- Add `trees codex resume [codex-args...]`, with the same workspace derivation, to open the native Codex session picker without requiring users to copy an opaque thread identifier.
+- Forward native Codex arguments directly, without an extra `--` boundary, and merge managed `--add-dir` roots into the final invocation.
 - Validate that the target is a managed, ready workspace and derive project roots from its persisted worktree paths in deterministic order.
 - Use a deterministic app-server idempotency key and workspace ownership metadata so repeated launches reuse one Codex project without duplicating project identity in the Trees database.
 - Synchronize the Codex project through the experimental app-server protocol, including project creation, root replacement, and paginated recovery after external deletion.

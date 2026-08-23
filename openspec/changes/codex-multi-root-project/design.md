@@ -26,6 +26,45 @@ The current Codex app-server exposes experimental SQLite-backed project APIs, in
 
 ## Decisions
 
+### Derive the Workspace from Forwarded Codex Arguments
+
+Both `trees codex [codex-args...]` and `trees codex resume [codex-args...]`
+accept the native Codex argument vector directly; no extra `--` boundary is
+required. Trees scans the vector for `-C <DIR>`, `--cd <DIR>`, and
+`--cd=<DIR>` using the same left-to-right semantics as the final Codex CLI.
+The effective value identifies the managed workspace. When no `-C`/`--cd`
+argument is present, Trees resolves the current directory as the workspace.
+
+The original argument vector remains the basis of the final Codex invocation.
+Trees only consumes its own executable override and the `resume` wrapper
+subcommand, then adds the context required to restore the managed workspace.
+
+### Merge Native Codex Arguments into the Final Invocation
+
+Both commands pass native Codex arguments directly to the final interactive
+Codex process without shell re-parsing. For a fresh launch, Trees constructs
+`codex resume <new-thread-id>` and merges the forwarded arguments. For the
+resume subcommand, Trees constructs `codex resume` without a session
+identifier so the native picker remains the default; forwarded arguments may
+intentionally select another native mode, such as `--all` or `--last`.
+
+Trees parses the known path-bearing arguments and merges them instead of
+rejecting duplicates. The effective forwarded `--cd`/`-C` is both the
+workspace used for Trees reconciliation and the final Codex working directory;
+when absent, Trees injects the current workspace as the final Codex working
+directory. Forwarded `--add-dir` values are combined with all managed
+worktree roots, canonicalized, and deduplicated, with managed roots retained
+first. Forwarded
+developer-instructions configuration is merged before the Trees manifest is
+appended. Other native Codex options, prompts, and session selection flags
+are passed through unchanged. `--codex-bin` remains a Trees option and is
+never forwarded.
+
+If multiple forwarded `-C`/`--cd` values are supplied, Trees uses the same
+effective value that the final Codex CLI will use. This keeps workspace
+resolution, picker scope, and final runtime working directory aligned rather than creating
+two independent path layers.
+
 ### Use Managed Worktrees as Codex Roots
 
 The launcher reads `repo_worktrees.worktree_path` as the Codex project roots. These are the directories that Trees created for the workspace and are the paths Codex is allowed to modify. `source_path` remains repository provenance and is not passed as a project root. The existing deterministic worktree-path ordering is reused for root ordering so repeated launches produce the same project shape.
@@ -78,6 +117,35 @@ request-level developer instructions from the earlier `thread/start` request.
 The thread request and the handoff therefore both carry the complete workspace
 context.
 
+### Delegate Resume Selection to the Native Codex Picker
+
+`trees codex resume [codex-args...]` derives the workspace from the forwarded
+`-C`/`--cd` arguments using the same canonical rules as launch and defaults to
+the current directory. After reconciliation, the command synchronizes the
+Codex Project roots and prepares the runtime roots, then invokes the native
+`codex resume` command without a positional session identifier. This
+deliberately lets the Codex TUI display its normal session picker. Trees uses
+the effective workspace as the final `--cd`, merges every managed worktree as
+`--add-dir`, and passes the merged logical monorepo context as a configuration
+override.
+
+The native picker is scoped to the working directory by default, so the
+workspace container must be the thread working directory used by the
+fresh-launch path. Trees does not pass `--last` and
+does not pass `--all`: the former bypasses the picker, while the latter would
+show unrelated sessions outside this workspace. Trees also does not create a
+new thread when the picker has no matching session; the native client reports
+that state to the user.
+
+No Trees association table is required. The native picker owns session
+selection, while Trees owns workspace validation and restoration of runtime
+roots and developer context.
+
+The command acquires an ephemeral per-workspace process lock before workspace
+preparation and holds it until the interactive Codex client exits.
+The lock is not a Project or thread association and does not require a
+database migration; an operating-system process exit releases it.
+
 The user’s normal Codex configuration remains authoritative for model, authentication, approval, and sandbox policy. Trees does not add bypass, danger-full-access, or automatic approval arguments. If a configured policy cannot authorize a root, Codex’s normal permission behavior remains in effect.
 
 ### Keep External Setup Separate from Git Lifecycle Mutation
@@ -95,6 +163,10 @@ The Codex executable path is an optional command argument defaulting to `codex`.
 - [The Codex executable may not be installed or may be a different version] → Validate process startup before the handoff, report the configured path and standard error, and allow an explicit executable override for controlled environments.
 - [The setup process can be interrupted after external project creation] → Retry the deterministic idempotency key first; if recovery is needed, find the unique ownership metadata record before creating a replacement, and never delete an existing project from Trees.
 - [Runtime roots may not be writable under the user’s policy] → Preserve Codex’s configured permission behavior and surface the normal permission request/error instead of silently broadening access.
+- [A later native `codex resume` loses Trees runtime roots and workspace context] → Provide `trees codex resume [codex-args...]` as the managed restoration path and continue to document explicit `--cd`/`--add-dir` requirements for manual native resume.
+- [Existing threads were created with a different captured working directory] → Keep the managed picker scoped to the working directory for safety, explain that legacy sessions may not appear, and retain manual `codex resume --all` with explicit workspace roots as the escape hatch.
+- [Forwarded final Codex arguments may contain multiple working-directory values] → Use the same effective last-value semantics for workspace resolution and final handoff, and test separated, equals-form, and repeated `-C`/`--cd` spellings.
+- [Secondary repository instructions are not discovered from all runtime roots] → Inject the logical monorepo manifest, but document that native secondary-root `AGENTS.md` and project-hook discovery remains a Codex limitation.
 - [Desktop UI cannot be opened at an app-server project id] → Keep Desktop navigation out of this change and document the terminal `codex resume` handoff as the supported launch target.
 
 ## Migration Plan

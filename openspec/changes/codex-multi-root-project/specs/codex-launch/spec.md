@@ -6,12 +6,34 @@ This capability connects a managed Trees workspace to an interactive Codex sessi
 
 ### Requirement: Launch Codex for a Managed Workspace
 
-The CLI SHALL provide `trees codex <workspace-path>` and SHALL launch an interactive Codex session for the addressed workspace. The command SHALL resolve the workspace path using the same canonical path rules as other workspace operations and SHALL reconcile the workspace with Git metadata before deriving project roots.
+The CLI SHALL provide `trees codex [codex-args...]` and SHALL launch an
+interactive Codex session for the addressed workspace. Trees SHALL derive the
+workspace from the effective forwarded `-C <DIR>`, `--cd <DIR>`, or
+`--cd=<DIR>` argument using left-to-right Codex semantics. When no such
+argument is present, the command SHALL use the current directory. The command
+SHALL resolve the workspace path using the same canonical path rules as other
+workspace operations and SHALL reconcile the workspace with Git metadata
+before deriving project roots.
 
 #### Scenario: Launch from a Ready Workspace
 
-- **WHEN** the user invokes `trees codex <workspace-path>` for a managed workspace whose state is `ready`
+- **WHEN** the user invokes `trees codex --cd <workspace-path> --model <model>` for a managed workspace whose state is `ready`
 - **THEN** the command proceeds to project synchronization and Codex thread launch
+
+#### Scenario: Launch from the Current Directory
+
+- **WHEN** the user invokes `trees codex` from a managed workspace whose state is `ready`
+- **THEN** the command treats the current directory as the workspace path and proceeds to project synchronization and Codex thread launch
+
+#### Scenario: Derive the Workspace from the Short Codex Option
+
+- **WHEN** the user invokes `trees codex -C <workspace-path> --model <model>` for a managed workspace whose state is `ready`
+- **THEN** the command treats the forwarded option value as the workspace path, preserves the arguments, and proceeds to project synchronization and Codex thread launch
+
+#### Scenario: Forward Fresh-Launch Codex Arguments Without a Separator
+
+- **WHEN** the user invokes `trees codex --model <model> --sandbox <sandbox>`
+- **THEN** the command passes those arguments to the final interactive Codex invocation after the newly created thread is selected
 
 #### Scenario: Reject an Unknown Workspace
 
@@ -117,6 +139,81 @@ client's exit status.
 - **WHEN** app-server returns a durable thread identifier
 - **THEN** the command invokes the Codex client's resume operation for that identifier with the workspace container as `--cd` and every worktree root as `--add-dir`
   It also passes the logical monorepo context as a developer instructions override while keeping the user's terminal attached
+
+### Requirement: Resume Through the Native Codex Picker
+
+The CLI SHALL provide `trees codex resume [codex-args...]`. Trees SHALL derive
+the workspace from the effective forwarded `-C <DIR>`, `--cd <DIR>`, or
+`--cd=<DIR>` argument using the same left-to-right Codex semantics. When no
+such argument is present, the command SHALL use the current directory. The
+command SHALL reconcile and validate the managed workspace, synchronize the
+Codex Project roots using the same project preparation as fresh launch,
+prepare the complete ordered worktree roots, and invoke the native Codex
+`resume` command without a positional session identifier. It SHALL NOT call
+`thread/start` or select a thread through `thread/list`. The native Codex
+picker SHALL remain responsible for selecting the session. Trees SHALL use
+the effective workspace container as the default `--cd`, merge every managed
+worktree root into the final `--add-dir` set, and append the same logical
+monorepo developer-instructions override used by fresh launch.
+
+Trees SHALL NOT add `--last` or `--all` by default for this command. If the
+user forwards either option, Trees SHALL pass it through as an
+explicit request to change the native resume mode. Without those forwarded
+options, the native picker SHALL remain scoped to the working directory so
+that sessions created with the workspace container as their working directory
+are shown without exposing
+unrelated sessions from other workspaces. Trees SHALL NOT create a
+replacement thread when the picker has no matching session.
+
+The command SHALL acquire an ephemeral per-workspace process lock before
+workspace preparation and SHALL hold it through the interactive Codex
+client handoff. A lock conflict SHALL fail without starting another client.
+The lock SHALL NOT add a Trees database association or migration.
+
+#### Scenario: Open the Native Session Picker
+
+- **WHEN** the user invokes `trees codex resume` from a ready managed workspace
+- **THEN** the command invokes `codex resume` without a session identifier and the native Codex client displays its session picker
+
+#### Scenario: Resume an Explicit Workspace
+
+- **WHEN** the user invokes `trees codex resume --cd <workspace-path> --all` for a ready managed workspace
+- **THEN** the command resolves and validates that workspace before invoking the native session picker
+
+#### Scenario: Merge Final Codex Workspace Arguments
+
+- **WHEN** the user invokes `trees codex resume --cd <workspace-path>`
+- **THEN** Trees uses the option value to resolve the managed workspace and passes it as the default final Codex working directory together with every managed worktree root
+
+#### Scenario: Forward Resume Codex Arguments Without a Separator
+
+- **WHEN** the user invokes `trees codex resume --all --profile <profile>`
+- **THEN** the command passes those arguments to the native `codex resume` invocation while preserving the default picker unless the forwarded arguments intentionally select another native mode
+
+#### Scenario: Preserve the Default Picker
+
+- **WHEN** the resume command is preparing the native handoff
+- **THEN** it does not add `--last`, `--all`, or a positional session identifier when the user supplied no forwarded selection arguments
+
+#### Scenario: No Session Is Available
+
+- **WHEN** the native picker finds no session in the workspace scope
+- **THEN** the command reports the native no-session state and does not call `thread/start` or create a replacement thread
+
+#### Scenario: Merge Forwarded Additional Roots
+
+- **WHEN** forwarded arguments contain one or more `--add-dir` values
+- **THEN** the command merges those values with the managed worktree roots, canonicalizes and deduplicates them, and retains every managed root
+
+#### Scenario: Merge a Repeated Final Working Directory
+
+- **WHEN** forwarded arguments contain repeated `-C`/`--cd` values in separated or equals form
+- **THEN** the command uses the same effective value as the final Codex CLI for workspace resolution and final Codex working directory
+
+#### Scenario: Reject a Concurrent Resume
+
+- **WHEN** another `trees codex` launch or resume process holds the workspace lock
+- **THEN** the command reports that the workspace already has an interactive Codex client and does not start another one
 
 #### Scenario: Codex Executable Is Missing
 
