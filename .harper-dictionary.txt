@@ -1,4 +1,6 @@
 Clippy
+clippy
+direnv
 Git's
 JSON
 JSON1
