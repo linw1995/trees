@@ -32,6 +32,12 @@ repos:
         language: system
         pass_filenames: false
         files: '^(Cargo\.toml|Cargo\.lock|src/.*\.rs|tests/.*\.rs)$'
+      - id: third-party-notices
+        name: third-party-notices
+        entry: scripts/check-third-party-notices.sh
+        language: system
+        pass_filenames: false
+        always_run: true
       - id: runtime-sql-boundary
         name: runtime SQL boundary
         entry: bash scripts/check-runtime-sql.sh

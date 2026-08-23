@@ -24,6 +24,7 @@ in {
       git
       diesel-cli
       cargo-nextest
+      cargo-about
       grcov
       harper
       prek

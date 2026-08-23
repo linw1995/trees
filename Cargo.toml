@@ -3,6 +3,7 @@ name = "trees"
 version = "0.1.0"
 edition = "2021"
 description = "Manage coding workspaces composed of Git worktrees."
+license = "Apache-2.0"
 
 [[bin]]
 name = "trees"

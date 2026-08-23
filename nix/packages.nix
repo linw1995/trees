@@ -15,6 +15,8 @@
     inherit root;
     fileset = lib.fileset.unions [
       (craneLib.fileset.commonCargoSources root)
+      (root + /LICENSE)
+      (root + /THIRD_PARTY_NOTICES.html)
       (root + /migrations)
     ];
   };
@@ -27,8 +29,13 @@
   cargoArtifacts = craneLib.buildDepsOnly cargoArgs;
   trees = craneLib.buildPackage (cargoArgs // {
     inherit cargoArtifacts;
+    postInstall = ''
+      install -Dm644 LICENSE "$out/share/licenses/trees/LICENSE"
+      install -Dm644 THIRD_PARTY_NOTICES.html "$out/share/licenses/trees/THIRD_PARTY_NOTICES.html"
+    '';
     meta = {
       inherit description;
+      license = lib.licenses.asl20;
       mainProgram = "trees";
     };
   });
