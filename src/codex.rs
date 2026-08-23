@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use crate::domain::WorkspaceId;
 
 pub mod app_server;
+pub mod launch;
 pub mod project;
 pub mod project_sync;
 pub mod thread;
