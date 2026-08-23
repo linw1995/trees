@@ -10,12 +10,33 @@ Each workspace contains one direct child worktree for every source repository. T
 
 The development environment is provided by Nix Flake.
 
+## Install
+
+Install from the GitHub repository with Nix:
+
+```sh
+nix profile install github:linw1995/trees#trees
+```
+
+Install from a local checkout:
+
+```sh
+nix develop
+cargo install --path . --locked
+```
+
+Verify the installation:
+
+```sh
+trees --help
+```
+
 ## Usage
 
 Create a workspace from one or more Git repositories:
 
 ```sh
-nix run .#trees -- create ./workspace --repo /path/to/api --repo /path/to/web
+trees create ./workspace --repo /path/to/api --repo /path/to/web
 ```
 
 Each repository becomes a direct child worktree under `./workspace`. The source repositories remain at their original paths.
