@@ -33,17 +33,18 @@ pub trait RpcClient {
 
 impl AppServerProcess {
     pub fn spawn(executable: &Path) -> Result<Self, AppServerError> {
-        let mut child = Command::new(executable)
-            .arg("app-server")
-            .arg("--stdio")
+        let mut command = Command::new(executable);
+        command.arg("app-server").arg("--stdio");
+        Self::spawn_command(command, executable.to_owned())
+    }
+
+    fn spawn_command(mut command: Command, executable: PathBuf) -> Result<Self, AppServerError> {
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|source| AppServerError::Spawn {
-                executable: executable.to_owned(),
-                source,
-            })?;
+            .map_err(|source| AppServerError::Spawn { executable, source })?;
 
         let stdin = child.stdin.take().ok_or_else(|| {
             let _ = child.kill();
@@ -382,6 +383,36 @@ impl std::error::Error for AppServerError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn shutdown_waits_for_a_stdio_child_to_exit() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "cat >/dev/null"]);
+        let process = AppServerProcess::spawn_command(command, PathBuf::from("sh"))
+            .expect("test app-server process should spawn");
+
+        let status = process
+            .shutdown(Duration::from_secs(1))
+            .expect("child should exit after standard input closes");
+
+        assert!(status.success());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn shutdown_waits_for_a_stdio_child_to_exit() {
+        let mut command = Command::new("cmd");
+        command.args(["/C", "more > NUL"]);
+        let process = AppServerProcess::spawn_command(command, PathBuf::from("cmd"))
+            .expect("test app-server process should spawn");
+
+        let status = process
+            .shutdown(Duration::from_secs(1))
+            .expect("child should exit after standard input closes");
+
+        assert!(status.success());
+    }
 
     fn session_with_lines(lines: &[&str]) -> JsonRpcSession<Vec<u8>> {
         let (sender, receiver) = mpsc::channel();
