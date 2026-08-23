@@ -64,6 +64,8 @@ trees codex --model gpt-5.5
 
 Forwarded `--add-dir` values are merged with the workspace's managed worktree roots. Trees preserves the model, sandbox, approval, profile, prompt, and other native Codex arguments while adding the workspace context required for the multi-root handoff.
 
+The final native argument vector is also used to derive the workspace: the last effective `-C` or `--cd` value wins, and the current directory is the fallback. Trees appends managed roots that are not already present and appends the merged workspace developer context.
+
 The setup app-server is short-lived. After the project and thread are persisted, Trees hands the thread to `codex resume` and keeps the terminal attached to Codex. This command does not open or navigate the Codex Desktop UI. Codex authentication, model, approval, and sandbox settings are inherited from the user's normal configuration; Trees does not add bypass or unrestricted-access flags.
 
 Resume an existing workspace session through the native Codex picker:

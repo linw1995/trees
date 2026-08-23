@@ -93,18 +93,18 @@ The command SHALL use a deterministic idempotency key derived from the Trees wor
 - **WHEN** project recovery finds more than one project carrying the same workspace ownership metadata
 - **THEN** the command fails with an ambiguity error and does not update any project roots
 
-### Requirement: Start a Project-Bound Codex Thread
+### Requirement: Start a Project-Bound Codex Thread for Fresh Launch
 
-After project synchronization succeeds, the command SHALL start a durable Codex thread assigned to the project. The thread SHALL use the workspace container as its working directory and SHALL receive all managed worktree roots as runtime workspace roots. The command SHALL preserve the user's configured approval, sandbox, model, and authentication settings unless explicitly overridden by a future command option.
+After project synchronization succeeds for a fresh `trees codex` launch, the command SHALL start a durable Codex thread assigned to the project. The thread SHALL use the workspace container as its working directory and SHALL receive all managed worktree roots as runtime workspace roots. The command SHALL preserve the user's configured approval, sandbox, model, and authentication settings unless explicitly overridden by a future command option. The `trees codex resume` flow SHALL NOT call `thread/start`.
 
 #### Scenario: Start a Thread for All Roots
 
 - **WHEN** project synchronization returns a valid project identifier
 - **THEN** the command starts a thread with that `projectId`, the workspace container as `cwd`, and every worktree root in the runtime workspace root list
 
-### Requirement: Expose the Logical Monorepo Context
+### Requirement: Provide the Logical Monorepo Context to Both Handoffs
 
-Before starting the thread, the command SHALL obtain the effective user developer instructions and append a generated workspace manifest containing the workspace name and every ordered managed worktree root. The manifest SHALL state that the roots are independent repositories in one coordinated logical monorepo. The command SHALL preserve the existing developer instructions and SHALL NOT create or modify workspace instruction files.
+Before `thread/start` for fresh launch, and before the native picker handoff for resume, the command SHALL obtain the effective user developer instructions and append a generated workspace manifest containing the workspace name and every ordered managed worktree root. The manifest SHALL state that the roots are independent repositories in one coordinated logical monorepo. The command SHALL preserve the existing developer instructions and SHALL NOT create or modify workspace instruction files.
 
 #### Scenario: Make All Repositories Visible to the Model
 
@@ -116,12 +116,17 @@ Before starting the thread, the command SHALL obtain the effective user develope
 - **WHEN** the effective Codex configuration contains developer instructions
 - **THEN** the generated workspace context is appended after those instructions rather than replacing them
 
-#### Scenario: Stop Before Thread Launch on Project Failure
+#### Scenario: Stop Before Client Handoff on Project Failure
 
 - **WHEN** project creation or root synchronization fails
 - **THEN** the command reports the app-server error and SHALL NOT start the interactive Codex client
 
-### Requirement: Hand off to the Interactive Codex Client
+#### Scenario: Preserve Context on Resume Handoff
+
+- **WHEN** a ready workspace enters the native resume picker flow
+- **THEN** the final Codex invocation contains the merged developer instructions and every managed worktree root without creating a new thread
+
+### Requirement: Hand off a Fresh Thread to the Interactive Codex Client
 
 The command SHALL hand the newly started thread to the configured Codex
 executable by invoking its interactive resume command with the returned thread
@@ -227,7 +232,7 @@ The lock SHALL NOT add a Trees database association or migration.
 
 ### Requirement: Keep the Launch Operation Safe
 
-The command SHALL communicate with app-server through the experimental protocol handshake and a bounded JSON-RPC session. It SHALL match responses by request identifier while tolerating interleaved notifications.
+The command SHALL communicate with app-server through the experimental protocol handshake and a bounded JSON-RPC session. It SHALL match responses by request identifier while tolerating interleaved notifications. Fresh launch requires durable Project and thread state before handoff; resume requires durable Project synchronization and deliberately has no thread-creation step.
 
 Malformed messages, EOF, process failure, and request timeout SHALL fail setup. The interactive client SHALL start only after project and thread state are durable and the setup app-server process has exited.
 
@@ -248,7 +253,7 @@ The command SHALL NOT enable approval bypass or unrestricted sandbox flags impli
 - **WHEN** a setup request times out, standard output contains malformed JSON, app-server exits early, or standard input cannot be closed cleanly
 - **THEN** the command reports a bounded setup error, reaps or terminates the child process, and SHALL NOT invoke the interactive Codex client
 
-#### Scenario: Handoff After Confirmed Setup Exit
+#### Scenario: Fresh Handoff After Confirmed Setup Exit
 
 - **WHEN** project and thread creation succeed and the setup app-server process exits successfully after standard input is closed
 - **THEN** the command immediately invokes `codex resume <threadId>` without waiting for a `thread/closed` notification or an idle-unload interval

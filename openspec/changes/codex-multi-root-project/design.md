@@ -12,6 +12,7 @@ The current Codex app-server exposes experimental SQLite-backed project APIs, in
 - Reuse one project per workspace and Codex home while tolerating external project deletion.
 - Start a durable project-bound thread with all managed worktree roots available to the Codex runtime.
 - Make the multi-repository workspace layout explicit in the model-visible thread context.
+- Restore an existing workspace session through the native picker without creating a replacement thread.
 - Keep the interactive Codex client in control of the terminal after setup completes.
 - Make the app-server boundary deterministic, testable, and independent of Git mutations.
 
@@ -81,17 +82,24 @@ If the key refers to a project that was externally deleted, use paginated `proje
 
 The project root list is treated as a materialized view of the ready workspace. The launcher reads the current project, compares its ordered roots with the current worktree paths, and calls `project/update` with the complete list only when they differ. It does not send one update per root and does not preserve roots that are no longer present in the Trees workspace.
 
-### Provide a Logical Monorepo Context
+### Provide a Logical Monorepo Context to Both Handoffs
 
-Project roots and runtime workspace roots do not by themselves tell the model that independent repositories are one coordinated workspace. Before `thread/start`, Trees reads the effective `developer_instructions` through `config/read` and appends a generated manifest containing the workspace name and ordered managed worktree paths. The manifest instructs Codex to treat the listed repositories as one logical monorepo and to keep cross-repository changes consistent.
+Project roots and runtime workspace roots do not by themselves tell the model
+that independent repositories are one coordinated workspace. Before
+`thread/start` for fresh launch, and before the native picker handoff for
+resume, Trees reads the effective `developer_instructions` through
+`config/read` and appends a generated manifest containing the workspace name
+and ordered managed worktree paths. The manifest instructs Codex to treat the
+listed repositories as one logical monorepo and to keep cross-repository
+changes consistent.
 
 Trees preserves the user's effective developer instructions by appending the manifest instead of replacing them. It does not create or modify an `AGENTS.md` file in the workspace, and it does not claim that runtime roots automatically load secondary-root instructions; those remain subject to Codex's own instruction-discovery behavior.
 
 ### Use a Short-Lived App-Server Setup Process
 
-The launcher starts the configured Codex executable as `codex app-server --stdio` with piped standard input, standard output, and standard error. A small JSON-RPC client sends `initialize`, the `initialized` notification, project operations, and `thread/start`, while matching responses to request IDs when notifications are interleaved. Existing `serde_json` and standard process APIs are sufficient; no network transport or persistent daemon is required for this command.
+The launcher starts the configured Codex executable as `codex app-server --stdio` with piped standard input, standard output, and standard error. A small JSON-RPC client sends `initialize`, the `initialized` notification, project operations, and, for fresh launch only, `thread/start`, while matching responses to request IDs when notifications are interleaved. Existing `serde_json` and standard process APIs are sufficient; no network transport or persistent daemon is required for this command.
 
-The setup process is terminated only after the project and thread have been durably created. Protocol output is never forwarded to the user's terminal. Standard error is captured for actionable setup errors and bounded before inclusion in a returned error.
+For fresh launch, the setup process is terminated only after the project and thread have been durably created. For resume, it is terminated after Project synchronization and context preparation; resume deliberately does not create a thread. In both flows, the interactive client starts only after the setup process exits successfully. Protocol output is never forwarded to the user's terminal. Standard error is captured for actionable setup errors and bounded before inclusion in a returned error.
 
 ### Do Not Discover a Shared Daemon in the Initial Implementation
 
@@ -101,7 +109,7 @@ Codex also supports a managed daemon started by `codex app-server daemon start`.
 
 Reusing it would require Trees to implement the socket handshake, framing, reconnect behavior, and daemon/version compatibility checks. That transport is intentionally deferred to a separate change; it is not a transparent newline-delimited JSON stream.
 
-### Codex Resume Handoff
+### Fresh Thread Handoff
 
 After `thread/start` returns, Trees starts the same executable with
 `resume <thread-id>` and attaches the current terminal. The setup process is
