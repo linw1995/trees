@@ -8,6 +8,10 @@ description = "Manage coding workspaces composed of Git worktrees."
 name = "trees"
 path = "src/main.rs"
 
+# Keep release artifacts unstripped because Fenix's Darwin rust-objcopy can fail to resolve libLLVM.dylib during Cargo's post-link strip step.
+[profile.release]
+strip = "none"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 diesel = { version = "2.3", features = ["sqlite"] }
