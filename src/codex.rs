@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use crate::domain::WorkspaceId;
 
 pub mod app_server;
+pub mod project;
 
 pub const WORKSPACE_METADATA_KEY: &str = "treesWorkspaceId";
 
