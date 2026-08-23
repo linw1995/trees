@@ -36,7 +36,7 @@
     inherit cargoArtifacts;
     postInstall = ''
       notices="$TMPDIR/trees-third-party-notices.html"
-      bash scripts/generate-third-party-notices.sh "$notices"
+      CARGO_ABOUT_OFFLINE=1 bash scripts/generate-third-party-notices.sh "$notices"
       install -Dm644 LICENSE "$out/share/licenses/trees/LICENSE"
       install -Dm644 "$notices" "$out/share/licenses/trees/THIRD_PARTY_NOTICES.html"
     '';

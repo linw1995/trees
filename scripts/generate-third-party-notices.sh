@@ -11,13 +11,17 @@ trap 'rm -f "${raw_output}"' EXIT
 cd "${workspace_root}"
 mkdir -p "$(dirname "${output_path}")"
 
-cargo about generate \
-  --all-features \
-  --fail \
-  --locked \
-  --offline \
-  --output-file "${raw_output}" \
-  about.hbs
+about_args=(
+  --all-features
+  --fail
+  --locked
+  --output-file "${raw_output}"
+)
+if [[ "${CARGO_ABOUT_OFFLINE:-}" == "1" ]]; then
+  about_args+=(--offline)
+fi
+
+cargo about generate "${about_args[@]}" about.hbs
 
 LC_ALL=C awk '{ sub(/\r$/, ""); sub(/[[:space:]]+$/, ""); print }' \
   "${raw_output}" > "${output_path}"
