@@ -1,6 +1,6 @@
 ## 1. Codex Project Identity and Recovery
 
-- [ ] 1.1 Define the deterministic project idempotency key and workspace ownership metadata without adding a Trees database table or migration; verify stable values for repeated launches and distinct workspace identities
+- [x] 1.1 Define the deterministic project idempotency key and workspace ownership metadata without adding a Trees database table or migration; verify stable values for repeated launches and distinct workspace identities
 - [ ] 1.2 Implement project lookup/recovery using `project/create` idempotency, `project/list` pagination, unique ownership metadata, and explicit ambiguity errors; verify lost responses, deleted projects, replacement creation, and duplicate metadata cases
 
 ## 2. App-Server Protocol Client
