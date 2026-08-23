@@ -14,7 +14,7 @@
 
 - [x] 3.1 Add the Codex command boundary that captures native argument vectors, exposes the optional `resume` wrapper, and keeps the executable override; verify direct native-argument parsing in CLI unit tests
 - [x] 3.2 Reconcile the workspace before resolving managed-worktree roots, then validate attached worktrees and reuse canonical path and repository ordering rules; verify unknown, non-ready, empty, externally removed, and invalid-root cases fail before spawning Codex
-- [ ] 3.3 Wire `trees codex` dispatch to project synchronization and thread startup without changing Git or lifecycle snapshot state; add CLI-level integration coverage for direct native arguments, fake app-server handoff, and no Git mutations
+- [x] 3.3 Wire `trees codex` dispatch to project synchronization and thread startup without changing Git or lifecycle snapshot state; add CLI-level integration coverage for direct native arguments, fake app-server handoff, and no Git mutations
 - [x] 3.4 Hand the returned thread identifier to the configured executable's `resume` command with terminal inheritance, the workspace container as both the working directory and `--cd`, and every worktree root as `--add-dir`.
   Verify child arguments and inherited configuration. Verify exit-status propagation and runtime-root preservation with a fake executable
 - [x] 3.5 Report missing binaries, unsupported app-server methods, malformed responses, and failed handoff with actionable errors while retaining already-created Codex state for retry; verify each failure path with process-boundary tests
