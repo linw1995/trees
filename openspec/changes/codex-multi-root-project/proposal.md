@@ -9,6 +9,7 @@ Trees already persists the worktrees that make up a workspace, but users still h
 - Use a deterministic app-server idempotency key and workspace ownership metadata so repeated launches reuse one Codex project without duplicating project identity in the Trees database.
 - Synchronize the Codex project through the experimental app-server protocol, including project creation, root replacement, and paginated recovery after external deletion.
 - Start a durable thread assigned to the synchronized project, expose all worktree roots as runtime workspace roots, and hand the thread to the interactive `codex resume` client.
+- Provide a model-visible logical monorepo manifest that names every managed worktree root and explains that the repositories should be edited as one coordinated workspace.
 - Preserve user-configured Codex approval and sandbox defaults; the launcher SHALL NOT enable bypass or full-access modes implicitly.
 - Return clear errors for invalid workspace state, missing Codex binaries, unsupported app-server versions, failed project synchronization, and failed thread handoff without mutating Git worktrees.
 - Add unit, integration, and process-boundary tests plus concise CLI documentation.

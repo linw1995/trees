@@ -11,6 +11,7 @@ The current Codex app-server exposes experimental SQLite-backed project APIs, in
 - Make a Trees workspace the authoritative source of the roots synchronized into its Codex project.
 - Reuse one project per workspace and Codex home while tolerating external project deletion.
 - Start a durable project-bound thread with all managed worktree roots available to the Codex runtime.
+- Make the multi-repository workspace layout explicit in the model-visible thread context.
 - Keep the interactive Codex client in control of the terminal after setup completes.
 - Make the app-server boundary deterministic, testable, and independent of Git mutations.
 
@@ -40,6 +41,12 @@ If the key refers to a project that was externally deleted, use paginated `proje
 ### Synchronize the Complete Root List
 
 The project root list is treated as a materialized view of the ready workspace. The launcher reads the current project, compares its ordered roots with the current worktree paths, and calls `project/update` with the complete list only when they differ. It does not send one update per root and does not preserve roots that are no longer present in the Trees workspace.
+
+### Provide a Logical Monorepo Context
+
+Project roots and runtime workspace roots do not by themselves tell the model that independent repositories are one coordinated workspace. Before `thread/start`, Trees reads the effective `developer_instructions` through `config/read` and appends a generated manifest containing the workspace name and ordered managed worktree paths. The manifest instructs Codex to treat the listed repositories as one logical monorepo and to keep cross-repository changes consistent.
+
+Trees preserves the user's effective developer instructions by appending the manifest instead of replacing them. It does not create or modify an `AGENTS.md` file in the workspace, and it does not claim that runtime roots automatically load secondary-root instructions; those remain subject to Codex's own instruction-discovery behavior.
 
 ### Use a Short-Lived App-Server Setup Process
 

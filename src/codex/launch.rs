@@ -4,9 +4,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::time::Duration;
 
-use crate::codex::app_server::{AppServerError, AppServerProcess};
+use serde_json::{json, Value};
+
+use crate::codex::app_server::{AppServerError, AppServerProcess, RpcClient};
 use crate::codex::project_sync::{ProjectSession, ProjectSyncError, ProjectSynchronizer};
-use crate::codex::thread::{start_thread, ThreadStartError};
+use crate::codex::thread::{start_thread_with_instructions, ThreadStartError};
 use crate::codex::workspace::{prepare, PreparedWorkspace, WorkspacePreparationError};
 
 const SETUP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -49,10 +51,13 @@ fn prepare_with_app_server(
         let project = ProjectSynchronizer::new(&mut app_server, SETUP_REQUEST_TIMEOUT)
             .synchronize(&workspace.id, &workspace.name, &workspace.roots)
             .map_err(CodexLaunchError::Project)?;
-        let thread = start_thread(
+        let developer_instructions =
+            workspace_developer_instructions(&mut app_server, workspace, SETUP_REQUEST_TIMEOUT)?;
+        let thread = start_thread_with_instructions(
             &mut app_server,
             &project.project.id,
             &workspace.roots,
+            Some(&developer_instructions),
             SETUP_REQUEST_TIMEOUT,
         )
         .map_err(CodexLaunchError::Thread)?;
@@ -73,6 +78,57 @@ fn prepare_with_app_server(
             setup: Box::new(error),
             shutdown,
         }),
+    }
+}
+
+fn workspace_developer_instructions<R: RpcClient>(
+    rpc: &mut R,
+    workspace: &PreparedWorkspace,
+    timeout: Duration,
+) -> Result<String, CodexLaunchError> {
+    let response = rpc
+        .request("config/read", json!({}), timeout)
+        .map_err(CodexLaunchError::Config)?;
+    let config = response
+        .get("config")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            CodexLaunchError::InvalidConfigResponse(
+                "config/read response did not contain a config object".to_owned(),
+            )
+        })?;
+    let existing = match config.get("developer_instructions") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) if value.trim().is_empty() => None,
+        Some(Value::String(value)) => Some(value.as_str()),
+        Some(_) => {
+            return Err(CodexLaunchError::InvalidConfigResponse(
+                "config.developer_instructions was not a string or null".to_owned(),
+            ));
+        }
+    };
+    Ok(merge_workspace_manifest(existing, workspace))
+}
+
+fn merge_workspace_manifest(existing: Option<&str>, workspace: &PreparedWorkspace) -> String {
+    let mut manifest = format!(
+        "Trees workspace `{}` is one logical monorepo composed of these managed worktrees:\n",
+        workspace.name
+    );
+    for root in &workspace.roots {
+        let repository_name = root
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("repository");
+        manifest.push_str(&format!("- `{repository_name}`: `{}`\n", root.display()));
+    }
+    manifest.push_str(
+        "Treat all listed repositories as one coordinated workspace. Keep cross-repository changes consistent and edit only these managed worktree paths.",
+    );
+
+    match existing {
+        Some(existing) => format!("{existing}\n\n--- Trees workspace context ---\n{manifest}"),
+        None => manifest,
     }
 }
 
@@ -123,6 +179,8 @@ pub enum CodexLaunchError {
     DatabaseOpen(crate::database::DatabaseError),
     Workspace(WorkspacePreparationError),
     AppServer(AppServerError),
+    Config(AppServerError),
+    InvalidConfigResponse(String),
     Project(ProjectSyncError),
     Thread(ThreadStartError),
     SetupProcessExit(std::process::ExitStatus),
@@ -147,6 +205,8 @@ impl fmt::Display for CodexLaunchError {
             }
             Self::Workspace(error) => error.fmt(formatter),
             Self::AppServer(error) => error.fmt(formatter),
+            Self::Config(error) => error.fmt(formatter),
+            Self::InvalidConfigResponse(message) => formatter.write_str(message),
             Self::Project(error) => error.fmt(formatter),
             Self::Thread(error) => error.fmt(formatter),
             Self::SetupProcessExit(status) => {
@@ -182,12 +242,13 @@ impl std::error::Error for CodexLaunchError {
             Self::DatabaseOpen(error) => Some(error),
             Self::Workspace(error) => Some(error),
             Self::AppServer(error) => Some(error),
+            Self::Config(error) => Some(error),
             Self::Project(error) => Some(error),
             Self::Thread(error) => Some(error),
             Self::Shutdown(error) => Some(error),
             Self::Handoff { source, .. } => Some(source),
             Self::SetupAndShutdown { setup, .. } => Some(setup),
-            Self::SetupProcessExit(_) => None,
+            Self::SetupProcessExit(_) | Self::InvalidConfigResponse(_) => None,
         }
     }
 }
@@ -196,7 +257,33 @@ impl std::error::Error for CodexLaunchError {
 mod tests {
     use std::fs;
 
+    use serde_json::Value;
+
     use super::*;
+
+    #[derive(Default)]
+    struct ConfigRpc {
+        response: Option<Result<Value, AppServerError>>,
+        method: Option<String>,
+    }
+
+    impl RpcClient for ConfigRpc {
+        fn request(
+            &mut self,
+            method: &str,
+            _params: Value,
+            _timeout: Duration,
+        ) -> Result<Value, AppServerError> {
+            self.method = Some(method.to_owned());
+            self.response
+                .take()
+                .expect("config response should be configured")
+        }
+
+        fn notify(&mut self, _method: &str, _params: Value) -> Result<(), AppServerError> {
+            Ok(())
+        }
+    }
 
     #[cfg(unix)]
     fn prepared_workspace(root: &Path) -> PreparedWorkspace {
@@ -207,6 +294,121 @@ mod tests {
             name: "workspace".to_owned(),
             roots: vec![root.to_owned()],
         }
+    }
+
+    fn workspace_for_context() -> PreparedWorkspace {
+        PreparedWorkspace {
+            id: crate::domain::WorkspaceId::new(),
+            path: crate::domain::CanonicalPath::from_absolute("/workspace")
+                .expect("workspace path should be absolute"),
+            name: "workspace".to_owned(),
+            roots: vec![
+                PathBuf::from("/workspace/one"),
+                PathBuf::from("/workspace/two"),
+            ],
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn starts_thread_with_workspace_manifest_and_preserved_instructions() {
+        let root =
+            std::env::temp_dir().join(format!("trees-codex-context-{}", uuid::Uuid::now_v7()));
+        fs::create_dir_all(&root).expect("test root should be created");
+        let capture = root.join("thread-start-request");
+        let script = r#"
+IFS= read -r request
+printf '%s\n' '{"id":1,"result":{"codexHome":"/tmp/codex"}}'
+IFS= read -r request
+IFS= read -r request
+printf '%s\n' '{"id":2,"result":{"project":{"id":"project-id","name":"workspace","roots":[{"path":"/workspace/one"},{"path":"/workspace/two"}],"metadata":{}}}}'
+IFS= read -r request
+printf '%s\n' '{"id":3,"result":{"config":{"developer_instructions":"Keep user rules."}}}'
+IFS= read -r request
+printf '%s\n' "$request" > '__CAPTURE__'
+printf '%s\n' '{"id":4,"result":{"thread":{"id":"thread-id"}}}'
+        "#
+        .replace("__CAPTURE__", &capture.display().to_string());
+        let executable = fake_app_server(&root, &script);
+        let workspace = workspace_for_context();
+
+        let prepared =
+            prepare_with_app_server(&executable, &workspace).expect("Codex setup should succeed");
+
+        assert_eq!(prepared.project_id, "project-id");
+        assert_eq!(prepared.thread_id, "thread-id");
+        let request: Value = serde_json::from_str(
+            &fs::read_to_string(&capture).expect("thread request should be captured"),
+        )
+        .expect("thread request should be JSON");
+        assert_eq!(request["method"], "thread/start");
+        assert_eq!(request["params"]["projectId"], "project-id");
+        assert_eq!(request["params"]["cwd"], "/workspace/one");
+        assert_eq!(
+            request["params"]["runtimeWorkspaceRoots"],
+            json!(["/workspace/one", "/workspace/two"])
+        );
+        let instructions = request["params"]["developerInstructions"]
+            .as_str()
+            .expect("developer instructions should be present");
+        assert!(instructions.starts_with("Keep user rules."));
+        assert!(instructions.contains("/workspace/one"));
+        assert!(instructions.contains("/workspace/two"));
+
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn merges_effective_user_instructions_with_workspace_manifest() {
+        let workspace = workspace_for_context();
+        let mut rpc = ConfigRpc {
+            response: Some(Ok(json!({
+                "config": {"developer_instructions": "Keep user rules."}
+            }))),
+            ..ConfigRpc::default()
+        };
+
+        let instructions =
+            workspace_developer_instructions(&mut rpc, &workspace, Duration::from_secs(1))
+                .expect("workspace context should be built");
+
+        assert_eq!(rpc.method.as_deref(), Some("config/read"));
+        assert!(instructions.starts_with("Keep user rules."));
+        assert!(instructions.contains("/workspace/one"));
+        assert!(instructions.contains("/workspace/two"));
+        assert!(instructions.contains("one logical monorepo"));
+    }
+
+    #[test]
+    fn builds_workspace_manifest_without_existing_instructions() {
+        let workspace = workspace_for_context();
+        let mut rpc = ConfigRpc {
+            response: Some(Ok(json!({"config": {}}))),
+            ..ConfigRpc::default()
+        };
+
+        let instructions =
+            workspace_developer_instructions(&mut rpc, &workspace, Duration::from_secs(1))
+                .expect("workspace context should be built");
+
+        assert!(!instructions.contains("Trees workspace context"));
+        assert!(instructions.starts_with("Trees workspace `workspace`"));
+    }
+
+    #[test]
+    fn rejects_malformed_config_instructions() {
+        let workspace = workspace_for_context();
+        let mut rpc = ConfigRpc {
+            response: Some(Ok(json!({
+                "config": {"developer_instructions": ["invalid"]}
+            }))),
+            ..ConfigRpc::default()
+        };
+
+        let error = workspace_developer_instructions(&mut rpc, &workspace, Duration::from_secs(1))
+            .expect_err("invalid developer instructions should fail");
+
+        assert!(error.to_string().contains("developer_instructions"));
     }
 
     #[cfg(unix)]
@@ -381,6 +583,8 @@ printf '%s\n' 'not-json'
             )),
             CodexLaunchError::Workspace(WorkspacePreparationError::NoWorktrees),
             CodexLaunchError::AppServer(AppServerError::Transport("closed".to_owned())),
+            CodexLaunchError::Config(AppServerError::Transport("closed".to_owned())),
+            CodexLaunchError::InvalidConfigResponse("invalid config".to_owned()),
             CodexLaunchError::Project(ProjectSyncError::InvalidInput("invalid project".to_owned())),
             CodexLaunchError::Thread(ThreadStartError::InvalidInput("invalid thread".to_owned())),
             CodexLaunchError::Shutdown(AppServerError::Transport("closed".to_owned())),

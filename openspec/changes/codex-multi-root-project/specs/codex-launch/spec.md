@@ -80,6 +80,20 @@ After project synchronization succeeds, the command SHALL start a durable Codex 
 - **WHEN** project synchronization returns a valid project identifier
 - **THEN** the command starts a thread with that `projectId`, the first worktree root as `cwd`, and every worktree root in the runtime workspace root list
 
+### Requirement: Expose the Logical Monorepo Context
+
+Before starting the thread, the command SHALL obtain the effective user developer instructions and append a generated workspace manifest containing the workspace name and every ordered managed worktree root. The manifest SHALL state that the roots are independent repositories in one coordinated logical monorepo. The command SHALL preserve the existing developer instructions and SHALL NOT create or modify workspace instruction files.
+
+#### Scenario: Make All Repositories Visible to the Model
+
+- **WHEN** a ready workspace contains multiple managed worktree roots
+- **THEN** the `thread/start` request contains model-visible context naming every root and describing the workspace as one coordinated multi-repository workspace
+
+#### Scenario: Preserve User Developer Instructions
+
+- **WHEN** the effective Codex configuration contains developer instructions
+- **THEN** the generated workspace context is appended after those instructions rather than replacing them
+
 #### Scenario: Stop Before Thread Launch on Project Failure
 
 - **WHEN** project creation or root synchronization fails

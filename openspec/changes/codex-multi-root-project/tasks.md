@@ -18,10 +18,11 @@
 - [x] 3.4 Hand the returned thread identifier to the configured executable's `resume` command with terminal inheritance, the primary root as both the working directory and `--cd`, and each secondary worktree root as `--add-dir`.
   Verify child arguments and inherited configuration. Verify exit-status propagation and runtime-root preservation with a fake executable
 - [x] 3.5 Report missing binaries, unsupported app-server methods, malformed responses, and failed handoff with actionable errors while retaining already-created Codex state for retry; verify each failure path with process-boundary tests
+- [x] 3.6 Append a model-visible logical monorepo manifest to effective developer instructions before `thread/start`; verify all ordered roots are named and existing instructions are preserved
 
 ## 4. Documentation and Verification
 
 - [x] 4.1 Document `trees codex <workspace-path>`, managed-worktree root behavior, project reuse, executable override, and the terminal-only launch boundary in `README.md`; verify the examples match the implemented CLI help
-- [x] 4.2 Add integration coverage for repeated launch, changed roots, external project deletion, externally removed worktrees, multiple Codex homes, and user security defaults; verify the full scenario suite passes without requiring real Codex authentication
+- [x] 4.2 Add integration coverage for repeated launch, changed roots, external project deletion, externally removed worktrees, multiple Codex homes, user security defaults, and model-visible multi-repository context; verify the full scenario suite passes without requiring real Codex authentication
 - [x] 4.3 Run `openspec validate codex-multi-root-project --strict` and resolve all structural or scenario errors
 - [x] 4.4 Run `cargo test --all-targets --all-features`, `prek -a`, and `nix flake check --no-build`; verify the repository remains clean apart from the intended change artifacts

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::codex::app_server::{AppServerError, RpcClient};
 
@@ -25,6 +25,16 @@ pub fn start_thread<R: RpcClient>(
     roots: &[PathBuf],
     timeout: Duration,
 ) -> Result<ThreadStartResponse, ThreadStartError> {
+    start_thread_with_instructions(rpc, project_id, roots, None, timeout)
+}
+
+pub fn start_thread_with_instructions<R: RpcClient>(
+    rpc: &mut R,
+    project_id: &str,
+    roots: &[PathBuf],
+    developer_instructions: Option<&str>,
+    timeout: Duration,
+) -> Result<ThreadStartResponse, ThreadStartError> {
     if project_id.trim().is_empty() {
         return Err(ThreadStartError::InvalidInput(
             "project identifier must not be empty".to_owned(),
@@ -42,15 +52,16 @@ pub fn start_thread<R: RpcClient>(
         )));
     }
 
-    let response = rpc.request(
-        "thread/start",
-        json!({
-            "projectId": project_id,
-            "cwd": roots[0],
-            "runtimeWorkspaceRoots": roots
-        }),
-        timeout,
-    )?;
+    let mut params = json!({
+        "projectId": project_id,
+        "cwd": roots[0],
+        "runtimeWorkspaceRoots": roots
+    });
+    if let Some(developer_instructions) = developer_instructions {
+        params["developerInstructions"] = Value::String(developer_instructions.to_owned());
+    }
+
+    let response = rpc.request("thread/start", params, timeout)?;
     let response: ThreadStartResponse = serde_json::from_value(response)
         .map_err(|source| ThreadStartError::MalformedResponse { source })?;
     if response.thread.id.trim().is_empty() {
@@ -155,6 +166,29 @@ mod tests {
         assert_eq!(params["cwd"], "/workspace/one");
         assert_eq!(params["runtimeWorkspaceRoots"][0], "/workspace/one");
         assert_eq!(params["runtimeWorkspaceRoots"][1], "/workspace/two");
+    }
+
+    #[test]
+    fn starts_thread_with_model_visible_workspace_context() {
+        let mut rpc = FakeRpc {
+            response: Some(Ok(json!({"thread": {"id": "thread-id"}}))),
+            ..FakeRpc::default()
+        };
+
+        start_thread_with_instructions(
+            &mut rpc,
+            "project-id",
+            &[PathBuf::from("/workspace/one")],
+            Some("Treat this as one logical monorepo."),
+            Duration::from_secs(1),
+        )
+        .expect("thread should start");
+
+        let params = rpc.params.expect("request params should be captured");
+        assert_eq!(
+            params["developerInstructions"],
+            "Treat this as one logical monorepo."
+        );
     }
 
     #[test]
