@@ -1,3 +1,4 @@
+use std::io::{self, IsTerminal, Write};
 use std::process::{ExitCode, ExitStatus};
 
 use clap::Parser;
@@ -163,7 +164,7 @@ fn run_gc(arguments: trees::cli::GcArgs) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut connection = match trees::database::open_default() {
+    let mut connection = match trees::database::open_read_only() {
         Ok(connection) => connection,
         Err(error) => {
             eprintln!("Error: {error}");
@@ -183,6 +184,10 @@ fn run_gc(arguments: trees::cli::GcArgs) -> ExitCode {
     println!("checked_out={}", scan.counts.checked_out);
     println!("age_eligible={}", scan.counts.age_eligible);
     println!("safe_to_reclaim={}", scan.counts.safe_to_reclaim);
+    println!(
+        "candidates={}",
+        scan.execution_candidate_count(arguments.force)
+    );
     for candidate in &scan.candidates {
         println!(
             "candidate={} reason={}",
@@ -193,8 +198,64 @@ fn run_gc(arguments: trees::cli::GcArgs) -> ExitCode {
     if arguments.dry_run {
         return ExitCode::SUCCESS;
     }
-    eprintln!("Error: GC execution is not available yet");
-    ExitCode::FAILURE
+    let candidate_count = scan.execution_candidate_count(arguments.force);
+    if arguments.force {
+        eprintln!("Warning: --force may remove dirty worktrees and unexpected workspace content.");
+    } else if !arguments.yes && candidate_count > 0 {
+        if !io::stdin().is_terminal() {
+            eprintln!(
+                "Error: interactive confirmation is unavailable; use --dry-run, --yes, or --force"
+            );
+            return ExitCode::FAILURE;
+        }
+        print!("Reclaim {candidate_count} workspaces? [y/N] ");
+        if let Err(error) = io::stdout().flush() {
+            eprintln!("Error: failed to flush confirmation prompt: {error}");
+            return ExitCode::FAILURE;
+        }
+        let mut answer = String::new();
+        if let Err(error) = io::stdin().read_line(&mut answer) {
+            eprintln!("Error: failed to read confirmation: {error}");
+            return ExitCode::FAILURE;
+        }
+        if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+            println!("cancelled=true");
+            return ExitCode::SUCCESS;
+        }
+    }
+
+    drop(connection);
+    let mut connection = match trees::database::open_default() {
+        Ok(connection) => connection,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let report = match trees::gc::execute(
+        &mut connection,
+        &workspace_root,
+        arguments.older_than,
+        arguments.force,
+    ) {
+        Ok(report) => report,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    println!("not_checked_out={}", report.scan.counts.not_checked_out);
+    println!("checked_out={}", report.scan.counts.checked_out);
+    println!("reclaimed={}", report.reclaimed.len());
+    println!("skipped={}", report.skipped.len());
+    println!("failed={}", report.failed.len());
+    if !report.failed.is_empty() {
+        for failure in report.failed {
+            eprintln!("GC failed: {}: {}", failure.workspace_path, failure.error);
+        }
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
 }
 
 fn print_automatic_checkout_result(result: &trees::workspace::AutomaticCheckoutResult) {

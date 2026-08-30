@@ -187,6 +187,17 @@ pub struct GcScan {
     pub candidates: Vec<GcCandidate>,
 }
 
+impl GcScan {
+    pub fn execution_candidate_count(&self, force: bool) -> usize {
+        self.candidates
+            .iter()
+            .filter(|candidate| {
+                execution_skip_reason(candidate, force) == Some(GcCandidateReason::Eligible)
+            })
+            .count()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct GcSkipped {
     pub workspace_path: CanonicalPath,

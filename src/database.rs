@@ -19,6 +19,29 @@ pub fn open_default() -> Result<SqliteConnection, DatabaseError> {
     connect(&path)
 }
 
+pub fn open_read_only() -> Result<SqliteConnection, DatabaseError> {
+    let path = paths::database_path().map_err(DatabaseError::Path)?;
+    if !path.exists() {
+        return Err(DatabaseError::ReadOnlyDatabaseMissing(path));
+    }
+    connect_read_only(&path)
+}
+
+pub fn connect_read_only(path: &Path) -> Result<SqliteConnection, DatabaseError> {
+    if !path.exists() {
+        return Err(DatabaseError::ReadOnlyDatabaseMissing(path.to_owned()));
+    }
+    let path_text = path
+        .to_str()
+        .ok_or_else(|| DatabaseError::PathNotUtf8(path.to_owned()))?;
+    let mut connection =
+        SqliteConnection::establish(path_text).map_err(DatabaseError::Connection)?;
+    connection
+        .batch_execute("PRAGMA query_only = ON; PRAGMA busy_timeout = 5000;")
+        .map_err(DatabaseError::Configuration)?;
+    Ok(connection)
+}
+
 pub fn connect(path: &Path) -> Result<SqliteConnection, DatabaseError> {
     let path_text = path
         .to_str()
@@ -41,6 +64,7 @@ pub enum DatabaseError {
     Path(PathError),
     StateDirectory(StateDirectoryError),
     PathNotUtf8(PathBuf),
+    ReadOnlyDatabaseMissing(PathBuf),
     Connection(diesel::ConnectionError),
     Configuration(diesel::result::Error),
     Migration(Box<dyn std::error::Error + Send + Sync>),
@@ -55,6 +79,13 @@ impl fmt::Display for DatabaseError {
                 write!(
                     formatter,
                     "database path is not valid UTF-8: {}",
+                    path.display()
+                )
+            }
+            Self::ReadOnlyDatabaseMissing(path) => {
+                write!(
+                    formatter,
+                    "read-only lifecycle database does not exist: {}",
                     path.display()
                 )
             }
@@ -75,6 +106,7 @@ impl std::error::Error for DatabaseError {
             Self::Path(error) => Some(error),
             Self::StateDirectory(error) => Some(error),
             Self::PathNotUtf8(_) => None,
+            Self::ReadOnlyDatabaseMissing(_) => None,
             Self::Connection(error) => Some(error),
             Self::Configuration(error) => Some(error),
             Self::Migration(error) => Some(&**error),
@@ -119,6 +151,7 @@ mod tests {
                 std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
             )),
             DatabaseError::PathNotUtf8(path.clone()),
+            DatabaseError::ReadOnlyDatabaseMissing(path.clone()),
             DatabaseError::Connection(diesel::ConnectionError::InvalidConnectionUrl(
                 "invalid".to_owned(),
             )),
@@ -130,5 +163,20 @@ mod tests {
             assert!(!error.to_string().is_empty());
             let _ = std::error::Error::source(&error);
         }
+    }
+
+    #[test]
+    fn read_only_connection_rejects_database_writes() {
+        let path = temporary_database_path();
+        let connection = connect(&path).expect("database should open");
+        drop(connection);
+
+        let mut connection = connect_read_only(&path).expect("read-only database should open");
+        assert!(connection
+            .batch_execute("CREATE TABLE read_only_probe (id INTEGER);")
+            .is_err());
+
+        drop(connection);
+        fs::remove_file(path).expect("temporary database should be removable");
     }
 }

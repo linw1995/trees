@@ -87,7 +87,7 @@
   clean worktrees and the empty workspace root in normal mode; in `--force`
   mode allow explicitly authorized unsafe automatic-slot cleanup while
   retaining age, root, lease, operation, and repository-identity guards
-- [ ] 5.6 Add normal interactive confirmation, non-interactive refusal without
+- [x] 5.6 Add normal interactive confirmation, non-interactive refusal without
   `--yes` or `--force`, safe `--yes` bypass, forced-run warnings, and stable
   candidate/skipped/reclaimed/failed/not-checked-out/checked-out counts; ensure
   dry-run performs no SQLite, Git, or filesystem write
