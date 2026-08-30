@@ -3,6 +3,7 @@ pub mod codex;
 pub mod database;
 pub mod domain;
 pub mod git;
+pub mod lease;
 pub mod naming;
 pub mod paths;
 pub mod pool;

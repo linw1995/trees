@@ -86,6 +86,7 @@ uuid_identifier!(WorkspaceId);
 uuid_identifier!(RepoWorktreeId);
 uuid_identifier!(OperationId);
 uuid_identifier!(EventId);
+uuid_identifier!(CheckoutId);
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, AsExpression, FromSqlRow)]
 #[diesel(sql_type = diesel::sql_types::Text)]

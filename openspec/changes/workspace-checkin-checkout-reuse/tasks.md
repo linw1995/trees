@@ -11,7 +11,7 @@
   candidate ordering, configurable platform-specific `workspaces_dir`,
   absolute root normalization, generated path format, and allocation retry
   behavior after a lease race
-- [ ] 1.4 Add a typed checkout lease model with owner, acquisition, expiry,
+- [x] 1.4 Add a typed checkout lease model with owner, acquisition, expiry,
   and heartbeat timestamps; define the reusable-workspace predicate and
   explicit mode/access/health separation
 - [ ] 1.5 Extend lifecycle states with `dirty` and `reclaimed`, plus
