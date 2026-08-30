@@ -11,8 +11,9 @@ use crate::lease::WorkspaceLease;
 use crate::schema::{lifecycle_events, operations, repo_worktrees, workspace_leases, workspaces};
 
 use super::models::{
-    EventRow, NewEvent, NewOperation, NewRepoWorktree, NewWorkspace, NewWorkspaceLease,
-    OperationIntent, OperationRow, RepoWorktreeRow, WorkspaceLeaseRow, WorkspaceRow,
+    EventRow, NewEvent, NewManagedWorkspace, NewOperation, NewRepoWorktree, NewWorkspace,
+    NewWorkspaceLease, OperationIntent, OperationRow, RepoWorktreeRow, WorkspaceLeaseRow,
+    WorkspaceRow,
 };
 use super::transaction::with_short_transaction;
 
@@ -62,6 +63,19 @@ pub struct EventDraft {
 pub fn insert_workspace(
     connection: &mut SqliteConnection,
     value: &NewWorkspace,
+) -> QueryResult<WorkspaceRow> {
+    diesel::insert_into(workspaces::table)
+        .values(value)
+        .execute(connection)?;
+    workspaces::table
+        .find(&value.id)
+        .select(WorkspaceRow::as_select())
+        .first(connection)
+}
+
+pub fn insert_managed_workspace(
+    connection: &mut SqliteConnection,
+    value: &NewManagedWorkspace,
 ) -> QueryResult<WorkspaceRow> {
     diesel::insert_into(workspaces::table)
         .values(value)
@@ -999,6 +1013,75 @@ pub fn finalize_creation(
                 details_json: None,
                 error_json: None,
             },
+        )?;
+        Ok(())
+    })
+}
+
+pub fn finalize_automatic_creation(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+    operation_id: &OperationId,
+    lease: &WorkspaceLease,
+    details_json: Option<JsonDocument>,
+) -> QueryResult<()> {
+    with_short_transaction(connection, |connection| {
+        let workspace = workspaces::table
+            .find(workspace_id)
+            .select(WorkspaceRow::as_select())
+            .first(connection)?;
+        let active_lease = workspace_leases::table
+            .filter(workspace_leases::workspace_id.eq(workspace_id))
+            .select(WorkspaceLeaseRow::as_select())
+            .first(connection)?;
+        if active_lease.id != lease.id {
+            return Err(Error::NotFound);
+        }
+
+        let occurred_at = Timestamp::now();
+        finish_operation_in_transaction(
+            connection,
+            operation_id,
+            OperationState::Succeeded,
+            "complete",
+            Some(occurred_at.clone()),
+            TransitionMetadata::new("operation_succeeded", "trees")
+                .with_details(details_json.clone().unwrap_or_else(empty_json)),
+        )?;
+        diesel::update(workspaces::table.find(workspace_id))
+            .set((
+                workspaces::state.eq(WorkspaceState::Ready),
+                workspaces::updated_at.eq(&occurred_at),
+                workspaces::last_reconciled_at.eq(&occurred_at),
+            ))
+            .execute(connection)?;
+        append_event(
+            connection,
+            &EventDraft {
+                operation_id: *operation_id,
+                entity_type: "workspace".to_owned(),
+                entity_id: workspace.id.to_string(),
+                event_type: "workspace_ready".to_owned(),
+                source: "trees".to_owned(),
+                occurred_at: occurred_at.clone(),
+                previous_state: Some(workspace.state.to_string()),
+                current_state: Some(WorkspaceState::Ready.to_string()),
+                details_json: None,
+                error_json: None,
+            },
+        )?;
+        let workspace = workspaces::table
+            .find(workspace_id)
+            .select(WorkspaceRow::as_select())
+            .first(connection)?;
+        append_event(
+            connection,
+            &workspace_access_event(
+                operation_id,
+                &workspace,
+                "workspace_checked_out",
+                details_json,
+            ),
         )?;
         Ok(())
     })

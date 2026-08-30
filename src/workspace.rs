@@ -7,19 +7,21 @@ use serde::Serialize;
 
 use crate::domain::{
     CanonicalPath, CheckoutId, JsonDocument, OperationState, RepoWorktreeId, RepoWorktreeState,
-    Timestamp, WorkspaceId, WorkspaceState,
+    Timestamp, WorkspaceId, WorkspaceManagementMetadata, WorkspaceManagementMode, WorkspaceState,
 };
 use crate::git::{self, GitError};
 use crate::lease::WorkspaceLease;
 use crate::naming::{self, NamingError, WorktreePlan};
 use crate::reconciliation::{self, ReconciliationError};
 use crate::storage::{
-    append_event, begin_operation, finalize_creation as finalize_persisted_creation,
-    find_workspace_by_path, insert_repo_worktree, insert_workspace, persist_operation_intent,
-    persist_operation_step_intent, record_operation_transition, record_repo_worktree_transition,
-    record_workspace_checkout, record_workspace_checkout_failure, record_workspace_transition,
-    record_worktree_step_result, with_short_transaction, EventDraft, NewRepoWorktree, NewWorkspace,
-    OperationIntent, OperationIntentError, TransitionMetadata,
+    append_event, begin_operation, finalize_automatic_creation,
+    finalize_creation as finalize_persisted_creation, find_workspace_by_path,
+    insert_managed_workspace, insert_repo_worktree, insert_workspace_lease,
+    persist_operation_intent, persist_operation_step_intent, record_operation_transition,
+    record_repo_worktree_transition, record_workspace_checkout, record_workspace_checkout_failure,
+    record_workspace_transition, record_worktree_step_result, release_workspace_lease,
+    with_short_transaction, EventDraft, NewManagedWorkspace, NewRepoWorktree, OperationIntent,
+    OperationIntentError, TransitionMetadata,
 };
 use crate::validation::{self, ValidationError};
 
@@ -334,6 +336,197 @@ fn fail_checkout(
     }
 }
 
+pub fn provision_automatic(
+    connection: &mut SqliteConnection,
+    plan: &AutomaticAllocationPlan,
+) -> Result<AutomaticCheckoutResult, WorkspaceError> {
+    let Some(checkout_id) = plan.checkout_id else {
+        return provision_automatic_new(connection, plan);
+    };
+    Err(WorkspaceError::ProvisioningHasCheckoutId(checkout_id))
+}
+
+fn provision_automatic_new(
+    connection: &mut SqliteConnection,
+    plan: &AutomaticAllocationPlan,
+) -> Result<AutomaticCheckoutResult, WorkspaceError> {
+    if plan.repositories.is_empty() {
+        return Err(WorkspaceError::Validation(ValidationError::NoRepositories));
+    }
+    for repository in &plan.repositories {
+        if plan
+            .workspace_root
+            .as_path()
+            .starts_with(repository.source_path.as_path())
+        {
+            return Err(WorkspaceError::Validation(
+                ValidationError::WorkspaceInsideRepository {
+                    workspace: plan.workspace_root.as_path().to_owned(),
+                    repository: repository.source_path.as_path().to_owned(),
+                },
+            ));
+        }
+    }
+    fs::create_dir_all(plan.workspace_root.as_path()).map_err(|source| WorkspaceError::Io {
+        path: plan.workspace_root.as_path().to_owned(),
+        source,
+    })?;
+    let mut normalized_plan = plan.clone();
+    normalized_plan.workspace_root =
+        validation::resolve_workspace_path(plan.workspace_root.as_path())?;
+
+    let (workspace_id, workspace_path) =
+        next_generated_workspace(connection, normalized_plan.workspace_root.as_path())?;
+    let creation_plan = automatic_creation_plan(&normalized_plan, workspace_path.clone())?;
+    let lease = WorkspaceLease::new(workspace_id, format!("process:{}", std::process::id()));
+    let management = WorkspaceManagementMetadata {
+        mode: WorkspaceManagementMode::Automatic,
+        pool_key: Some(normalized_plan.pool_key.as_str().to_owned()),
+        workspace_root: Some(normalized_plan.workspace_root.clone()),
+        last_checked_in_at: None,
+        reclaimed_at: None,
+    };
+    let intent_json = JsonDocument::from_serializable(&serde_json::json!({
+        "allocation": normalized_plan,
+        "workspace_id": workspace_id,
+        "workspace_path": workspace_path,
+        "checkout_id": lease.id,
+    }))
+    .map_err(WorkspaceError::Json)?;
+    let context = initialize_creation_with_metadata(
+        connection,
+        creation_plan,
+        management,
+        Some(&lease),
+        intent_json,
+    )?;
+
+    if let Err(error) = reconciliation::reconcile_workspace(
+        connection,
+        &context.workspace_id,
+        &context.operation_id,
+    ) {
+        let primary = WorkspaceError::Reconciliation(error);
+        return fail_creation(connection, &context, &[], None, Some(&lease), primary)
+            .map(|_| unreachable!("automatic provisioning rollback always fails the operation"));
+    }
+    execute_creation_with_lease(connection, &context, Some(&lease))?;
+    let summary = match reconciliation::reconcile_workspace(
+        connection,
+        &context.workspace_id,
+        &context.operation_id,
+    ) {
+        Ok(summary) => summary,
+        Err(error) => {
+            let primary = WorkspaceError::Reconciliation(error);
+            let completed = context.repositories.iter().collect::<Vec<_>>();
+            return fail_creation(
+                connection,
+                &context,
+                &completed,
+                None,
+                Some(&lease),
+                primary,
+            )
+            .map(|_| unreachable!("automatic provisioning rollback always fails the operation"));
+        }
+    };
+    if summary.workspace_state != WorkspaceState::Ready {
+        let primary = WorkspaceError::NotReusable(context.plan.workspace_path.clone());
+        let completed = context.repositories.iter().collect::<Vec<_>>();
+        return fail_creation(
+            connection,
+            &context,
+            &completed,
+            None,
+            Some(&lease),
+            primary,
+        )
+        .map(|_| unreachable!("automatic provisioning rollback always fails the operation"));
+    }
+
+    let details_json = checkout_details(&normalized_plan, &lease);
+    if let Err(error) = finalize_automatic_creation(
+        connection,
+        &context.workspace_id,
+        &context.operation_id,
+        &lease,
+        Some(details_json),
+    ) {
+        let primary = WorkspaceError::Database(error);
+        let completed = context.repositories.iter().collect::<Vec<_>>();
+        return fail_creation(
+            connection,
+            &context,
+            &completed,
+            None,
+            Some(&lease),
+            primary,
+        )
+        .map(|_| unreachable!("automatic provisioning rollback always fails the operation"));
+    }
+
+    Ok(AutomaticCheckoutResult {
+        workspace_path: context.plan.workspace_path.clone(),
+        pool_key: normalized_plan.pool_key,
+        checkout_id: lease.id,
+        lease_expires_at: lease.lease_expires_at,
+    })
+}
+
+fn next_generated_workspace(
+    connection: &mut SqliteConnection,
+    workspace_root: &std::path::Path,
+) -> Result<(WorkspaceId, CanonicalPath), WorkspaceError> {
+    for _ in 0..8 {
+        let workspace_id = WorkspaceId::new();
+        let workspace_path =
+            crate::paths::generated_workspace_path_below(workspace_root, &workspace_id);
+        if workspace_path.exists() {
+            continue;
+        }
+        let workspace_path = CanonicalPath::from_absolute(workspace_path)
+            .map_err(|error| WorkspaceError::Validation(ValidationError::Canonicalize(error)))?;
+        if find_workspace_by_path(connection, &workspace_path)
+            .map_err(WorkspaceError::Database)?
+            .is_none()
+        {
+            return Ok((workspace_id, workspace_path));
+        }
+    }
+    Err(WorkspaceError::GeneratedPathUnavailable(
+        workspace_root.to_owned(),
+    ))
+}
+
+fn automatic_creation_plan(
+    plan: &AutomaticAllocationPlan,
+    workspace_path: CanonicalPath,
+) -> Result<CreationPlan, WorkspaceError> {
+    let repositories = plan
+        .repositories
+        .iter()
+        .map(|repository| repository.source_path.as_path().to_owned())
+        .collect::<Vec<_>>();
+    let input = validation::validate_create(workspace_path.as_path(), &repositories)?;
+    let worktrees = naming::plan_worktrees(&input)?;
+    let repositories = worktrees
+        .into_iter()
+        .zip(&plan.repositories)
+        .map(|(worktree, repository)| RepositoryPlan {
+            source_path: repository.source_path.clone(),
+            repository_identity: repository.repository_identity.clone(),
+            worktree_path: worktree.worktree_path,
+            head: repository.head.clone(),
+        })
+        .collect();
+
+    Ok(CreationPlan {
+        workspace_path: input.workspace_path,
+        repositories,
+    })
+}
+
 pub fn prepare_create(request: &CreateRequest) -> Result<CreationPlan, WorkspaceError> {
     let input = validation::validate_create(&request.workspace_path, &request.repositories)?;
     let worktrees = naming::plan_worktrees(&input)?;
@@ -362,6 +555,29 @@ pub fn initialize_creation(
     connection: &mut SqliteConnection,
     plan: CreationPlan,
 ) -> Result<CreationContext, WorkspaceError> {
+    let intent_json = JsonDocument::from_serializable(&plan).map_err(WorkspaceError::Json)?;
+    initialize_creation_with_metadata(
+        connection,
+        plan,
+        WorkspaceManagementMetadata {
+            mode: WorkspaceManagementMode::Manual,
+            pool_key: None,
+            workspace_root: None,
+            last_checked_in_at: None,
+            reclaimed_at: None,
+        },
+        None,
+        intent_json,
+    )
+}
+
+fn initialize_creation_with_metadata(
+    connection: &mut SqliteConnection,
+    plan: CreationPlan,
+    management: WorkspaceManagementMetadata,
+    lease: Option<&WorkspaceLease>,
+    intent_json: JsonDocument,
+) -> Result<CreationContext, WorkspaceError> {
     if find_workspace_by_path(connection, &plan.workspace_path)
         .map_err(WorkspaceError::Database)?
         .is_some()
@@ -369,7 +585,9 @@ pub fn initialize_creation(
         return Err(WorkspaceError::AlreadyManaged(plan.workspace_path));
     }
 
-    let workspace_id = WorkspaceId::new();
+    let workspace_id = lease
+        .map(|lease| lease.workspace_id)
+        .unwrap_or_else(WorkspaceId::new);
     let owner_id = format!("process:{}", std::process::id());
     let operation_intent = OperationIntent::new(
         workspace_id,
@@ -377,7 +595,7 @@ pub fn initialize_creation(
         owner_id,
         Timestamp::after_seconds(300),
         "prepare worktrees",
-        JsonDocument::from_serializable(&plan).map_err(WorkspaceError::Json)?,
+        intent_json,
     );
     let repositories = plan
         .repositories
@@ -390,15 +608,20 @@ pub fn initialize_creation(
     let now = Timestamp::now();
 
     with_short_transaction(connection, |connection| {
-        insert_workspace(
+        insert_managed_workspace(
             connection,
-            &NewWorkspace {
+            &NewManagedWorkspace {
                 id: workspace_id,
                 canonical_path: plan.workspace_path.clone(),
                 state: WorkspaceState::Creating,
                 created_at: now.clone(),
                 updated_at: now.clone(),
                 last_reconciled_at: None,
+                management_mode: management.mode,
+                pool_key: management.pool_key.clone(),
+                workspace_root: management.workspace_root.clone(),
+                last_checked_in_at: management.last_checked_in_at.clone(),
+                reclaimed_at: management.reclaimed_at.clone(),
             },
         )?;
         for repository in &repositories {
@@ -420,6 +643,9 @@ pub fn initialize_creation(
             )?;
         }
         persist_operation_intent(connection, &operation_intent)?;
+        if let Some(lease) = lease {
+            insert_workspace_lease(connection, &crate::storage::NewWorkspaceLease::from(lease))?;
+        }
 
         append_event(
             connection,
@@ -485,18 +711,33 @@ pub fn execute_creation(
     connection: &mut SqliteConnection,
     context: &CreationContext,
 ) -> Result<(), WorkspaceError> {
+    execute_creation_with_lease(connection, context, None)
+}
+
+fn execute_creation_with_lease(
+    connection: &mut SqliteConnection,
+    context: &CreationContext,
+    lease: Option<&WorkspaceLease>,
+) -> Result<(), WorkspaceError> {
     if let Err(source) = fs::create_dir(&context.plan.workspace_path) {
         let primary = WorkspaceError::Io {
             path: context.plan.workspace_path.clone().into_path_buf(),
             source,
         };
-        return fail_creation(connection, context, &[], None, primary);
+        return fail_creation(connection, context, &[], None, lease, primary);
     }
 
     let mut completed = Vec::new();
     for repository in &context.repositories {
         if let Err(primary) = execute_repository_step(connection, context, repository) {
-            return fail_creation(connection, context, &completed, Some(repository), primary);
+            return fail_creation(
+                connection,
+                context,
+                &completed,
+                Some(repository),
+                lease,
+                primary,
+            );
         }
         completed.push(repository);
     }
@@ -615,9 +856,10 @@ fn fail_creation(
     context: &CreationContext,
     completed: &[&TrackedRepository],
     failed: Option<&TrackedRepository>,
+    lease: Option<&WorkspaceLease>,
     primary: WorkspaceError,
 ) -> Result<(), WorkspaceError> {
-    match rollback_creation(connection, context, completed, failed, &primary) {
+    match rollback_creation(connection, context, completed, failed, lease, &primary) {
         Ok(()) => Err(primary),
         Err(rollback) => Err(WorkspaceError::Rollback {
             primary: Box::new(primary),
@@ -631,6 +873,7 @@ fn rollback_creation(
     context: &CreationContext,
     completed: &[&TrackedRepository],
     failed: Option<&TrackedRepository>,
+    lease: Option<&WorkspaceLease>,
     primary: &WorkspaceError,
 ) -> Result<(), WorkspaceError> {
     let error_json = error_document(primary);
@@ -670,6 +913,14 @@ fn rollback_creation(
     if context.plan.workspace_path.as_path().exists() {
         if let Err(error) = fs::remove_dir(&context.plan.workspace_path) {
             errors.push(error.to_string());
+        }
+    }
+
+    if let Some(lease) = lease {
+        match release_workspace_lease(connection, &context.workspace_id, &lease.id) {
+            Ok(true) => {}
+            Ok(false) => errors.push("automatic checkout lease was not found".to_owned()),
+            Err(error) => errors.push(error.to_string()),
         }
     }
 
@@ -730,6 +981,8 @@ pub enum WorkspaceError {
     NotAutomatic(CanonicalPath),
     NotReusable(CanonicalPath),
     LeaseActive(WorkspaceId),
+    ProvisioningHasCheckoutId(CheckoutId),
+    GeneratedPathUnavailable(PathBuf),
     Json(crate::domain::JsonDocumentError),
     AlreadyManaged(CanonicalPath),
     Rollback {
@@ -776,6 +1029,15 @@ impl fmt::Display for WorkspaceError {
                     "workspace has an active checkout lease: {workspace_id}"
                 )
             }
+            Self::ProvisioningHasCheckoutId(checkout_id) => write!(
+                formatter,
+                "automatic provisioning cannot reuse checkout identifier: {checkout_id}"
+            ),
+            Self::GeneratedPathUnavailable(path) => write!(
+                formatter,
+                "could not allocate a generated workspace path below {}",
+                path.display()
+            ),
             Self::Json(error) => error.fmt(formatter),
             Self::AlreadyManaged(path) => write!(formatter, "workspace is already managed: {path}"),
             Self::Rollback { primary, rollback } => {
@@ -816,6 +1078,8 @@ impl std::error::Error for WorkspaceError {
             Self::NotAutomatic(_) => None,
             Self::NotReusable(_) => None,
             Self::LeaseActive(_) => None,
+            Self::ProvisioningHasCheckoutId(_) => None,
+            Self::GeneratedPathUnavailable(_) => None,
             Self::Json(error) => Some(error),
             Self::AlreadyManaged(_) => None,
             Self::Rollback { primary, .. } => Some(primary),
@@ -851,6 +1115,7 @@ mod tests {
     use diesel::prelude::*;
 
     use super::*;
+    use crate::storage::NewWorkspace;
 
     fn test_root() -> PathBuf {
         std::env::temp_dir().join(format!("trees-workspace-{}", uuid::Uuid::now_v7()))
@@ -1212,6 +1477,170 @@ mod tests {
     }
 
     #[test]
+    fn provisions_an_automatic_workspace_below_the_managed_root() {
+        let root = test_root();
+        let source = root.join("source");
+        repository(&source);
+        let workspace_root = root.join("managed");
+        let mut plan = prepare_automatic(&AutomaticCreateRequest {
+            repositories: vec![source.clone()],
+            checkout_id: None,
+        })
+        .expect("automatic allocation plan should be prepared");
+        plan.workspace_root = CanonicalPath::from_absolute(workspace_root.clone())
+            .expect("managed root should be absolute");
+        let database_path = root.join("state.sqlite");
+        let mut connection =
+            crate::database::connect(&database_path).expect("database should open");
+
+        let result = provision_automatic(&mut connection, &plan)
+            .expect("automatic provisioning should succeed");
+        let canonical_workspace_root =
+            CanonicalPath::resolve(&workspace_root).expect("managed root should resolve");
+        assert!(
+            result
+                .workspace_path
+                .as_path()
+                .starts_with(canonical_workspace_root.as_path()),
+            "workspace path {} should be below {}",
+            result.workspace_path,
+            canonical_workspace_root
+        );
+        assert!(result
+            .workspace_path
+            .as_path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("ws-")));
+        assert!(result.workspace_path.as_path().is_dir());
+
+        let workspace =
+            crate::storage::find_workspace_by_path(&mut connection, &result.workspace_path)
+                .expect("workspace lookup should succeed")
+                .expect("provisioned workspace should be persisted");
+        assert_eq!(
+            workspace.management_mode,
+            WorkspaceManagementMode::Automatic
+        );
+        assert_eq!(workspace.pool_key.as_deref(), Some(plan.pool_key.as_str()));
+        assert_eq!(workspace.workspace_root, Some(canonical_workspace_root));
+        assert_eq!(workspace.state, WorkspaceState::Ready);
+        let repositories = crate::storage::list_repo_worktrees(&mut connection, &workspace.id)
+            .expect("worktree lookup should succeed");
+        assert_eq!(repositories.len(), 1);
+        assert_eq!(repositories[0].state, RepoWorktreeState::Attached);
+        assert!(repositories[0].worktree_path.as_path().is_dir());
+
+        let lease = crate::storage::find_workspace_lease(&mut connection, &workspace.id)
+            .expect("lease lookup should succeed")
+            .expect("provisioned workspace should be checked out");
+        assert_eq!(lease.id, result.checkout_id);
+        let operation = crate::schema::operations::table
+            .filter(crate::schema::operations::workspace_id.eq(workspace.id))
+            .select(crate::storage::OperationRow::as_select())
+            .first(&mut connection)
+            .expect("provisioning operation should exist");
+        assert_eq!(operation.state, OperationState::Succeeded);
+        assert!(
+            crate::storage::list_events_for_operation(&mut connection, &operation.id)
+                .expect("provisioning events should be readable")
+                .iter()
+                .any(|event| event.event_type == "workspace_checked_out")
+        );
+
+        crate::storage::release_workspace_lease(
+            &mut connection,
+            &workspace.id,
+            &result.checkout_id,
+        )
+        .expect("provisioning lease should be releasable");
+        crate::git::remove_worktree(
+            &CanonicalPath::resolve(&source).expect("source repository should resolve"),
+            repositories[0].worktree_path.as_path(),
+        )
+        .expect("provisioned worktree should be removable");
+        drop(connection);
+        fs::remove_file(database_path).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn rolls_back_automatic_provisioning_after_a_repository_identity_change() {
+        let root = test_root();
+        let first = root.join("first");
+        let second = root.join("second");
+        repository(&first);
+        repository(&second);
+        let workspace_root = root.join("managed");
+        let mut plan = prepare_automatic(&AutomaticCreateRequest {
+            repositories: vec![first.clone(), second.clone()],
+            checkout_id: None,
+        })
+        .expect("automatic allocation plan should be prepared");
+        plan.workspace_root =
+            CanonicalPath::from_absolute(workspace_root).expect("managed root should be absolute");
+        plan.repositories[1].repository_identity =
+            CanonicalPath::from_absolute(root.join("unexpected-repository-identity"))
+                .expect("fake repository identity should be absolute");
+        let database_path = root.join("state.sqlite");
+        let mut connection =
+            crate::database::connect(&database_path).expect("database should open");
+
+        let error = provision_automatic(&mut connection, &plan)
+            .expect_err("changed repository identity should roll back provisioning");
+        let workspace_path = match &error {
+            WorkspaceError::NotReusable(path) => path.clone().into_path_buf(),
+            other => panic!("unexpected provisioning error: {other}"),
+        };
+        assert!(!workspace_path.exists());
+        let workspace = crate::storage::find_workspace_by_path(
+            &mut connection,
+            &CanonicalPath::from_absolute(workspace_path.clone())
+                .expect("workspace path should be absolute"),
+        )
+        .expect("workspace lookup should succeed")
+        .expect("failed workspace should remain persisted");
+        assert_eq!(
+            workspace.management_mode,
+            WorkspaceManagementMode::Automatic
+        );
+        assert_eq!(workspace.state, WorkspaceState::Failed);
+        assert!(
+            crate::storage::find_workspace_lease(&mut connection, &workspace.id)
+                .expect("lease lookup should succeed")
+                .is_none()
+        );
+        assert!(
+            crate::storage::list_repo_worktrees(&mut connection, &workspace.id)
+                .expect("worktree lookup should succeed")
+                .iter()
+                .all(|worktree| worktree.state == RepoWorktreeState::Failed)
+        );
+        let operation = crate::schema::operations::table
+            .filter(crate::schema::operations::workspace_id.eq(workspace.id))
+            .select(crate::storage::OperationRow::as_select())
+            .first(&mut connection)
+            .expect("provisioning operation should exist");
+        assert_eq!(operation.state, OperationState::RolledBack);
+        assert_eq!(
+            crate::git::list_worktrees(&CanonicalPath::resolve(&first).unwrap())
+                .expect("first repository worktrees should be readable")
+                .len(),
+            1
+        );
+        assert_eq!(
+            crate::git::list_worktrees(&CanonicalPath::resolve(&second).unwrap())
+                .expect("second repository worktrees should be readable")
+                .len(),
+            1
+        );
+
+        drop(connection);
+        fs::remove_file(database_path).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
     fn rolls_back_worktrees_when_a_later_repository_fails() {
         let root = test_root();
         let first = root.join("first");
@@ -1363,6 +1792,8 @@ mod tests {
             WorkspaceError::NotAutomatic(path.clone()),
             WorkspaceError::NotReusable(path.clone()),
             WorkspaceError::LeaseActive(WorkspaceId::new()),
+            WorkspaceError::ProvisioningHasCheckoutId(CheckoutId::new()),
+            WorkspaceError::GeneratedPathUnavailable(path.as_path().to_owned()),
             WorkspaceError::Json(JsonDocument::parse("not json").unwrap_err()),
             primary,
             WorkspaceError::Rollback {

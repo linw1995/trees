@@ -58,7 +58,7 @@
 - [x] 4.2 Persist allocation intent and acquire the lease atomically, then run
   final reconciliation and release the lease with a failure event if the
   post-check fails
-- [ ] 4.3 Implement automatic provisioning below the managed workspace root
+- [x] 4.3 Implement automatic provisioning below the managed workspace root
   when no safe candidate exists, including generated paths, creation intent,
   immediate lease ownership, and partial-creation rollback
 - [ ] 4.4 Implement identifier-based renewal with the fixed 24-hour extension,

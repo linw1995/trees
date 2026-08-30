@@ -42,7 +42,17 @@ pub fn managed_workspace_directory() -> Result<PathBuf, PathError> {
 }
 
 pub fn generated_workspace_path(workspace_id: &WorkspaceId) -> Result<PathBuf, PathError> {
-    Ok(managed_workspace_directory()?.join(format!("ws-{workspace_id}")))
+    Ok(generated_workspace_path_below(
+        &managed_workspace_directory()?,
+        workspace_id,
+    ))
+}
+
+pub fn generated_workspace_path_below(
+    workspace_root: &std::path::Path,
+    workspace_id: &WorkspaceId,
+) -> PathBuf {
+    workspace_root.join(format!("ws-{workspace_id}"))
 }
 
 pub fn ensure_state_directory() -> Result<PathBuf, StateDirectoryError> {
@@ -248,5 +258,14 @@ mod tests {
             path.file_name().and_then(|name| name.to_str()),
             Some(expected_name.as_str())
         );
+    }
+
+    #[test]
+    fn generated_workspace_path_can_use_a_resolved_root() {
+        let id = WorkspaceId::new();
+        let root = PathBuf::from("/tmp/trees-workspaces");
+        let path = generated_workspace_path_below(&root, &id);
+
+        assert_eq!(path, root.join(format!("ws-{id}")));
     }
 }

@@ -73,6 +73,22 @@ pub struct NewWorkspace {
     pub last_reconciled_at: Option<Timestamp>,
 }
 
+#[derive(Debug, Insertable)]
+#[diesel(table_name = workspaces)]
+pub struct NewManagedWorkspace {
+    pub id: WorkspaceId,
+    pub canonical_path: CanonicalPath,
+    pub state: WorkspaceState,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+    pub last_reconciled_at: Option<Timestamp>,
+    pub management_mode: WorkspaceManagementMode,
+    pub pool_key: Option<String>,
+    pub workspace_root: Option<CanonicalPath>,
+    pub last_checked_in_at: Option<Timestamp>,
+    pub reclaimed_at: Option<Timestamp>,
+}
+
 #[derive(Debug, Queryable, Selectable, Identifiable)]
 #[diesel(table_name = workspace_leases)]
 #[diesel(check_for_backend(Sqlite))]
