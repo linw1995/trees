@@ -129,6 +129,15 @@ impl FromStr for WorkspaceManagementMode {
     }
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WorkspaceManagementMetadata {
+    pub mode: WorkspaceManagementMode,
+    pub pool_key: Option<String>,
+    pub workspace_root: Option<CanonicalPath>,
+    pub last_checked_in_at: Option<Timestamp>,
+    pub reclaimed_at: Option<Timestamp>,
+}
+
 #[derive(Debug)]
 pub enum IdentifierError {
     InvalidUuid(uuid::Error),
@@ -161,6 +170,7 @@ pub enum WorkspaceState {
     Ready,
     Degraded,
     Failed,
+    Reclaimed,
 }
 
 impl WorkspaceState {
@@ -170,6 +180,7 @@ impl WorkspaceState {
             Self::Ready => "ready",
             Self::Degraded => "degraded",
             Self::Failed => "failed",
+            Self::Reclaimed => "reclaimed",
         }
     }
 }
@@ -189,13 +200,14 @@ impl FromStr for WorkspaceState {
             "ready" => Ok(Self::Ready),
             "degraded" => Ok(Self::Degraded),
             "failed" => Ok(Self::Failed),
+            "reclaimed" => Ok(Self::Reclaimed),
             _ => Err(StateParseError::new(value, Self::ALL)),
         }
     }
 }
 
 impl WorkspaceState {
-    const ALL: &'static [&'static str] = &["creating", "ready", "degraded", "failed"];
+    const ALL: &'static [&'static str] = &["creating", "ready", "degraded", "failed", "reclaimed"];
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, AsExpression, FromSqlRow)]
@@ -204,9 +216,11 @@ impl WorkspaceState {
 pub enum RepoWorktreeState {
     Pending,
     Attached,
+    Dirty,
     Missing,
     Diverged,
     Failed,
+    Reclaimed,
 }
 
 impl RepoWorktreeState {
@@ -214,13 +228,23 @@ impl RepoWorktreeState {
         match self {
             Self::Pending => "pending",
             Self::Attached => "attached",
+            Self::Dirty => "dirty",
             Self::Missing => "missing",
             Self::Diverged => "diverged",
             Self::Failed => "failed",
+            Self::Reclaimed => "reclaimed",
         }
     }
 
-    const ALL: &'static [&'static str] = &["pending", "attached", "missing", "diverged", "failed"];
+    const ALL: &'static [&'static str] = &[
+        "pending",
+        "attached",
+        "dirty",
+        "missing",
+        "diverged",
+        "failed",
+        "reclaimed",
+    ];
 }
 
 impl fmt::Display for RepoWorktreeState {
@@ -236,9 +260,11 @@ impl FromStr for RepoWorktreeState {
         match value {
             "pending" => Ok(Self::Pending),
             "attached" => Ok(Self::Attached),
+            "dirty" => Ok(Self::Dirty),
             "missing" => Ok(Self::Missing),
             "diverged" => Ok(Self::Diverged),
             "failed" => Ok(Self::Failed),
+            "reclaimed" => Ok(Self::Reclaimed),
             _ => Err(StateParseError::new(value, Self::ALL)),
         }
     }
@@ -564,6 +590,18 @@ mod tests {
         assert_eq!(
             WorkspaceManagementMode::from_str("manual").unwrap(),
             WorkspaceManagementMode::Manual
+        );
+        assert_eq!(
+            WorkspaceState::from_str("reclaimed").unwrap(),
+            WorkspaceState::Reclaimed
+        );
+        assert_eq!(
+            RepoWorktreeState::from_str("dirty").unwrap(),
+            RepoWorktreeState::Dirty
+        );
+        assert_eq!(
+            RepoWorktreeState::from_str("reclaimed").unwrap(),
+            RepoWorktreeState::Reclaimed
         );
         assert_eq!(
             RepoWorktreeState::from_str("diverged").unwrap(),

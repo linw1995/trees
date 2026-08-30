@@ -27,6 +27,12 @@ pub fn reconcile_workspace(
 ) -> Result<ReconciliationSummary, ReconciliationError> {
     let workspace =
         find_workspace(connection, workspace_id).map_err(ReconciliationError::Database)?;
+    if workspace.state == WorkspaceState::Reclaimed {
+        return Ok(ReconciliationSummary {
+            changed_worktrees: 0,
+            workspace_state: WorkspaceState::Reclaimed,
+        });
+    }
     let repositories =
         list_repo_worktrees(connection, workspace_id).map_err(ReconciliationError::Database)?;
     let mut changed_worktrees = 0;
@@ -58,7 +64,11 @@ pub fn reconcile_workspace(
     let workspace_state = if observed_states.iter().any(|state| {
         matches!(
             state,
-            RepoWorktreeState::Missing | RepoWorktreeState::Diverged | RepoWorktreeState::Failed
+            RepoWorktreeState::Dirty
+                | RepoWorktreeState::Missing
+                | RepoWorktreeState::Diverged
+                | RepoWorktreeState::Failed
+                | RepoWorktreeState::Reclaimed
         )
     }) {
         WorkspaceState::Degraded

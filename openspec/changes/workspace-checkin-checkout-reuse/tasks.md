@@ -14,7 +14,7 @@
 - [x] 1.4 Add a typed checkout lease model with owner, acquisition, expiry,
   and heartbeat timestamps; define the reusable-workspace predicate and
   explicit mode/access/health separation
-- [ ] 1.5 Extend lifecycle states with `dirty` and `reclaimed`, plus
+- [x] 1.5 Extend lifecycle states with `dirty` and `reclaimed`, plus
   `last_checked_in_at`, pool-key, absolute workspace-root, and reclamation
   timestamps; update parsing, serialization, workspace-state aggregation, and
   affected validation paths
