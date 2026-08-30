@@ -217,6 +217,21 @@ pub fn remove_worktree(repository: &CanonicalPath, worktree_path: &Path) -> Resu
     Ok(())
 }
 
+pub fn remove_clean_worktree(
+    repository: &CanonicalPath,
+    worktree_path: &Path,
+) -> Result<(), GitError> {
+    run_git(
+        repository.as_path(),
+        &[
+            arg("worktree"),
+            arg("remove"),
+            worktree_path.as_os_str().to_owned(),
+        ],
+    )?;
+    Ok(())
+}
+
 fn parse_worktree_list(
     repository: &CanonicalPath,
     output: &str,
@@ -588,6 +603,19 @@ mod tests {
             .expect("worktrees should be listed")
             .iter()
             .any(|worktree| worktree.path.as_path() == worktree_path));
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn removes_a_clean_worktree_without_force() {
+        let (root, repository) = repository();
+        let worktree_path = root.join("workspace");
+        add_detached_worktree(&repository, &worktree_path).expect("worktree should be added");
+
+        remove_clean_worktree(&repository, &worktree_path)
+            .expect("clean worktree should be removed without force");
+        assert!(!worktree_path.exists());
+
         fs::remove_dir_all(root).expect("test root should be removable");
     }
 

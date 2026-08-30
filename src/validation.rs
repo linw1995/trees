@@ -13,6 +13,49 @@ pub fn infer_workspace_mode(workspace_path: Option<&Path>) -> WorkspaceManagemen
     }
 }
 
+pub fn validate_workspace_root(
+    workspace_path: &Path,
+    managed_root: &Path,
+    expected_worktree_paths: &[PathBuf],
+) -> Result<(), WorkspaceRootError> {
+    if !workspace_path.is_absolute() || !managed_root.is_absolute() {
+        return Err(WorkspaceRootError::NotAbsolute {
+            workspace: workspace_path.to_owned(),
+            managed_root: managed_root.to_owned(),
+        });
+    }
+    if !workspace_path.starts_with(managed_root) {
+        return Err(WorkspaceRootError::OutsideManagedRoot {
+            workspace: workspace_path.to_owned(),
+            managed_root: managed_root.to_owned(),
+        });
+    }
+    if !workspace_path.is_dir() {
+        return Err(WorkspaceRootError::NotDirectory(workspace_path.to_owned()));
+    }
+
+    let expected = expected_worktree_paths
+        .iter()
+        .cloned()
+        .collect::<HashSet<_>>();
+    for entry in
+        fs::read_dir(workspace_path).map_err(|source| WorkspaceRootError::ReadDirectory {
+            path: workspace_path.to_owned(),
+            source,
+        })?
+    {
+        let entry = entry.map_err(|source| WorkspaceRootError::ReadDirectory {
+            path: workspace_path.to_owned(),
+            source,
+        })?;
+        if !expected.contains(entry.path().as_path()) {
+            return Err(WorkspaceRootError::UnexpectedEntry(entry.path()));
+        }
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct ValidatedCreateInput {
     pub workspace_path: CanonicalPath,
@@ -117,6 +160,79 @@ pub enum ValidationError {
         workspace: PathBuf,
         repository: PathBuf,
     },
+}
+
+#[derive(Debug)]
+pub enum WorkspaceRootError {
+    NotAbsolute {
+        workspace: PathBuf,
+        managed_root: PathBuf,
+    },
+    OutsideManagedRoot {
+        workspace: PathBuf,
+        managed_root: PathBuf,
+    },
+    NotDirectory(PathBuf),
+    ReadDirectory {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    UnexpectedEntry(PathBuf),
+}
+
+impl fmt::Display for WorkspaceRootError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotAbsolute {
+                workspace,
+                managed_root,
+            } => write!(
+                formatter,
+                "workspace and managed root must be absolute: {} / {}",
+                workspace.display(),
+                managed_root.display()
+            ),
+            Self::OutsideManagedRoot {
+                workspace,
+                managed_root,
+            } => write!(
+                formatter,
+                "workspace {} is outside managed root {}",
+                workspace.display(),
+                managed_root.display()
+            ),
+            Self::NotDirectory(path) => {
+                write!(
+                    formatter,
+                    "workspace root is not a directory: {}",
+                    path.display()
+                )
+            }
+            Self::ReadDirectory { path, source } => {
+                write!(
+                    formatter,
+                    "failed to read workspace root {}: {source}",
+                    path.display()
+                )
+            }
+            Self::UnexpectedEntry(path) => {
+                write!(
+                    formatter,
+                    "workspace root contains unexpected entry: {}",
+                    path.display()
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for WorkspaceRootError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ReadDirectory { source, .. } => Some(source),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for ValidationError {
@@ -285,5 +401,27 @@ mod tests {
             infer_workspace_mode(None),
             WorkspaceManagementMode::Automatic
         );
+    }
+
+    #[test]
+    fn validates_workspace_root_contents_and_containment() {
+        let root = test_root();
+        let managed_root = root.join("managed");
+        let workspace = managed_root.join("workspace");
+        fs::create_dir_all(workspace.join("repo")).expect("workspace should be created");
+        let managed_root = fs::canonicalize(&managed_root).expect("managed root should resolve");
+        let workspace = fs::canonicalize(&workspace).expect("workspace should resolve");
+        let worktree = fs::canonicalize(workspace.join("repo")).expect("worktree should resolve");
+
+        validate_workspace_root(&workspace, &managed_root, std::slice::from_ref(&worktree))
+            .expect("workspace root should contain only expected worktrees");
+        fs::write(workspace.join("unexpected"), "content\n")
+            .expect("unexpected file should be written");
+        assert!(matches!(
+            validate_workspace_root(&workspace, &managed_root, std::slice::from_ref(&worktree)),
+            Err(WorkspaceRootError::UnexpectedEntry(_))
+        ));
+
+        fs::remove_dir_all(root).expect("test root should be removable");
     }
 }

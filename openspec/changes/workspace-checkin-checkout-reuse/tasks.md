@@ -47,7 +47,7 @@
 - [x] 3.3 Reconcile active leases at checkout and checkin boundaries while
   keeping Git commands outside database transactions; verify unchanged
   observations do not append duplicate events
-- [ ] 3.4 Add a non-forced worktree removal primitive and a workspace-root
+- [x] 3.4 Add a non-forced worktree removal primitive and a workspace-root
   safety check that refuses to remove unexpected files or directories
 
 ## 4. Pool Allocation and Renewal Workflow
