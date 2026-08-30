@@ -83,7 +83,7 @@
   with UTC cutoff calculation, `last_checked_in_at`/`created_at` idle
   selection, automatic-mode-only candidate filtering scoped to the resolved
   workspace root, and counts for not-checked-out and checked-out workspaces
-- [ ] 5.5 Execute GC as one serialized operation per candidate, safely remove
+- [x] 5.5 Execute GC as one serialized operation per candidate, safely remove
   clean worktrees and the empty workspace root in normal mode; in `--force`
   mode allow explicitly authorized unsafe automatic-slot cleanup while
   retaining age, root, lease, operation, and repository-identity guards

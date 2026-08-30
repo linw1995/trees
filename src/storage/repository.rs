@@ -592,6 +592,96 @@ pub fn record_workspace_reclaimed(
     })
 }
 
+pub fn record_workspace_gc_skipped(
+    connection: &mut SqliteConnection,
+    operation_id: &OperationId,
+    workspace_id: &WorkspaceId,
+    details_json: Option<JsonDocument>,
+    error_json: JsonDocument,
+) -> QueryResult<()> {
+    with_short_transaction(connection, |connection| {
+        let workspace = workspaces::table
+            .find(workspace_id)
+            .select(WorkspaceRow::as_select())
+            .first(connection)?;
+        finish_operation_in_transaction(
+            connection,
+            operation_id,
+            OperationState::Failed,
+            "GC skipped workspace",
+            None,
+            TransitionMetadata::new("operation_failed", "gc")
+                .with_details(details_json.clone().unwrap_or_else(empty_json))
+                .with_error(error_json.clone()),
+        )?;
+        append_event(
+            connection,
+            &EventDraft {
+                operation_id: *operation_id,
+                entity_type: "workspace".to_owned(),
+                entity_id: workspace.id.to_string(),
+                event_type: "workspace_gc_skipped".to_owned(),
+                source: "gc".to_owned(),
+                occurred_at: Timestamp::now(),
+                previous_state: Some(workspace.state.to_string()),
+                current_state: Some(workspace.state.to_string()),
+                details_json,
+                error_json: Some(error_json),
+            },
+        )?;
+        Ok(())
+    })
+}
+
+pub fn record_workspace_gc_failure(
+    connection: &mut SqliteConnection,
+    operation_id: &OperationId,
+    workspace_id: &WorkspaceId,
+    details_json: Option<JsonDocument>,
+    error_json: JsonDocument,
+) -> QueryResult<()> {
+    with_short_transaction(connection, |connection| {
+        let workspace = workspaces::table
+            .find(workspace_id)
+            .select(WorkspaceRow::as_select())
+            .first(connection)?;
+        let occurred_at = Timestamp::now();
+        diesel::update(workspaces::table.find(workspace_id))
+            .set((
+                workspaces::state.eq(WorkspaceState::Failed),
+                workspaces::updated_at.eq(&occurred_at),
+                workspaces::last_reconciled_at.eq(&occurred_at),
+            ))
+            .execute(connection)?;
+        finish_operation_in_transaction(
+            connection,
+            operation_id,
+            OperationState::Failed,
+            "GC failed",
+            None,
+            TransitionMetadata::new("operation_failed", "gc")
+                .with_details(details_json.clone().unwrap_or_else(empty_json))
+                .with_error(error_json.clone()),
+        )?;
+        append_event(
+            connection,
+            &EventDraft {
+                operation_id: *operation_id,
+                entity_type: "workspace".to_owned(),
+                entity_id: workspace.id.to_string(),
+                event_type: "workspace_gc_failed".to_owned(),
+                source: "gc".to_owned(),
+                occurred_at,
+                previous_state: Some(workspace.state.to_string()),
+                current_state: Some(WorkspaceState::Failed.to_string()),
+                details_json,
+                error_json: Some(error_json),
+            },
+        )?;
+        Ok(())
+    })
+}
+
 fn workspace_access_event(
     operation_id: &OperationId,
     workspace: &WorkspaceRow,
