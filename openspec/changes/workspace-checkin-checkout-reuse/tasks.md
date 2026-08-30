@@ -101,7 +101,7 @@
 - [x] 6.1 Add unit tests for lease state transitions, expiry, token
   authorization, UUID/timestamp serialization, reusable predicates, and
   dirty-state reconciliation
-- [ ] 6.2 Add integration tests for repeated pool allocation/checkin,
+- [x] 6.2 Add integration tests for repeated pool allocation/checkin,
   repository-set matching, least-recently-used selection, pool races,
   configured-root resolution, absolute path persistence, generated-path
   provisioning, concurrent allocation, renewal, stale-lease

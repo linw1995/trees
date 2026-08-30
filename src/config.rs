@@ -12,6 +12,7 @@ pub fn workspaces_directory() -> Result<PathBuf, ConfigError> {
     let table = load_table(&configuration_path)?;
     let default = paths::default_managed_workspace_directory()
         .map_err(|error| ConfigError::Path(error.to_string()))?;
+    let default = normalize_existing_path(&configuration_path, default)?;
     configured_workspaces_directory(&configuration_path, &table, default)
 }
 
@@ -40,10 +41,10 @@ fn configured_workspaces_directory(
         path: configuration_path.to_owned(),
         reason: "workspace.workspaces_dir must be a string".to_owned(),
     })?;
-    Ok(resolve_configured_path(
+    normalize_existing_path(
         configuration_path,
-        Path::new(value),
-    ))
+        resolve_configured_path(configuration_path, Path::new(value)),
+    )
 }
 
 fn set_workspaces_directory_at(
@@ -129,6 +130,20 @@ fn resolve_configured_path(configuration_path: &Path, path: &Path) -> PathBuf {
     } else {
         base.join(path)
     })
+}
+
+fn normalize_existing_path(
+    configuration_path: &Path,
+    path: PathBuf,
+) -> Result<PathBuf, ConfigError> {
+    if path.exists() {
+        fs::canonicalize(&path).map_err(|source| ConfigError::Io {
+            path: configuration_path.to_owned(),
+            source,
+        })
+    } else {
+        Ok(path)
+    }
 }
 
 fn normalize_path(path: PathBuf) -> PathBuf {

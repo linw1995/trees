@@ -401,13 +401,26 @@ pub fn execute(
             break;
         }
 
-        record_workspace_reclaimed(
+        if let Err(error) = record_workspace_reclaimed(
             connection,
             &operation.id,
             &workspace_id,
             Some(gc_details(&workspace.canonical_path, &scan, force, None)),
-        )
-        .map_err(GcError::Database)?;
+        ) {
+            let error_text = error.to_string();
+            finish_gc_failure(
+                connection,
+                &operation.id,
+                &workspace_id,
+                gc_details(&workspace.canonical_path, &scan, force, Some(&error_text)),
+                &error_text,
+            )?;
+            report.failed.push(GcFailure {
+                workspace_path: workspace.canonical_path,
+                error: error_text,
+            });
+            break;
+        }
         report.reclaimed.push(workspace.canonical_path);
     }
     Ok(report)
@@ -557,10 +570,13 @@ fn prepare_removal(
             return Err(GcCandidateReason::RepositoryIdentity);
         }
     }
-    if workspace.canonical_path.as_path().exists() && !workspace.canonical_path.as_path().is_dir() {
-        return Err(GcCandidateReason::UnsafeRoot);
-    }
-    if !workspace.canonical_path.as_path().is_dir() {
+    let workspace_exists = match fs::symlink_metadata(workspace.canonical_path.as_path()) {
+        Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => true,
+        Ok(_) => return Err(GcCandidateReason::UnsafeRoot),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => return Err(GcCandidateReason::UnsafeRoot),
+    };
+    if !workspace_exists {
         if force {
             return Ok(RemovalPlan {
                 workspace_path: workspace.canonical_path.as_path().to_owned(),
@@ -611,11 +627,19 @@ fn prepare_removal(
             .map_err(|_| GcCandidateReason::GitError)?
             .into_iter()
             .find(|worktree| worktree.path.as_path() == repository.worktree_path.as_path());
+        let worktree_exists = match fs::symlink_metadata(repository.worktree_path.as_path()) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(GcCandidateReason::WorktreeIdentity);
+            }
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(_) => return Err(GcCandidateReason::WorktreeMismatch),
+        };
         if !force {
             let Some(worktree) = listed.as_ref() else {
                 return Err(GcCandidateReason::WorktreeMismatch);
             };
-            if worktree.prunable.is_some() || !repository.worktree_path.as_path().exists() {
+            if worktree.prunable.is_some() || !worktree_exists {
                 return Err(GcCandidateReason::WorktreeMismatch);
             }
             let identity = git::inspect_worktree_identity(repository.worktree_path.as_path())
@@ -633,7 +657,7 @@ fn prepare_removal(
             }
         }
         let Some(worktree) = listed else {
-            if repository.worktree_path.as_path().exists() {
+            if worktree_exists {
                 worktrees.push(WorktreeRemoval {
                     repository: repository.source_path.clone(),
                     path: repository.worktree_path.as_path().to_owned(),
@@ -642,7 +666,7 @@ fn prepare_removal(
             }
             continue;
         };
-        if force && repository.worktree_path.as_path().exists() {
+        if force && worktree_exists {
             let identity = git::inspect_worktree_identity(repository.worktree_path.as_path())
                 .map_err(|_| GcCandidateReason::WorktreeIdentity)?;
             if identity != repository.repository_identity {
@@ -977,7 +1001,10 @@ mod tests {
             false,
         )
         .expect("GC execution should succeed");
-        assert_eq!(report.reclaimed, [workspace.canonical_path.clone()]);
+        assert_eq!(
+            report.reclaimed.as_slice(),
+            std::slice::from_ref(&workspace.canonical_path)
+        );
         assert!(report.skipped.is_empty());
         assert!(report.failed.is_empty());
         assert!(!workspace.canonical_path.as_path().exists());
@@ -1028,7 +1055,10 @@ mod tests {
             true,
         )
         .expect("forced GC execution should succeed");
-        assert_eq!(report.reclaimed, [workspace.canonical_path.clone()]);
+        assert_eq!(
+            report.reclaimed.as_slice(),
+            std::slice::from_ref(&workspace.canonical_path)
+        );
         assert!(report.skipped.is_empty());
         assert!(report.failed.is_empty());
         assert!(!workspace.canonical_path.as_path().exists());

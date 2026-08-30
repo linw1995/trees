@@ -922,9 +922,7 @@ fn initialize_creation_with_metadata(
         return Err(WorkspaceError::AlreadyManaged(plan.workspace_path));
     }
 
-    let workspace_id = lease
-        .map(|lease| lease.workspace_id)
-        .unwrap_or_else(WorkspaceId::new);
+    let workspace_id = lease.map(|lease| lease.workspace_id).unwrap_or_default();
     let owner_id = format!("process:{}", std::process::id());
     let operation_intent = OperationIntent::new(
         workspace_id,

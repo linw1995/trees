@@ -77,7 +77,7 @@ mod tests {
     fn candidates_use_last_checkin_then_creation_and_id() {
         let created = timestamp("2026-01-01T00:00:00Z");
         let checked_in = timestamp("2026-02-01T00:00:00Z");
-        let mut candidates = vec![
+        let mut candidates = [
             PoolCandidate {
                 id: WorkspaceId::new(),
                 last_checked_in_at: Some(checked_in.clone()),
