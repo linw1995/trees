@@ -7,7 +7,7 @@
 - [x] 1.2 Define `automatic` and `manual` workspace modes inferred from
   positional-path presence, and the rule that manual workspaces bypass all
   automated checkout/checkin and GC behavior
-- [ ] 1.3 Define the canonical repository-set pool key, least-recently-used
+- [x] 1.3 Define the canonical repository-set pool key, least-recently-used
   candidate ordering, configurable platform-specific `workspaces_dir`,
   absolute root normalization, generated path format, and allocation retry
   behavior after a lease race

@@ -4,8 +4,11 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
+use crate::domain::WorkspaceId;
+
 const APPLICATION_NAME: &str = "trees";
 const DATABASE_NAME: &str = "db.sqlite";
+const WORKSPACES_DIRECTORY_NAME: &str = "workspaces";
 
 #[derive(Debug)]
 pub enum PathError {
@@ -30,6 +33,16 @@ pub fn state_directory() -> Result<PathBuf, PathError> {
 
 pub fn database_path() -> Result<PathBuf, PathError> {
     Ok(state_directory()?.join(DATABASE_NAME))
+}
+
+pub fn managed_workspace_directory() -> Result<PathBuf, PathError> {
+    Ok(platform_data_base()?
+        .join(APPLICATION_NAME)
+        .join(WORKSPACES_DIRECTORY_NAME))
+}
+
+pub fn generated_workspace_path(workspace_id: &WorkspaceId) -> Result<PathBuf, PathError> {
+    Ok(managed_workspace_directory()?.join(format!("ws-{workspace_id}")))
 }
 
 pub fn ensure_state_directory() -> Result<PathBuf, StateDirectoryError> {
@@ -97,6 +110,10 @@ fn platform_state_base() -> Result<PathBuf, PathError> {
     platform_state_base_impl()
 }
 
+fn platform_data_base() -> Result<PathBuf, PathError> {
+    platform_data_base_impl()
+}
+
 #[cfg(target_os = "linux")]
 fn platform_state_base_impl() -> Result<PathBuf, PathError> {
     if let Some(path) = non_empty_environment_path("XDG_STATE_HOME") {
@@ -106,8 +123,24 @@ fn platform_state_base_impl() -> Result<PathBuf, PathError> {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn platform_data_base_impl() -> Result<PathBuf, PathError> {
+    if let Some(path) = non_empty_environment_path("XDG_DATA_HOME") {
+        Ok(path)
+    } else {
+        Ok(home_directory()?.join(".local").join("share"))
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn platform_state_base_impl() -> Result<PathBuf, PathError> {
+    Ok(home_directory()?
+        .join("Library")
+        .join("Application Support"))
+}
+
+#[cfg(target_os = "macos")]
+fn platform_data_base_impl() -> Result<PathBuf, PathError> {
     Ok(home_directory()?
         .join("Library")
         .join("Application Support"))
@@ -122,9 +155,23 @@ fn platform_state_base_impl() -> Result<PathBuf, PathError> {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn platform_data_base_impl() -> Result<PathBuf, PathError> {
+    if let Some(path) = non_empty_environment_path("LOCALAPPDATA") {
+        Ok(path)
+    } else {
+        Ok(home_directory()?.join("AppData").join("Local"))
+    }
+}
+
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn platform_state_base_impl() -> Result<PathBuf, PathError> {
     Ok(home_directory()?.join(".local").join("state"))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn platform_data_base_impl() -> Result<PathBuf, PathError> {
+    Ok(home_directory()?.join(".local").join("share"))
 }
 
 fn home_directory() -> Result<PathBuf, PathError> {
@@ -178,5 +225,28 @@ mod tests {
         let path = state_directory().expect("state directory should resolve");
 
         assert!(path.is_absolute());
+    }
+
+    #[test]
+    fn managed_workspace_directory_is_absolute_and_named_workspaces() {
+        let path = managed_workspace_directory().expect("workspace directory should resolve");
+
+        assert!(path.is_absolute());
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("workspaces")
+        );
+    }
+
+    #[test]
+    fn generated_workspace_path_contains_the_workspace_id() {
+        let id = WorkspaceId::new();
+        let path = generated_workspace_path(&id).expect("generated path should resolve");
+        let expected_name = format!("ws-{id}");
+
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some(expected_name.as_str())
+        );
     }
 }
