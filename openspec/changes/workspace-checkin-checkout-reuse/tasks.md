@@ -27,7 +27,7 @@
   table with one active lease per workspace
 - [x] 2.2 Backfill legacy explicit-path workspace records as `manual` without
   touching Git or the filesystem, and provide a reversible down migration
-- [ ] 2.3 Add Diesel schema/models and repository operations for acquiring,
+- [x] 2.3 Add Diesel schema/models and repository operations for acquiring,
   renewing, reading, and releasing leases without runtime raw SQL
 - [ ] 2.4 Add typed persistence helpers for checkout, checkin, GC operations,
   access/reclamation events, old/new lease details, and atomic operation

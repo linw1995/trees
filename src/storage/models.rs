@@ -9,7 +9,8 @@ use crate::domain::{
     CanonicalPath, CheckoutId, EventId, JsonDocument, OperationId, OperationState, RepoWorktreeId,
     RepoWorktreeState, Timestamp, WorkspaceId, WorkspaceManagementMode, WorkspaceState,
 };
-use crate::schema::{lifecycle_events, operations, repo_worktrees, workspaces};
+use crate::lease::WorkspaceLease;
+use crate::schema::{lifecycle_events, operations, repo_worktrees, workspace_leases, workspaces};
 
 macro_rules! impl_text_codec {
     ($type:ty) => {
@@ -70,6 +71,55 @@ pub struct NewWorkspace {
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     pub last_reconciled_at: Option<Timestamp>,
+}
+
+#[derive(Debug, Queryable, Selectable, Identifiable)]
+#[diesel(table_name = workspace_leases)]
+#[diesel(check_for_backend(Sqlite))]
+pub struct WorkspaceLeaseRow {
+    pub id: CheckoutId,
+    pub workspace_id: WorkspaceId,
+    pub owner_id: String,
+    pub checked_out_at: Timestamp,
+    pub lease_expires_at: Timestamp,
+    pub last_heartbeat_at: Timestamp,
+}
+
+#[derive(Debug, Insertable)]
+#[diesel(table_name = workspace_leases)]
+pub struct NewWorkspaceLease {
+    pub id: CheckoutId,
+    pub workspace_id: WorkspaceId,
+    pub owner_id: String,
+    pub checked_out_at: Timestamp,
+    pub lease_expires_at: Timestamp,
+    pub last_heartbeat_at: Timestamp,
+}
+
+impl From<&WorkspaceLease> for NewWorkspaceLease {
+    fn from(value: &WorkspaceLease) -> Self {
+        Self {
+            id: value.id,
+            workspace_id: value.workspace_id,
+            owner_id: value.owner_id.clone(),
+            checked_out_at: value.checked_out_at.clone(),
+            lease_expires_at: value.lease_expires_at.clone(),
+            last_heartbeat_at: value.last_heartbeat_at.clone(),
+        }
+    }
+}
+
+impl From<WorkspaceLeaseRow> for WorkspaceLease {
+    fn from(value: WorkspaceLeaseRow) -> Self {
+        Self {
+            id: value.id,
+            workspace_id: value.workspace_id,
+            owner_id: value.owner_id,
+            checked_out_at: value.checked_out_at,
+            lease_expires_at: value.lease_expires_at,
+            last_heartbeat_at: value.last_heartbeat_at,
+        }
+    }
 }
 
 #[derive(Debug, Queryable, Selectable, Identifiable)]

@@ -4,14 +4,14 @@ use diesel::sqlite::SqliteConnection;
 use std::fmt;
 
 use crate::domain::{
-    CanonicalPath, JsonDocument, OperationId, OperationState, RepoWorktreeId, RepoWorktreeState,
-    Timestamp, WorkspaceId, WorkspaceState,
+    CanonicalPath, CheckoutId, JsonDocument, OperationId, OperationState, RepoWorktreeId,
+    RepoWorktreeState, Timestamp, WorkspaceId, WorkspaceState,
 };
-use crate::schema::{lifecycle_events, operations, repo_worktrees, workspaces};
+use crate::schema::{lifecycle_events, operations, repo_worktrees, workspace_leases, workspaces};
 
 use super::models::{
-    EventRow, NewEvent, NewOperation, NewRepoWorktree, NewWorkspace, OperationIntent, OperationRow,
-    RepoWorktreeRow, WorkspaceRow,
+    EventRow, NewEvent, NewOperation, NewRepoWorktree, NewWorkspace, NewWorkspaceLease,
+    OperationIntent, OperationRow, RepoWorktreeRow, WorkspaceLeaseRow, WorkspaceRow,
 };
 use super::transaction::with_short_transaction;
 
@@ -90,6 +90,69 @@ pub fn find_workspace(
         .find(workspace_id)
         .select(WorkspaceRow::as_select())
         .first(connection)
+}
+
+pub fn insert_workspace_lease(
+    connection: &mut SqliteConnection,
+    value: &NewWorkspaceLease,
+) -> QueryResult<WorkspaceLeaseRow> {
+    diesel::insert_into(workspace_leases::table)
+        .values(value)
+        .execute(connection)?;
+    workspace_leases::table
+        .find(&value.id)
+        .select(WorkspaceLeaseRow::as_select())
+        .first(connection)
+}
+
+pub fn find_workspace_lease(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+) -> QueryResult<Option<WorkspaceLeaseRow>> {
+    workspace_leases::table
+        .filter(workspace_leases::workspace_id.eq(workspace_id))
+        .select(WorkspaceLeaseRow::as_select())
+        .first(connection)
+        .optional()
+}
+
+pub fn find_workspace_lease_by_id(
+    connection: &mut SqliteConnection,
+    checkout_id: &CheckoutId,
+) -> QueryResult<WorkspaceLeaseRow> {
+    workspace_leases::table
+        .find(checkout_id)
+        .select(WorkspaceLeaseRow::as_select())
+        .first(connection)
+}
+
+pub fn renew_workspace_lease(
+    connection: &mut SqliteConnection,
+    checkout_id: &CheckoutId,
+    lease_expires_at: &Timestamp,
+    last_heartbeat_at: &Timestamp,
+) -> QueryResult<bool> {
+    let updated = diesel::update(workspace_leases::table.find(checkout_id))
+        .set((
+            workspace_leases::lease_expires_at.eq(lease_expires_at),
+            workspace_leases::last_heartbeat_at.eq(last_heartbeat_at),
+        ))
+        .execute(connection)?;
+    Ok(updated == 1)
+}
+
+pub fn release_workspace_lease(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+    checkout_id: &CheckoutId,
+) -> QueryResult<bool> {
+    let deleted = diesel::delete(
+        workspace_leases::table
+            .filter(workspace_leases::workspace_id.eq(workspace_id))
+            .filter(workspace_leases::id.eq(checkout_id)),
+    )
+    .execute(connection)?;
+    Ok(deleted == 1)
 }
 
 pub fn insert_repo_worktree(
@@ -628,6 +691,7 @@ mod tests {
         CanonicalPath, EventId, JsonDocument, OperationId, OperationState, RepoWorktreeId,
         RepoWorktreeState, Timestamp, WorkspaceId, WorkspaceState,
     };
+    use crate::lease::WorkspaceLease;
 
     #[test]
     fn repositories_round_trip_typed_rows() {
@@ -733,6 +797,73 @@ mod tests {
             1
         );
         assert_eq!(event.operation_id, operation_id);
+
+        drop(connection);
+        fs::remove_file(database_path).expect("temporary database should be removable");
+    }
+
+    #[test]
+    fn workspace_leases_round_trip_renew_and_release() {
+        let database_path =
+            std::env::temp_dir().join(format!("trees-{}.sqlite", WorkspaceId::new()));
+        let mut connection = database::connect(&database_path).expect("database should open");
+        let workspace_id = WorkspaceId::new();
+        let now = Timestamp::now();
+        let workspace_path = CanonicalPath::resolve(".").expect("workspace path should resolve");
+
+        insert_workspace(
+            &mut connection,
+            &NewWorkspace {
+                id: workspace_id,
+                canonical_path: workspace_path,
+                state: WorkspaceState::Ready,
+                created_at: now.clone(),
+                updated_at: now,
+                last_reconciled_at: None,
+            },
+        )
+        .expect("workspace should be inserted");
+
+        let mut lease = WorkspaceLease::new(workspace_id, "process:test");
+        let row = insert_workspace_lease(&mut connection, &NewWorkspaceLease::from(&lease))
+            .expect("lease should be inserted");
+        assert_eq!(row.id, lease.id);
+        assert_eq!(
+            find_workspace_lease(&mut connection, &workspace_id)
+                .unwrap()
+                .unwrap()
+                .id,
+            lease.id
+        );
+        assert_eq!(
+            find_workspace_lease_by_id(&mut connection, &lease.id)
+                .unwrap()
+                .workspace_id,
+            workspace_id
+        );
+
+        lease.renew();
+        assert!(renew_workspace_lease(
+            &mut connection,
+            &lease.id,
+            &lease.lease_expires_at,
+            &lease.last_heartbeat_at,
+        )
+        .expect("lease should renew"));
+        assert_eq!(
+            find_workspace_lease_by_id(&mut connection, &lease.id)
+                .unwrap()
+                .lease_expires_at,
+            lease.lease_expires_at
+        );
+
+        assert!(
+            release_workspace_lease(&mut connection, &workspace_id, &lease.id,)
+                .expect("lease should release")
+        );
+        assert!(find_workspace_lease(&mut connection, &workspace_id)
+            .unwrap()
+            .is_none());
 
         drop(connection);
         fs::remove_file(database_path).expect("temporary database should be removable");
