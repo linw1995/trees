@@ -135,8 +135,11 @@ fn observe_repository(repository: &RepoWorktreeRow) -> Observation {
                     match crate::git::inspect_worktree_identity(repository.worktree_path.as_path())
                     {
                         Ok(identity) => {
+                            let clean =
+                                crate::git::is_worktree_clean(repository.worktree_path.as_path())
+                                    .unwrap_or(false);
                             let fingerprint = crate::git::ObservationFingerprint::from_worktree(
-                                identity, worktree,
+                                identity, worktree, clean,
                             );
                             if fingerprint.repository_identity != repository.repository_identity {
                                 Observation::Diverged {
@@ -338,9 +341,11 @@ fn observe_for_recovery(repository: &RepoWorktreeRow) -> RecoveryObservation {
             Ok(identity) => identity,
             Err(error) => return unsafe_recovery_observation(error.to_string()),
         };
+    let clean = crate::git::is_worktree_clean(repository.worktree_path.as_path()).unwrap_or(false);
     let fingerprint = crate::git::ObservationFingerprint::from_worktree(
         actual_worktree_identity,
         worktree.clone(),
+        clean,
     );
     if fingerprint.repository_identity != repository.repository_identity {
         return unsafe_recovery_observation(format!(

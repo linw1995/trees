@@ -34,6 +34,7 @@ pub struct ObservationFingerprint {
     pub branch: Option<String>,
     pub existence: WorktreeExistence,
     pub prunable: Option<String>,
+    pub clean: bool,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
@@ -45,7 +46,11 @@ pub enum WorktreeExistence {
 }
 
 impl ObservationFingerprint {
-    pub fn from_worktree(repository_identity: CanonicalPath, worktree: WorktreeInfo) -> Self {
+    pub fn from_worktree(
+        repository_identity: CanonicalPath,
+        worktree: WorktreeInfo,
+        clean: bool,
+    ) -> Self {
         let existence = if worktree.prunable.is_some() {
             WorktreeExistence::Prunable
         } else {
@@ -59,6 +64,7 @@ impl ObservationFingerprint {
             branch: worktree.branch,
             existence,
             prunable: worktree.prunable,
+            clean,
         }
     }
 
@@ -71,6 +77,7 @@ impl ObservationFingerprint {
             branch: None,
             existence: WorktreeExistence::Missing,
             prunable: None,
+            clean: false,
         }
     }
 
@@ -87,6 +94,7 @@ impl ObservationFingerprint {
             && self.branch.is_none()
             && self.existence == WorktreeExistence::Present
             && self.prunable.is_none()
+            && self.clean
     }
 }
 
@@ -135,6 +143,18 @@ pub fn find_worktree(
         .into_iter()
         .find(|worktree| worktree.path.as_path() == worktree_path)
         .ok_or_else(|| GitError::WorktreeNotFound(worktree_path.to_owned()))
+}
+
+pub fn is_worktree_clean(worktree_path: &Path) -> Result<bool, GitError> {
+    let output = run_git(
+        worktree_path,
+        &[
+            arg("status"),
+            arg("--porcelain=v1"),
+            arg("--untracked-files=all"),
+        ],
+    )?;
+    Ok(output.trim().is_empty())
 }
 
 pub fn add_detached_worktree(
@@ -610,6 +630,7 @@ mod tests {
                 bare: false,
                 prunable: None,
             },
+            true,
         );
         let encoded = serde_json::to_string(&fingerprint).expect("fingerprint should serialize");
         let decoded: ObservationFingerprint =
@@ -625,6 +646,21 @@ mod tests {
         changed.branch = Some("refs/heads/feature".to_owned());
         assert_ne!(changed, fingerprint);
 
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn detects_clean_and_dirty_worktrees_without_mutating_them() {
+        let (root, repository) = repository();
+        let worktree_path = root.join("workspace");
+        add_detached_worktree(&repository, &worktree_path).expect("worktree should be added");
+
+        assert!(is_worktree_clean(&worktree_path).expect("status should succeed"));
+        fs::write(worktree_path.join("untracked"), "change\n")
+            .expect("untracked file should be written");
+        assert!(!is_worktree_clean(&worktree_path).expect("status should succeed"));
+
+        remove_worktree(&repository, &worktree_path).expect("worktree should be removed");
         fs::remove_dir_all(root).expect("test root should be removable");
     }
 }

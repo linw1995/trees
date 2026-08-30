@@ -38,7 +38,7 @@
 
 ## 3. Git Observation and Reconciliation
 
-- [ ] 3.1 Add a read-only Git worktree cleanliness probe using porcelain status
+- [x] 3.1 Add a read-only Git worktree cleanliness probe using porcelain status
   and include staged, unstaged, and untracked changes in the observation
   fingerprint
 - [ ] 3.2 Map dirty observations to `dirty`, preserve `missing`/`diverged`/
