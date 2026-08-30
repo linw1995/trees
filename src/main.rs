@@ -9,13 +9,22 @@ fn main() -> ExitCode {
 fn run(cli: trees::cli::Cli) -> ExitCode {
     match cli.command {
         trees::cli::Command::Create(arguments) => run_create(arguments),
+        trees::cli::Command::Checkin(arguments) => run_checkin(arguments),
         trees::cli::Command::Codex(arguments) => run_codex(arguments),
     }
 }
 
 fn run_create(arguments: trees::cli::CreateArgs) -> ExitCode {
+    let Some(workspace_path) = arguments.workspace_path else {
+        eprintln!("Error: automatic workspace allocation is not available yet");
+        return ExitCode::FAILURE;
+    };
+    if arguments.checkout_id.is_some() {
+        eprintln!("Error: workspace lease renewal is not available yet");
+        return ExitCode::FAILURE;
+    }
     match trees::workspace::create(trees::workspace::CreateRequest {
-        workspace_path: arguments.workspace_path,
+        workspace_path,
         repositories: arguments.repositories,
     }) {
         Ok(result) => {
@@ -30,6 +39,11 @@ fn run_create(arguments: trees::cli::CreateArgs) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn run_checkin(_arguments: trees::cli::CheckinArgs) -> ExitCode {
+    eprintln!("Error: workspace checkin is not available yet");
+    ExitCode::FAILURE
 }
 
 fn run_codex(arguments: trees::cli::CodexArgs) -> ExitCode {

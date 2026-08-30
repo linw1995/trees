@@ -17,16 +17,29 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     Create(CreateArgs),
+    Checkin(CheckinArgs),
     Codex(CodexArgs),
 }
 
 #[derive(Debug, Args)]
 pub struct CreateArgs {
     #[arg(value_name = "WORKSPACE_PATH")]
-    pub workspace_path: PathBuf,
+    pub workspace_path: Option<PathBuf>,
 
     #[arg(long = "repo", required = true, value_name = "REPOSITORY_PATH")]
     pub repositories: Vec<PathBuf>,
+
+    #[arg(long = "checkout-id", value_name = "CHECKOUT_ID")]
+    pub checkout_id: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct CheckinArgs {
+    #[arg(value_name = "WORKSPACE_PATH")]
+    pub workspace_path: PathBuf,
+
+    #[arg(long = "checkout-id", required = true, value_name = "CHECKOUT_ID")]
+    pub checkout_id: String,
 }
 
 #[derive(Debug, Args)]
@@ -87,11 +100,70 @@ mod tests {
         let Command::Create(arguments) = cli.command else {
             panic!("expected create command");
         };
-        assert_eq!(arguments.workspace_path, PathBuf::from("/tmp/workspace"));
+        assert_eq!(
+            arguments.workspace_path,
+            Some(PathBuf::from("/tmp/workspace"))
+        );
         assert_eq!(
             arguments.repositories,
             [PathBuf::from("/tmp/one"), PathBuf::from("/tmp/two")]
         );
+        assert_eq!(arguments.checkout_id, None);
+    }
+
+    #[test]
+    fn parses_automatic_create_without_a_workspace_path() {
+        let cli = Cli::try_parse_from([
+            "trees", "create", "--repo", "/tmp/one", "--repo", "/tmp/two",
+        ])
+        .expect("automatic create command should parse");
+
+        let Command::Create(arguments) = cli.command else {
+            panic!("expected create command");
+        };
+        assert_eq!(arguments.workspace_path, None);
+        assert_eq!(
+            arguments.repositories,
+            [PathBuf::from("/tmp/one"), PathBuf::from("/tmp/two")]
+        );
+        assert_eq!(arguments.checkout_id, None);
+    }
+
+    #[test]
+    fn parses_automatic_create_renewal() {
+        let cli = Cli::try_parse_from([
+            "trees",
+            "create",
+            "--repo",
+            "/tmp/one",
+            "--checkout-id",
+            "checkout-id",
+        ])
+        .expect("automatic renewal command should parse");
+
+        let Command::Create(arguments) = cli.command else {
+            panic!("expected create command");
+        };
+        assert_eq!(arguments.workspace_path, None);
+        assert_eq!(arguments.checkout_id.as_deref(), Some("checkout-id"));
+    }
+
+    #[test]
+    fn parses_checkin_with_a_checkout_id() {
+        let cli = Cli::try_parse_from([
+            "trees",
+            "checkin",
+            "/tmp/workspace",
+            "--checkout-id",
+            "checkout-id",
+        ])
+        .expect("checkin command should parse");
+
+        let Command::Checkin(arguments) = cli.command else {
+            panic!("expected checkin command");
+        };
+        assert_eq!(arguments.workspace_path, PathBuf::from("/tmp/workspace"));
+        assert_eq!(arguments.checkout_id, "checkout-id");
     }
 
     #[test]

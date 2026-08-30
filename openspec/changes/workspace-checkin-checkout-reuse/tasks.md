@@ -1,6 +1,6 @@
 ## 1. Contract and Domain Model
 
-- [ ] 1.1 Define automatic `trees create --repo ...` allocation, manual
+- [x] 1.1 Define automatic `trees create --repo ...` allocation, manual
   `trees create <workspace-path> --repo ...`, lease renewal, and checkin
   command arguments, result output, error cases, and the UUID v7 checkout
   identifier
