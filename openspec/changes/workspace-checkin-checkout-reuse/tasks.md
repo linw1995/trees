@@ -21,7 +21,7 @@
 
 ## 2. Persistence and Migration
 
-- [ ] 2.1 Add migration `00000000000002` for management mode, pool key,
+- [x] 2.1 Add migration `00000000000002` for management mode, pool key,
   absolute workspace-root namespace, idle and reclamation timestamps, the
   `dirty`/`reclaimed` state constraints, and the current `workspace_leases`
   table with one active lease per workspace
