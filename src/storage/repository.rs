@@ -205,6 +205,54 @@ pub fn record_workspace_checkout(
     })
 }
 
+pub fn record_workspace_checkout_failure(
+    connection: &mut SqliteConnection,
+    operation_id: &OperationId,
+    workspace_id: &WorkspaceId,
+    checkout_id: &CheckoutId,
+    details_json: Option<JsonDocument>,
+    error_json: JsonDocument,
+) -> QueryResult<()> {
+    with_short_transaction(connection, |connection| {
+        let workspace = workspaces::table
+            .find(workspace_id)
+            .select(WorkspaceRow::as_select())
+            .first(connection)?;
+        diesel::delete(
+            workspace_leases::table
+                .filter(workspace_leases::workspace_id.eq(workspace_id))
+                .filter(workspace_leases::id.eq(checkout_id)),
+        )
+        .execute(connection)?;
+        finish_operation_in_transaction(
+            connection,
+            operation_id,
+            OperationState::Failed,
+            "checkout failed",
+            None,
+            TransitionMetadata::new("operation_failed", "trees")
+                .with_details(details_json.clone().unwrap_or_else(empty_json))
+                .with_error(error_json.clone()),
+        )?;
+        append_event(
+            connection,
+            &EventDraft {
+                operation_id: *operation_id,
+                entity_type: "workspace".to_owned(),
+                entity_id: workspace.id.to_string(),
+                event_type: "workspace_checkout_failed".to_owned(),
+                source: "trees".to_owned(),
+                occurred_at: Timestamp::now(),
+                previous_state: Some(workspace.state.to_string()),
+                current_state: Some(workspace.state.to_string()),
+                details_json,
+                error_json: Some(error_json),
+            },
+        )?;
+        Ok(())
+    })
+}
+
 pub fn record_workspace_checkin(
     connection: &mut SqliteConnection,
     operation_id: &OperationId,

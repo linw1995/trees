@@ -55,7 +55,7 @@
 - [x] 4.1 Implement automatic repository-set allocation that searches exact
   pool-key matches, filters reusable idle candidates, selects least-recently
   checked-in workspaces, and retries after an acquisition race
-- [ ] 4.2 Persist allocation intent and acquire the lease atomically, then run
+- [x] 4.2 Persist allocation intent and acquire the lease atomically, then run
   final reconciliation and release the lease with a failure event if the
   post-check fails
 - [ ] 4.3 Implement automatic provisioning below the managed workspace root
