@@ -5,7 +5,8 @@ use diesel_migrations::MigrationHarness;
 
 use trees::database;
 use trees::domain::{
-    CanonicalPath, EventId, JsonDocument, OperationState, Timestamp, WorkspaceId, WorkspaceState,
+    CanonicalPath, EventId, JsonDocument, OperationState, Timestamp, WorkspaceId,
+    WorkspaceManagementMode, WorkspaceState,
 };
 use trees::storage::{
     begin_operation, insert_event, insert_workspace, persist_operation_intent, EventRow, NewEvent,
@@ -133,6 +134,32 @@ fn database_constraints_and_immutable_events_are_enforced() {
         ),
         Err(OperationIntentError::WorkspaceBusy(_))
     ));
+
+    drop(connection);
+    fs::remove_file(path).expect("temporary database should be removable");
+}
+
+#[test]
+fn legacy_workspace_rows_default_to_manual_without_pool_metadata() {
+    let path = database_path();
+    let mut connection = database::connect(&path).expect("database should open");
+    let workspace_id = WorkspaceId::new();
+    let workspace_path = CanonicalPath::resolve(".").expect("workspace path should resolve");
+
+    insert_workspace(
+        &mut connection,
+        &workspace(workspace_id, workspace_path.clone()),
+    )
+    .expect("legacy workspace should be inserted");
+    let stored = trees::storage::find_workspace(&mut connection, &workspace_id)
+        .expect("workspace should be queryable");
+
+    assert_eq!(stored.management_mode, WorkspaceManagementMode::Manual);
+    assert_eq!(stored.pool_key, None);
+    assert_eq!(stored.workspace_root, None);
+    assert_eq!(stored.last_checked_in_at, None);
+    assert_eq!(stored.reclaimed_at, None);
+    assert!(workspace_path.as_path().exists());
 
     drop(connection);
     fs::remove_file(path).expect("temporary database should be removable");

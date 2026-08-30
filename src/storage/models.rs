@@ -54,6 +54,11 @@ pub struct WorkspaceRow {
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     pub last_reconciled_at: Option<Timestamp>,
+    pub management_mode: WorkspaceManagementMode,
+    pub pool_key: Option<String>,
+    pub workspace_root: Option<CanonicalPath>,
+    pub last_checked_in_at: Option<Timestamp>,
+    pub reclaimed_at: Option<Timestamp>,
 }
 
 #[derive(Debug, Insertable)]

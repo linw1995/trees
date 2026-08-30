@@ -25,7 +25,7 @@
   absolute workspace-root namespace, idle and reclamation timestamps, the
   `dirty`/`reclaimed` state constraints, and the current `workspace_leases`
   table with one active lease per workspace
-- [ ] 2.2 Backfill legacy explicit-path workspace records as `manual` without
+- [x] 2.2 Backfill legacy explicit-path workspace records as `manual` without
   touching Git or the filesystem, and provide a reversible down migration
 - [ ] 2.3 Add Diesel schema/models and repository operations for acquiring,
   renewing, reading, and releasing leases without runtime raw SQL
