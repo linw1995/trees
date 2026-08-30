@@ -61,7 +61,7 @@
 - [x] 4.3 Implement automatic provisioning below the managed workspace root
   when no safe candidate exists, including generated paths, creation intent,
   immediate lease ownership, and partial-creation rollback
-- [ ] 4.4 Implement identifier-based renewal with the fixed 24-hour extension,
+- [x] 4.4 Implement identifier-based renewal with the fixed 24-hour extension,
   repository-set validation, lease heartbeat updates, and immutable renewal
   events
 - [ ] 4.5 Implement expired-lease recovery with a safe reconciliation gate and
