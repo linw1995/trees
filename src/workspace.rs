@@ -6,8 +6,8 @@ use diesel::sqlite::SqliteConnection;
 use serde::Serialize;
 
 use crate::domain::{
-    CanonicalPath, JsonDocument, OperationState, RepoWorktreeId, RepoWorktreeState, Timestamp,
-    WorkspaceId, WorkspaceState,
+    CanonicalPath, CheckoutId, JsonDocument, OperationState, RepoWorktreeId, RepoWorktreeState,
+    Timestamp, WorkspaceId, WorkspaceState,
 };
 use crate::git::{self, GitError};
 use crate::naming::{self, NamingError, WorktreePlan};
@@ -25,6 +25,27 @@ use crate::validation::{self, ValidationError};
 pub struct CreateRequest {
     pub workspace_path: PathBuf,
     pub repositories: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AutomaticCreateRequest {
+    pub repositories: Vec<PathBuf>,
+    pub checkout_id: Option<CheckoutId>,
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct AutomaticAllocationPlan {
+    pub workspace_root: CanonicalPath,
+    pub pool_key: crate::pool::RepositorySetKey,
+    pub repositories: Vec<AutomaticRepositoryPlan>,
+    pub checkout_id: Option<CheckoutId>,
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct AutomaticRepositoryPlan {
+    pub source_path: CanonicalPath,
+    pub repository_identity: CanonicalPath,
+    pub head: String,
 }
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
@@ -54,6 +75,78 @@ pub struct CreationContext {
     owner_id: String,
     pub plan: CreationPlan,
     pub repositories: Vec<TrackedRepository>,
+}
+
+pub fn prepare_automatic(
+    request: &AutomaticCreateRequest,
+) -> Result<AutomaticAllocationPlan, WorkspaceError> {
+    let repositories = validation::validate_repositories(&request.repositories)?;
+    let mut plans = Vec::with_capacity(repositories.len());
+    let mut identities = Vec::with_capacity(repositories.len());
+    for source_path in repositories {
+        let info = git::inspect_repository(&source_path)?;
+        identities.push(info.common_dir.clone());
+        plans.push(AutomaticRepositoryPlan {
+            source_path,
+            repository_identity: info.common_dir,
+            head: info.head,
+        });
+    }
+    let workspace_root = CanonicalPath::from_absolute(
+        crate::paths::managed_workspace_directory().map_err(WorkspaceError::Path)?,
+    )
+    .map_err(|error| WorkspaceError::Validation(ValidationError::Canonicalize(error)))?;
+
+    Ok(AutomaticAllocationPlan {
+        workspace_root,
+        pool_key: crate::pool::RepositorySetKey::from_repositories(&identities),
+        repositories: plans,
+        checkout_id: request.checkout_id,
+    })
+}
+
+pub fn find_idle_automatic_candidate(
+    connection: &mut SqliteConnection,
+    plan: &AutomaticAllocationPlan,
+) -> Result<Option<crate::storage::WorkspaceRow>, WorkspaceError> {
+    let candidates = crate::storage::list_automatic_workspace_candidates(
+        connection,
+        &plan.workspace_root,
+        plan.pool_key.as_str(),
+    )
+    .map_err(WorkspaceError::Database)?;
+    let mut idle_candidates = Vec::new();
+    for workspace in candidates {
+        if crate::storage::find_running_operation(connection, &workspace.id)
+            .map_err(WorkspaceError::Database)?
+            .is_some()
+        {
+            continue;
+        }
+        if crate::storage::find_workspace_lease(connection, &workspace.id)
+            .map_err(WorkspaceError::Database)?
+            .is_some()
+        {
+            continue;
+        }
+        idle_candidates.push(workspace);
+    }
+    let mut candidates = idle_candidates;
+    candidates.sort_by(|left, right| {
+        crate::pool::compare_candidates(
+            &crate::pool::PoolCandidate {
+                id: left.id,
+                last_checked_in_at: left.last_checked_in_at.clone(),
+                created_at: left.created_at.clone(),
+            },
+            &crate::pool::PoolCandidate {
+                id: right.id,
+                last_checked_in_at: right.last_checked_in_at.clone(),
+                created_at: right.created_at.clone(),
+            },
+        )
+    });
+    Ok(candidates.into_iter().next())
 }
 
 pub fn prepare_create(request: &CreateRequest) -> Result<CreationPlan, WorkspaceError> {
@@ -446,6 +539,7 @@ pub enum WorkspaceError {
     Git(GitError),
     Database(diesel::result::Error),
     DatabaseOpen(crate::database::DatabaseError),
+    Path(crate::paths::PathError),
     Reconciliation(ReconciliationError),
     OperationActive(WorkspaceId),
     Json(crate::domain::JsonDocumentError),
@@ -473,6 +567,7 @@ impl fmt::Display for WorkspaceError {
             Self::DatabaseOpen(error) => {
                 write!(formatter, "failed to open lifecycle database: {error}")
             }
+            Self::Path(error) => write!(formatter, "failed to resolve workspace root: {error}"),
             Self::Reconciliation(error) => write!(formatter, "reconciliation failed: {error}"),
             Self::OperationActive(workspace_id) => {
                 write!(
@@ -514,6 +609,7 @@ impl std::error::Error for WorkspaceError {
             Self::Git(error) => Some(error),
             Self::Database(error) => Some(error),
             Self::DatabaseOpen(error) => Some(error),
+            Self::Path(error) => Some(error),
             Self::Reconciliation(error) => Some(error),
             Self::OperationActive(_) => None,
             Self::Json(error) => Some(error),
@@ -655,6 +751,95 @@ mod tests {
             )
             .expect("created worktree should be removable");
         }
+        drop(connection);
+        fs::remove_file(database_path).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn prepares_an_automatic_allocation_plan_without_a_workspace_path() {
+        let root = test_root();
+        let first = root.join("first");
+        let second = root.join("second");
+        repository(&first);
+        repository(&second);
+
+        let plan = prepare_automatic(&AutomaticCreateRequest {
+            repositories: vec![second.clone(), first.clone()],
+            checkout_id: None,
+        })
+        .expect("automatic allocation plan should be prepared");
+        let expected_root = CanonicalPath::from_absolute(
+            crate::paths::managed_workspace_directory().expect("workspace root should resolve"),
+        )
+        .expect("workspace root should be absolute");
+
+        assert_eq!(plan.workspace_root, expected_root);
+        assert_eq!(plan.repositories.len(), 2);
+        assert!(plan
+            .repositories
+            .iter()
+            .all(|repository| !repository.head.is_empty()));
+        assert_eq!(
+            plan.checkout_id, None,
+            "a new allocation should not carry a renewal identifier"
+        );
+
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn selects_the_oldest_idle_automatic_candidate_for_a_pool_key() {
+        let root = test_root();
+        let source = root.join("source");
+        repository(&source);
+        let plan = prepare_automatic(&AutomaticCreateRequest {
+            repositories: vec![source.clone()],
+            checkout_id: None,
+        })
+        .expect("automatic allocation plan should be prepared");
+        let database_path = root.join("state.sqlite");
+        let mut connection =
+            crate::database::connect(&database_path).expect("database should open");
+        let now = Timestamp::parse("2026-01-01T00:00:00Z").unwrap();
+        let older = WorkspaceId::new();
+        let newer = WorkspaceId::new();
+        for (id, name, checked_in_at) in [
+            (older, "older", "2026-01-01T00:00:00Z"),
+            (newer, "newer", "2026-02-01T00:00:00Z"),
+        ] {
+            let workspace_path = CanonicalPath::from_absolute(root.join(name))
+                .expect("workspace path should be absolute");
+            crate::storage::insert_workspace(
+                &mut connection,
+                &NewWorkspace {
+                    id,
+                    canonical_path: workspace_path,
+                    state: WorkspaceState::Ready,
+                    created_at: now.clone(),
+                    updated_at: now.clone(),
+                    last_reconciled_at: None,
+                },
+            )
+            .expect("candidate should be inserted");
+            diesel::update(crate::schema::workspaces::table.find(&id))
+                .set((
+                    crate::schema::workspaces::management_mode
+                        .eq(crate::domain::WorkspaceManagementMode::Automatic),
+                    crate::schema::workspaces::pool_key.eq(Some(plan.pool_key.as_str())),
+                    crate::schema::workspaces::workspace_root.eq(Some(plan.workspace_root.clone())),
+                    crate::schema::workspaces::last_checked_in_at
+                        .eq(Some(Timestamp::parse(checked_in_at).unwrap())),
+                ))
+                .execute(&mut connection)
+                .expect("candidate metadata should be updated");
+        }
+
+        let candidate = find_idle_automatic_candidate(&mut connection, &plan)
+            .expect("candidate lookup should succeed")
+            .expect("an idle candidate should exist");
+        assert_eq!(candidate.id, older);
+
         drop(connection);
         fs::remove_file(database_path).expect("state database should be removable");
         fs::remove_dir_all(root).expect("test root should be removable");

@@ -62,19 +62,11 @@ pub struct ValidatedCreateInput {
     pub repositories: Vec<CanonicalPath>,
 }
 
-pub fn validate_create(
-    workspace_path: &Path,
+pub fn validate_repositories(
     repository_paths: &[PathBuf],
-) -> Result<ValidatedCreateInput, ValidationError> {
+) -> Result<Vec<CanonicalPath>, ValidationError> {
     if repository_paths.is_empty() {
         return Err(ValidationError::NoRepositories);
-    }
-
-    let workspace_path = resolve_workspace_path(workspace_path)?;
-    if workspace_path.as_path().exists() {
-        return Err(ValidationError::WorkspaceExists(
-            workspace_path.into_path_buf(),
-        ));
     }
 
     let mut repositories = Vec::with_capacity(repository_paths.len());
@@ -95,12 +87,6 @@ pub fn validate_create(
                 repository.into_path_buf(),
             ));
         }
-        if workspace_path.as_path().starts_with(repository.as_path()) {
-            return Err(ValidationError::WorkspaceInsideRepository {
-                workspace: workspace_path.into_path_buf(),
-                repository: repository.into_path_buf(),
-            });
-        }
         if !identities.insert(repository.as_path().to_owned()) {
             return Err(ValidationError::DuplicateRepository(
                 repository.into_path_buf(),
@@ -108,6 +94,34 @@ pub fn validate_create(
         }
 
         repositories.push(repository);
+    }
+
+    Ok(repositories)
+}
+
+pub fn validate_create(
+    workspace_path: &Path,
+    repository_paths: &[PathBuf],
+) -> Result<ValidatedCreateInput, ValidationError> {
+    if repository_paths.is_empty() {
+        return Err(ValidationError::NoRepositories);
+    }
+
+    let workspace_path = resolve_workspace_path(workspace_path)?;
+    if workspace_path.as_path().exists() {
+        return Err(ValidationError::WorkspaceExists(
+            workspace_path.into_path_buf(),
+        ));
+    }
+
+    let repositories = validate_repositories(repository_paths)?;
+    for repository in &repositories {
+        if workspace_path.as_path().starts_with(repository.as_path()) {
+            return Err(ValidationError::WorkspaceInsideRepository {
+                workspace: workspace_path.as_path().to_owned(),
+                repository: repository.as_path().to_owned(),
+            });
+        }
     }
 
     Ok(ValidatedCreateInput {

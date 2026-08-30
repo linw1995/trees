@@ -52,7 +52,7 @@
 
 ## 4. Pool Allocation and Renewal Workflow
 
-- [ ] 4.1 Implement automatic repository-set allocation that searches exact
+- [x] 4.1 Implement automatic repository-set allocation that searches exact
   pool-key matches, filters reusable idle candidates, selects least-recently
   checked-in workspaces, and retries after an acquisition race
 - [ ] 4.2 Persist allocation intent and acquire the lease atomically, then run

@@ -5,7 +5,7 @@ use std::fmt;
 
 use crate::domain::{
     CanonicalPath, CheckoutId, JsonDocument, OperationId, OperationState, RepoWorktreeId,
-    RepoWorktreeState, Timestamp, WorkspaceId, WorkspaceState,
+    RepoWorktreeState, Timestamp, WorkspaceId, WorkspaceManagementMode, WorkspaceState,
 };
 use crate::lease::WorkspaceLease;
 use crate::schema::{lifecycle_events, operations, repo_worktrees, workspace_leases, workspaces};
@@ -91,6 +91,21 @@ pub fn find_workspace(
         .find(workspace_id)
         .select(WorkspaceRow::as_select())
         .first(connection)
+}
+
+pub fn list_automatic_workspace_candidates(
+    connection: &mut SqliteConnection,
+    workspace_root: &CanonicalPath,
+    pool_key: &str,
+) -> QueryResult<Vec<WorkspaceRow>> {
+    workspaces::table
+        .filter(workspaces::management_mode.eq(WorkspaceManagementMode::Automatic))
+        .filter(workspaces::workspace_root.eq(Some(workspace_root)))
+        .filter(workspaces::pool_key.eq(Some(pool_key)))
+        .filter(workspaces::state.eq(WorkspaceState::Ready))
+        .order(workspaces::id.asc())
+        .select(WorkspaceRow::as_select())
+        .load(connection)
 }
 
 pub fn insert_workspace_lease(
