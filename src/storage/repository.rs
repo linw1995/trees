@@ -122,6 +122,18 @@ pub fn list_automatic_workspace_candidates(
         .load(connection)
 }
 
+pub fn list_automatic_workspaces(
+    connection: &mut SqliteConnection,
+    workspace_root: &CanonicalPath,
+) -> QueryResult<Vec<WorkspaceRow>> {
+    workspaces::table
+        .filter(workspaces::management_mode.eq(WorkspaceManagementMode::Automatic))
+        .filter(workspaces::workspace_root.eq(Some(workspace_root)))
+        .order(workspaces::id.asc())
+        .select(WorkspaceRow::as_select())
+        .load(connection)
+}
+
 pub fn insert_workspace_lease(
     connection: &mut SqliteConnection,
     value: &NewWorkspaceLease,

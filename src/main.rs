@@ -11,6 +11,7 @@ fn run(cli: trees::cli::Cli) -> ExitCode {
         trees::cli::Command::Create(arguments) => run_create(arguments),
         trees::cli::Command::Checkin(arguments) => run_checkin(arguments),
         trees::cli::Command::Config(arguments) => run_config(arguments),
+        trees::cli::Command::Gc(arguments) => run_gc(arguments),
         trees::cli::Command::Codex(arguments) => run_codex(arguments),
     }
 }
@@ -146,6 +147,54 @@ fn run_config(arguments: trees::cli::ConfigArgs) -> ExitCode {
             }
         },
     }
+}
+
+fn run_gc(arguments: trees::cli::GcArgs) -> ExitCode {
+    let workspace_root = match trees::paths::managed_workspace_directory() {
+        Ok(path) => match trees::domain::CanonicalPath::from_absolute(path) {
+            Ok(path) => path,
+            Err(error) => {
+                eprintln!("Error: {error}");
+                return ExitCode::FAILURE;
+            }
+        },
+        Err(error) => {
+            eprintln!("Error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut connection = match trees::database::open_default() {
+        Ok(connection) => connection,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let scan = match trees::gc::scan(&mut connection, &workspace_root, arguments.older_than) {
+        Ok(scan) => scan,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    println!("cutoff={}", scan.cutoff);
+    println!("automatic={}", scan.counts.automatic);
+    println!("not_checked_out={}", scan.counts.not_checked_out);
+    println!("checked_out={}", scan.counts.checked_out);
+    println!("age_eligible={}", scan.counts.age_eligible);
+    println!("safe_to_reclaim={}", scan.counts.safe_to_reclaim);
+    for candidate in &scan.candidates {
+        println!(
+            "candidate={} reason={}",
+            candidate.workspace.canonical_path,
+            candidate.reason()
+        );
+    }
+    if arguments.dry_run {
+        return ExitCode::SUCCESS;
+    }
+    eprintln!("Error: GC execution is not available yet");
+    ExitCode::FAILURE
 }
 
 fn print_automatic_checkout_result(result: &trees::workspace::AutomaticCheckoutResult) {

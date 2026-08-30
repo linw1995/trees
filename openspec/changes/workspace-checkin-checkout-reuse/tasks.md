@@ -78,7 +78,7 @@
 - [ ] 5.3 Add `trees config set workspaces-dir <path>` and configuration
   loading, resolving configured paths to absolute values before persistence;
   keep database state and workspace content directories separate
-- [ ] 5.4 Implement `trees gc --older-than <duration> [--dry-run] [--yes]
+- [x] 5.4 Implement `trees gc --older-than <duration> [--dry-run] [--yes]
   [--force]`
   with UTC cutoff calculation, `last_checked_in_at`/`created_at` idle
   selection, automatic-mode-only candidate filtering scoped to the resolved

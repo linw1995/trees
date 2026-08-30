@@ -45,7 +45,7 @@ impl_text_codec!(CanonicalPath);
 impl_text_codec!(JsonDocument);
 impl_text_codec!(Timestamp);
 
-#[derive(Debug, Queryable, Selectable, Identifiable)]
+#[derive(Debug, Clone, Queryable, Selectable, Identifiable)]
 #[diesel(table_name = workspaces)]
 #[diesel(check_for_backend(Sqlite))]
 pub struct WorkspaceRow {

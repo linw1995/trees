@@ -512,6 +512,10 @@ impl Timestamp {
         Self::from_datetime(OffsetDateTime::now_utc() + time::Duration::seconds(seconds))
     }
 
+    pub fn before_seconds(seconds: i64) -> Self {
+        Self::from_datetime(OffsetDateTime::now_utc() - time::Duration::seconds(seconds))
+    }
+
     fn from_datetime(value: OffsetDateTime) -> Self {
         let value = value
             .format(&Rfc3339)

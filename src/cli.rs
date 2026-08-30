@@ -19,6 +19,7 @@ pub enum Command {
     Create(CreateArgs),
     Checkin(CheckinArgs),
     Config(ConfigArgs),
+    Gc(GcArgs),
     Codex(CodexArgs),
 }
 
@@ -66,6 +67,21 @@ pub struct ConfigSetArgs {
 #[derive(Debug, Clone, ValueEnum)]
 pub enum ConfigSetting {
     WorkspacesDir,
+}
+
+#[derive(Debug, Args)]
+pub struct GcArgs {
+    #[arg(long = "older-than", value_name = "DURATION")]
+    pub older_than: crate::gc::GcDuration,
+
+    #[arg(long)]
+    pub dry_run: bool,
+
+    #[arg(long)]
+    pub yes: bool,
+
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Debug, Args)]
@@ -209,6 +225,28 @@ mod tests {
         let ConfigCommand::Set(arguments) = arguments.command;
         assert!(matches!(arguments.setting, ConfigSetting::WorkspacesDir));
         assert_eq!(arguments.value, PathBuf::from("relative-workspaces"));
+    }
+
+    #[test]
+    fn parses_gc_threshold_and_confirmation_flags() {
+        let cli = Cli::try_parse_from([
+            "trees",
+            "gc",
+            "--older-than",
+            "30d",
+            "--dry-run",
+            "--yes",
+            "--force",
+        ])
+        .expect("GC command should parse");
+
+        let Command::Gc(arguments) = cli.command else {
+            panic!("expected GC command");
+        };
+        assert_eq!(arguments.older_than.seconds(), 30 * 24 * 60 * 60);
+        assert!(arguments.dry_run);
+        assert!(arguments.yes);
+        assert!(arguments.force);
     }
 
     #[test]
