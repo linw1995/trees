@@ -9,15 +9,40 @@ use crate::domain::{
 use crate::git::GitError;
 use crate::storage::{
     append_event, claim_expired_operation, finalize_creation, find_operation,
-    find_running_operation, find_workspace, list_repo_worktrees, record_operation_transition,
-    record_repo_worktree_transition, record_workspace_transition, update_workspace_observation,
-    EventDraft, OperationRow, RepoWorktreeRow, TransitionMetadata, WorkspaceRow,
+    find_running_operation, find_workspace, find_workspace_lease, list_repo_worktrees,
+    record_operation_transition, record_repo_worktree_transition, record_workspace_transition,
+    update_workspace_observation, EventDraft, OperationRow, RepoWorktreeRow, TransitionMetadata,
+    WorkspaceLeaseRow, WorkspaceRow,
 };
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct ReconciliationSummary {
     pub changed_worktrees: usize,
     pub workspace_state: WorkspaceState,
+}
+
+#[derive(Debug)]
+pub struct AccessBoundary {
+    pub summary: ReconciliationSummary,
+    pub workspace: WorkspaceRow,
+    pub lease: Option<WorkspaceLeaseRow>,
+}
+
+pub fn reconcile_workspace_for_access(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+    operation_id: &OperationId,
+) -> Result<AccessBoundary, ReconciliationError> {
+    let summary = reconcile_workspace(connection, workspace_id, operation_id)?;
+    let workspace =
+        find_workspace(connection, workspace_id).map_err(ReconciliationError::Database)?;
+    let lease =
+        find_workspace_lease(connection, workspace_id).map_err(ReconciliationError::Database)?;
+    Ok(AccessBoundary {
+        summary,
+        workspace,
+        lease,
+    })
 }
 
 pub fn reconcile_workspace(
@@ -830,6 +855,51 @@ mod tests {
 
         crate::git::remove_worktree(&repository.plan.source_path, &repository.plan.worktree_path)
             .expect("dirty worktree should be removable during test cleanup");
+        drop(connection);
+        fs::remove_file(root.join("state.sqlite")).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn access_boundary_reconciles_git_and_returns_current_lease() {
+        let (root, mut connection, context) = setup_context();
+        execute_creation(&mut connection, &context).expect("creation should execute");
+        crate::storage::finalize_creation(
+            &mut connection,
+            &context.workspace_id,
+            &context.operation_id,
+        )
+        .expect("creation should finalize");
+
+        let boundary = reconcile_workspace_for_access(
+            &mut connection,
+            &context.workspace_id,
+            &context.operation_id,
+        )
+        .expect("access boundary should reconcile");
+        assert_eq!(boundary.summary.workspace_state, WorkspaceState::Ready);
+        assert_eq!(boundary.workspace.state, WorkspaceState::Ready);
+        assert!(boundary.lease.is_none());
+
+        let lease = crate::lease::WorkspaceLease::new(context.workspace_id, "process:test");
+        crate::storage::insert_workspace_lease(
+            &mut connection,
+            &crate::storage::NewWorkspaceLease::from(&lease),
+        )
+        .expect("lease should be inserted");
+        let checked_out = reconcile_workspace_for_access(
+            &mut connection,
+            &context.workspace_id,
+            &context.operation_id,
+        )
+        .expect("checked-out boundary should reconcile");
+        assert_eq!(checked_out.lease.unwrap().id, lease.id);
+
+        crate::git::remove_worktree(
+            &context.repositories[0].plan.source_path,
+            &context.repositories[0].plan.worktree_path,
+        )
+        .expect("worktree should be removable during test cleanup");
         drop(connection);
         fs::remove_file(root.join("state.sqlite")).expect("state database should be removable");
         fs::remove_dir_all(root).expect("test root should be removable");

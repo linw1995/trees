@@ -44,7 +44,7 @@
 - [x] 3.2 Map dirty observations to `dirty`, preserve `missing`/`diverged`/
   `failed` precedence for association failures, and make workspace degradation
   and recovery idempotent
-- [ ] 3.3 Reconcile active leases at checkout and checkin boundaries while
+- [x] 3.3 Reconcile active leases at checkout and checkin boundaries while
   keeping Git commands outside database transactions; verify unchanged
   observations do not append duplicate events
 - [ ] 3.4 Add a non-forced worktree removal primitive and a workspace-root
