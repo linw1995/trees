@@ -585,6 +585,13 @@ mod tests {
             identifier
         );
         assert!(WorkspaceId::from_str(&Uuid::nil().to_string()).is_err());
+
+        let checkout_id = CheckoutId::new();
+        let encoded = serde_json::to_string(&checkout_id).expect("checkout ID should serialize");
+        assert_eq!(
+            serde_json::from_str::<CheckoutId>(&encoded).expect("checkout ID should deserialize"),
+            checkout_id
+        );
     }
 
     #[test]
@@ -639,5 +646,7 @@ mod tests {
 
         assert_eq!(Timestamp::parse(timestamp.to_string()).unwrap(), timestamp);
         assert!(Timestamp::parse("not a timestamp").is_err());
+        assert!(Timestamp::before_seconds(60) < timestamp);
+        assert!(Timestamp::after_seconds(60) > timestamp);
     }
 }

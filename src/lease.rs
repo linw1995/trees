@@ -77,6 +77,9 @@ mod tests {
         assert_eq!(lease.id, original_id);
         assert!(lease.lease_expires_at > original_expiry);
         assert!(lease.last_heartbeat_at >= lease.checked_out_at);
+
+        lease.lease_expires_at = Timestamp::parse("2020-01-01T00:00:00Z").unwrap();
+        assert!(lease.is_expired());
     }
 
     #[test]
@@ -103,6 +106,27 @@ mod tests {
             &states,
             None,
             None
+        ));
+        assert!(!can_allocate_workspace(
+            WorkspaceManagementMode::Automatic,
+            WorkspaceState::Ready,
+            &[RepoWorktreeState::Dirty],
+            None,
+            None
+        ));
+        assert!(!can_allocate_workspace(
+            WorkspaceManagementMode::Automatic,
+            WorkspaceState::Ready,
+            &states,
+            Some(&WorkspaceLease::new(WorkspaceId::new(), "process:test")),
+            None
+        ));
+        assert!(!can_allocate_workspace(
+            WorkspaceManagementMode::Automatic,
+            WorkspaceState::Ready,
+            &states,
+            None,
+            Some(OperationState::Running)
         ));
     }
 }

@@ -98,7 +98,7 @@
 
 ## 6. Verification and Documentation
 
-- [ ] 6.1 Add unit tests for lease state transitions, expiry, token
+- [x] 6.1 Add unit tests for lease state transitions, expiry, token
   authorization, UUID/timestamp serialization, reusable predicates, and
   dirty-state reconciliation
 - [ ] 6.2 Add integration tests for repeated pool allocation/checkin,
