@@ -9,8 +9,8 @@ use trees::domain::{
     WorkspaceManagementMode, WorkspaceState,
 };
 use trees::storage::{
-    begin_operation, insert_event, insert_workspace, persist_operation_intent, EventRow, NewEvent,
-    NewWorkspace, OperationIntent, OperationIntentError,
+    begin_operation, find_operation, insert_event, insert_workspace, persist_operation_intent,
+    EventRow, NewEvent, NewWorkspace, OperationIntent, OperationIntentError,
 };
 
 fn database_path() -> std::path::PathBuf {
@@ -33,7 +33,6 @@ fn workspace(id: WorkspaceId, path: CanonicalPath) -> NewWorkspace {
 fn embedded_migrations_can_be_reverted_and_rerun() {
     let path = database_path();
     let mut connection = database::connect(&path).expect("database should open");
-
     connection
         .revert_last_migration(database::MIGRATIONS)
         .expect("migration should revert");
@@ -46,6 +45,101 @@ fn embedded_migrations_can_be_reverted_and_rerun() {
         .expect("migrated table should be queryable");
 
     assert_eq!(count, 0);
+    drop(connection);
+    fs::remove_file(path).expect("temporary database should be removable");
+}
+
+#[test]
+fn migration_preserves_operation_and_event_rows_without_rebuilding_them() {
+    let path = database_path();
+    let mut connection = database::connect(&path).expect("database should open");
+    let workspace_id = WorkspaceId::new();
+    let workspace_path = CanonicalPath::resolve(".").expect("workspace path should resolve");
+    insert_workspace(
+        &mut connection,
+        &workspace(workspace_id, workspace_path.clone()),
+    )
+    .expect("workspace should be inserted");
+    let operation = begin_operation(
+        &mut connection,
+        &OperationIntent::new(
+            workspace_id,
+            "create",
+            "migration-test",
+            Timestamp::after_seconds(300),
+            "attach repository",
+            JsonDocument::parse("{}").unwrap(),
+        ),
+    )
+    .expect("operation should be inserted");
+    let event = insert_event(
+        &mut connection,
+        &NewEvent {
+            event_id: EventId::new(),
+            operation_id: operation.id,
+            entity_type: "operation".to_owned(),
+            entity_id: operation.id.to_string(),
+            event_type: "migration_probe".to_owned(),
+            source: "test".to_owned(),
+            occurred_at: Timestamp::now(),
+            previous_state: None,
+            current_state: Some(OperationState::Running.to_string()),
+            details_json: None,
+            error_json: None,
+        },
+    )
+    .expect("event should be inserted");
+
+    connection
+        .revert_last_migration(database::MIGRATIONS)
+        .expect("migration should downgrade");
+    assert_eq!(
+        find_operation(&mut connection, &operation.id)
+            .expect("operation should survive downgrade")
+            .id,
+        operation.id
+    );
+    assert_eq!(
+        trees::schema::lifecycle_events::table
+            .find(event.event_id)
+            .select(EventRow::as_select())
+            .first::<EventRow>(&mut connection)
+            .expect("event should survive downgrade")
+            .event_type,
+        "migration_probe"
+    );
+
+    connection
+        .run_pending_migrations(database::MIGRATIONS)
+        .expect("migration should upgrade");
+    assert_eq!(
+        find_operation(&mut connection, &operation.id)
+            .expect("operation should survive upgrade")
+            .state,
+        OperationState::Running
+    );
+    assert_eq!(
+        trees::schema::lifecycle_events::table
+            .find(event.event_id)
+            .select(EventRow::as_select())
+            .first::<EventRow>(&mut connection)
+            .expect("event should survive upgrade")
+            .event_type,
+        "migration_probe"
+    );
+    assert!(
+        diesel::update(trees::schema::lifecycle_events::table.find(event.event_id))
+            .set(trees::schema::lifecycle_events::event_type.eq("should_fail"))
+            .execute(&mut connection)
+            .is_err()
+    );
+    assert_eq!(
+        trees::storage::find_workspace(&mut connection, &workspace_id)
+            .expect("workspace should survive upgrade")
+            .canonical_path,
+        workspace_path
+    );
+
     drop(connection);
     fs::remove_file(path).expect("temporary database should be removable");
 }

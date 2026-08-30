@@ -1,0 +1,3 @@
+# The migration temporarily disables SQLite foreign keys while replacing the
+# referenced workspace tables.
+run_in_transaction = false
