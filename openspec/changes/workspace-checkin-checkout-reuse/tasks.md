@@ -111,7 +111,7 @@
   dirty/diverged and extra-content workspaces, force protection boundaries,
   partial GC failure,
   external worktree removal, and preservation of all Git files and identities
-- [ ] 6.3 Run `openspec validate workspace-checkin-checkout-reuse --strict`,
+- [x] 6.3 Run `openspec validate workspace-checkin-checkout-reuse --strict`,
   the complete Rust/SQLite test suite, `prek -a`, and
   `nix flake check --no-build`; distinguish spec validation from behavioral
   verification in the final evidence
