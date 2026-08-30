@@ -69,7 +69,7 @@
 
 ## 5. Checkin Workflow and GC Integration
 
-- [ ] 5.1 Implement token-protected checkin that retains the lease on dirty,
+- [x] 5.1 Implement token-protected checkin that retains the lease on dirty,
   missing, prunable, diverged, or failed worktrees and releases it only after
   a successful reusable-state check
 - [ ] 5.2 Wire Clap parsing and `main` dispatch for automatic create,

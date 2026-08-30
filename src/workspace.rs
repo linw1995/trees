@@ -18,7 +18,8 @@ use crate::storage::{
     finalize_creation as finalize_persisted_creation, find_workspace, find_workspace_by_path,
     find_workspace_lease_by_id, insert_managed_workspace, insert_repo_worktree,
     insert_workspace_lease, persist_operation_intent, persist_operation_step_intent,
-    record_operation_transition, record_repo_worktree_transition, record_workspace_checkout,
+    record_operation_transition, record_repo_worktree_transition, record_workspace_checkin,
+    record_workspace_checkin_rejection, record_workspace_checkout,
     record_workspace_checkout_failure, record_workspace_lease_expiration_failure,
     record_workspace_lease_reclaim, record_workspace_transition, record_worktree_step_result,
     release_workspace_lease, with_short_transaction, EventDraft, NewManagedWorkspace,
@@ -59,6 +60,13 @@ pub struct AutomaticCheckoutResult {
     pub pool_key: crate::pool::RepositorySetKey,
     pub checkout_id: CheckoutId,
     pub lease_expires_at: Timestamp,
+}
+
+#[derive(Debug, Clone)]
+pub struct CheckinResult {
+    pub workspace_path: CanonicalPath,
+    pub checkout_id: CheckoutId,
+    pub checked_in_at: Timestamp,
 }
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
@@ -489,6 +497,139 @@ pub fn renew_automatic(
         checkout_id: lease.id,
         lease_expires_at: lease.lease_expires_at,
     })
+}
+
+pub fn checkin_automatic(
+    connection: &mut SqliteConnection,
+    workspace_path: &CanonicalPath,
+    checkout_id: CheckoutId,
+) -> Result<CheckinResult, WorkspaceError> {
+    let workspace = find_workspace_by_path(connection, workspace_path)
+        .map_err(WorkspaceError::Database)?
+        .ok_or_else(|| WorkspaceError::WorkspaceNotFound(workspace_path.clone()))?;
+    if workspace.management_mode != WorkspaceManagementMode::Automatic {
+        return Err(WorkspaceError::NotAutomatic(workspace.canonical_path));
+    }
+    let lease = match crate::storage::find_workspace_lease(connection, &workspace.id)
+        .map_err(WorkspaceError::Database)?
+    {
+        Some(lease) if lease.id == checkout_id => lease,
+        _ => return Err(WorkspaceError::CheckoutNotFound(checkout_id)),
+    };
+    if lease.lease_expires_at.has_expired() {
+        return Err(WorkspaceError::LeaseExpired(checkout_id));
+    }
+
+    let intent_json = JsonDocument::from_serializable(&serde_json::json!({
+        "workspace_path": workspace_path,
+        "checkout_id": checkout_id,
+    }))
+    .map_err(WorkspaceError::Json)?;
+    let intent = OperationIntent::new(
+        workspace.id,
+        "checkin",
+        format!("process:{}", std::process::id()),
+        Timestamp::after_seconds(300),
+        "release checkout lease",
+        intent_json,
+    );
+    let operation = begin_operation(connection, &intent).map_err(map_operation_error)?;
+    let boundary = match reconciliation::reconcile_workspace_for_access(
+        connection,
+        &workspace.id,
+        &operation.id,
+    ) {
+        Ok(boundary) => boundary,
+        Err(error) => {
+            let primary = WorkspaceError::Reconciliation(error);
+            fail_operation(connection, &operation.id, &primary);
+            return Err(primary);
+        }
+    };
+    if boundary.workspace.management_mode != WorkspaceManagementMode::Automatic {
+        let primary = WorkspaceError::NotAutomatic(boundary.workspace.canonical_path);
+        fail_operation(connection, &operation.id, &primary);
+        return Err(primary);
+    }
+    let Some(active_lease) = boundary.lease.as_ref() else {
+        let primary = WorkspaceError::CheckoutNotFound(checkout_id);
+        fail_operation(connection, &operation.id, &primary);
+        return Err(primary);
+    };
+    if active_lease.id != checkout_id {
+        let primary = WorkspaceError::CheckoutNotFound(checkout_id);
+        fail_operation(connection, &operation.id, &primary);
+        return Err(primary);
+    }
+    if active_lease.lease_expires_at.has_expired() {
+        let primary = WorkspaceError::LeaseExpired(checkout_id);
+        fail_operation(connection, &operation.id, &primary);
+        return Err(primary);
+    }
+
+    let details_json = checkin_details(workspace_path, checkout_id);
+    if boundary.summary.workspace_state != WorkspaceState::Ready {
+        let primary = WorkspaceError::NotReusable(workspace.canonical_path.clone());
+        return Err(fail_checkin(
+            connection,
+            &operation.id,
+            &workspace.id,
+            primary,
+            Some(details_json),
+        ));
+    }
+    if let Err(error) = record_workspace_checkin(
+        connection,
+        &operation.id,
+        &workspace.id,
+        &checkout_id,
+        Some(details_json),
+    ) {
+        let primary = WorkspaceError::Database(error);
+        fail_operation(connection, &operation.id, &primary);
+        return Err(primary);
+    }
+    let checked_in_workspace =
+        find_workspace(connection, &workspace.id).map_err(WorkspaceError::Database)?;
+    let checked_in_at = checked_in_workspace
+        .last_checked_in_at
+        .ok_or_else(|| WorkspaceError::Database(diesel::result::Error::NotFound))?;
+    Ok(CheckinResult {
+        workspace_path: checked_in_workspace.canonical_path,
+        checkout_id,
+        checked_in_at,
+    })
+}
+
+fn checkin_details(workspace_path: &CanonicalPath, checkout_id: CheckoutId) -> JsonDocument {
+    JsonDocument::from_serializable(&serde_json::json!({
+        "workspace_path": workspace_path,
+        "checkout_id": checkout_id,
+    }))
+    .expect("checkin details should serialize")
+}
+
+fn fail_checkin(
+    connection: &mut SqliteConnection,
+    operation_id: &crate::domain::OperationId,
+    workspace_id: &WorkspaceId,
+    primary: WorkspaceError,
+    details_json: Option<JsonDocument>,
+) -> WorkspaceError {
+    let error_json = error_document(&primary);
+    match record_workspace_checkin_rejection(
+        connection,
+        operation_id,
+        workspace_id,
+        details_json,
+        error_json,
+    ) {
+        Ok(()) => primary,
+        Err(error) => WorkspaceError::Rollback {
+            primary: Box::new(primary),
+            rollback: Box::new(WorkspaceError::Database(error)),
+        },
+    }
 }
 
 pub fn provision_automatic(
@@ -1142,6 +1283,7 @@ pub enum WorkspaceError {
     CheckoutNotFound(CheckoutId),
     LeaseExpired(CheckoutId),
     RepositorySetMismatch(WorkspaceId),
+    WorkspaceNotFound(CanonicalPath),
     Json(crate::domain::JsonDocumentError),
     AlreadyManaged(CanonicalPath),
     Rollback {
@@ -1210,6 +1352,9 @@ impl fmt::Display for WorkspaceError {
                 formatter,
                 "checkout repositories do not match workspace pool: {workspace_id}"
             ),
+            Self::WorkspaceNotFound(path) => {
+                write!(formatter, "managed workspace was not found: {path}")
+            }
             Self::Json(error) => error.fmt(formatter),
             Self::AlreadyManaged(path) => write!(formatter, "workspace is already managed: {path}"),
             Self::Rollback { primary, rollback } => {
@@ -1256,6 +1401,7 @@ impl std::error::Error for WorkspaceError {
             Self::CheckoutNotFound(_) => None,
             Self::LeaseExpired(_) => None,
             Self::RepositorySetMismatch(_) => None,
+            Self::WorkspaceNotFound(_) => None,
             Self::Json(error) => Some(error),
             Self::AlreadyManaged(_) => None,
             Self::Rollback { primary, .. } => Some(primary),
@@ -1794,6 +1940,144 @@ mod tests {
     }
 
     #[test]
+    fn checks_in_a_reusable_automatic_workspace_and_updates_its_idle_timestamp() {
+        let (root, database_path, mut connection, plan, candidate, worktree_path) =
+            automatic_candidate_fixture();
+        let checkout = checkout_automatic_candidate(&mut connection, &plan, &candidate)
+            .expect("automatic checkout should succeed");
+
+        let result = checkin_automatic(
+            &mut connection,
+            &candidate.canonical_path,
+            checkout.checkout_id,
+        )
+        .expect("automatic checkin should succeed");
+        assert_eq!(result.workspace_path, candidate.canonical_path);
+        assert_eq!(result.checkout_id, checkout.checkout_id);
+        assert!(
+            crate::storage::find_workspace_lease(&mut connection, &candidate.id)
+                .expect("lease lookup should succeed")
+                .is_none()
+        );
+        let workspace = crate::storage::find_workspace(&mut connection, &candidate.id)
+            .expect("workspace lookup should succeed");
+        assert_eq!(workspace.state, WorkspaceState::Ready);
+        assert_eq!(workspace.last_checked_in_at, Some(result.checked_in_at));
+        assert_eq!(
+            crate::storage::list_repo_worktrees(&mut connection, &candidate.id)
+                .expect("worktree lookup should succeed")[0]
+                .state,
+            RepoWorktreeState::Attached
+        );
+        let checkin_event = crate::schema::lifecycle_events::table
+            .filter(crate::schema::lifecycle_events::entity_id.eq(candidate.id.to_string()))
+            .filter(crate::schema::lifecycle_events::event_type.eq("workspace_checked_in"))
+            .select(crate::storage::EventRow::as_select())
+            .first(&mut connection)
+            .expect("checkin event should exist");
+        let operation =
+            crate::storage::find_operation(&mut connection, &checkin_event.operation_id)
+                .expect("checkin operation should exist");
+        assert_eq!(operation.kind, "checkin");
+        assert_eq!(operation.state, OperationState::Succeeded);
+        assert!(worktree_path.exists());
+
+        crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
+            .expect("test worktree should be removable");
+        drop(connection);
+        fs::remove_file(database_path).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn rejects_dirty_checkin_and_retains_the_owning_lease() {
+        let (root, database_path, mut connection, plan, candidate, worktree_path) =
+            automatic_candidate_fixture();
+        let checkout = checkout_automatic_candidate(&mut connection, &plan, &candidate)
+            .expect("automatic checkout should succeed");
+        fs::write(worktree_path.join("local-change"), "dirty\n")
+            .expect("worktree should become dirty");
+
+        let error = checkin_automatic(
+            &mut connection,
+            &candidate.canonical_path,
+            checkout.checkout_id,
+        )
+        .expect_err("dirty checkin should be rejected");
+        assert!(matches!(error, WorkspaceError::NotReusable(_)));
+        assert_eq!(
+            crate::storage::find_workspace_lease(&mut connection, &candidate.id)
+                .expect("lease lookup should succeed")
+                .expect("owning lease should remain active")
+                .id,
+            checkout.checkout_id
+        );
+        assert_eq!(
+            crate::storage::find_workspace(&mut connection, &candidate.id)
+                .expect("workspace lookup should succeed")
+                .state,
+            WorkspaceState::Degraded
+        );
+        let rejected_event = crate::schema::lifecycle_events::table
+            .filter(crate::schema::lifecycle_events::entity_id.eq(candidate.id.to_string()))
+            .filter(crate::schema::lifecycle_events::event_type.eq("workspace_checkin_rejected"))
+            .select(crate::storage::EventRow::as_select())
+            .first(&mut connection)
+            .expect("checkin rejection event should exist");
+        assert_eq!(
+            crate::storage::find_operation(&mut connection, &rejected_event.operation_id)
+                .expect("checkin operation should exist")
+                .state,
+            OperationState::Failed
+        );
+
+        crate::storage::release_workspace_lease(
+            &mut connection,
+            &candidate.id,
+            &checkout.checkout_id,
+        )
+        .expect("dirty lease should be releasable for test cleanup");
+        crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
+            .expect("dirty test worktree should be removable");
+        drop(connection);
+        fs::remove_file(database_path).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn rejects_checkin_with_a_wrong_checkout_identifier() {
+        let (root, database_path, mut connection, plan, candidate, worktree_path) =
+            automatic_candidate_fixture();
+        let checkout = checkout_automatic_candidate(&mut connection, &plan, &candidate)
+            .expect("automatic checkout should succeed");
+        let wrong_checkout_id = CheckoutId::new();
+
+        assert!(matches!(
+            checkin_automatic(&mut connection, &candidate.canonical_path, wrong_checkout_id),
+            Err(WorkspaceError::CheckoutNotFound(checkout_id)) if checkout_id == wrong_checkout_id
+        ));
+        assert_eq!(
+            crate::storage::find_workspace_lease(&mut connection, &candidate.id)
+                .expect("lease lookup should succeed")
+                .expect("original lease should remain active")
+                .id,
+            checkout.checkout_id
+        );
+
+        crate::storage::release_workspace_lease(
+            &mut connection,
+            &candidate.id,
+            &checkout.checkout_id,
+        )
+        .expect("original lease should be releasable");
+        crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
+            .expect("test worktree should be removable");
+        drop(connection);
+        fs::remove_file(database_path).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
     fn provisions_an_automatic_workspace_below_the_managed_root() {
         let root = test_root();
         let source = root.join("source");
@@ -2239,6 +2523,7 @@ mod tests {
             WorkspaceError::CheckoutNotFound(CheckoutId::new()),
             WorkspaceError::LeaseExpired(CheckoutId::new()),
             WorkspaceError::RepositorySetMismatch(WorkspaceId::new()),
+            WorkspaceError::WorkspaceNotFound(path.clone()),
             WorkspaceError::Json(JsonDocument::parse("not json").unwrap_err()),
             primary,
             WorkspaceError::Rollback {
