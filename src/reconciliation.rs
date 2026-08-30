@@ -151,13 +151,19 @@ fn observe_repository(repository: &RepoWorktreeRow) -> Observation {
                                         fingerprint.repository_identity
                                     )),
                                 }
-                            } else if fingerprint.matches_attached(
+                            } else if fingerprint.matches_attachment(
                                 &repository.repository_identity,
                                 &repository.worktree_path,
                                 repository.last_head.as_deref(),
                             ) {
-                                Observation::Attached {
-                                    head: fingerprint.head,
+                                if fingerprint.clean {
+                                    Observation::Attached {
+                                        head: fingerprint.head,
+                                    }
+                                } else {
+                                    Observation::Dirty {
+                                        head: fingerprint.head,
+                                    }
                                 }
                             } else {
                                 Observation::Diverged {
@@ -519,6 +525,9 @@ enum Observation {
     Attached {
         head: Option<String>,
     },
+    Dirty {
+        head: Option<String>,
+    },
     Pending {
         head: Option<String>,
     },
@@ -544,6 +553,16 @@ impl Observation {
     ) {
         match self {
             Self::Attached { head } => (RepoWorktreeState::Attached, head, None, None),
+            Self::Dirty { head } => (
+                RepoWorktreeState::Dirty,
+                head,
+                Some(json_details(
+                    "dirty",
+                    None,
+                    Some("worktree has local changes".to_owned()),
+                )),
+                None,
+            ),
             Self::Pending { head } => (RepoWorktreeState::Pending, head, None, None),
             Self::Diverged {
                 head,
@@ -757,6 +776,103 @@ mod tests {
 
         drop(connection);
         fs::remove_file(database_path).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn records_dirty_worktrees_idempotently() {
+        let (root, mut connection, context) = setup_context();
+        execute_creation(&mut connection, &context).expect("creation should execute");
+        crate::storage::finalize_creation(
+            &mut connection,
+            &context.workspace_id,
+            &context.operation_id,
+        )
+        .expect("creation should finalize");
+
+        let repository = &context.repositories[0];
+        fs::write(
+            repository.plan.worktree_path.join("untracked"),
+            "local change\n",
+        )
+        .expect("untracked file should be written");
+        let summary = reconcile_workspace(
+            &mut connection,
+            &context.workspace_id,
+            &context.operation_id,
+        )
+        .expect("reconciliation should succeed");
+
+        assert_eq!(summary.changed_worktrees, 1);
+        assert_eq!(summary.workspace_state, WorkspaceState::Degraded);
+        assert_eq!(
+            crate::storage::list_repo_worktrees(&mut connection, &context.workspace_id).unwrap()[0]
+                .state,
+            RepoWorktreeState::Dirty
+        );
+        let event_count =
+            crate::storage::list_events_for_operation(&mut connection, &context.operation_id)
+                .unwrap()
+                .len();
+        let repeated = reconcile_workspace(
+            &mut connection,
+            &context.workspace_id,
+            &context.operation_id,
+        )
+        .expect("repeated reconciliation should succeed");
+        assert_eq!(repeated.changed_worktrees, 0);
+        assert_eq!(
+            crate::storage::list_events_for_operation(&mut connection, &context.operation_id)
+                .unwrap()
+                .len(),
+            event_count
+        );
+
+        crate::git::remove_worktree(&repository.plan.source_path, &repository.plan.worktree_path)
+            .expect("dirty worktree should be removable during test cleanup");
+        drop(connection);
+        fs::remove_file(root.join("state.sqlite")).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn records_branch_change_before_dirty_state() {
+        let (root, mut connection, context) = setup_context();
+        execute_creation(&mut connection, &context).expect("creation should execute");
+        crate::storage::finalize_creation(
+            &mut connection,
+            &context.workspace_id,
+            &context.operation_id,
+        )
+        .expect("creation should finalize");
+
+        let repository = &context.repositories[0];
+        run_git(
+            &repository.plan.worktree_path,
+            &["checkout", "-q", "-b", "external"],
+        );
+        fs::write(
+            repository.plan.worktree_path.join("untracked"),
+            "local change\n",
+        )
+        .expect("untracked file should be written");
+        reconcile_workspace(
+            &mut connection,
+            &context.workspace_id,
+            &context.operation_id,
+        )
+        .expect("reconciliation should succeed");
+
+        assert_eq!(
+            crate::storage::list_repo_worktrees(&mut connection, &context.workspace_id).unwrap()[0]
+                .state,
+            RepoWorktreeState::Diverged
+        );
+
+        crate::git::remove_worktree(&repository.plan.source_path, &repository.plan.worktree_path)
+            .expect("changed worktree should be removable during test cleanup");
+        drop(connection);
+        fs::remove_file(root.join("state.sqlite")).expect("state database should be removable");
         fs::remove_dir_all(root).expect("test root should be removable");
     }
 

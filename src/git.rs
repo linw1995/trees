@@ -87,6 +87,15 @@ impl ObservationFingerprint {
         worktree_identity: &CanonicalPath,
         expected_head: Option<&str>,
     ) -> bool {
+        self.matches_attachment(repository_identity, worktree_identity, expected_head) && self.clean
+    }
+
+    pub fn matches_attachment(
+        &self,
+        repository_identity: &CanonicalPath,
+        worktree_identity: &CanonicalPath,
+        expected_head: Option<&str>,
+    ) -> bool {
         self.repository_identity == *repository_identity
             && self.worktree_identity == *worktree_identity
             && self.head.as_deref() == expected_head
@@ -94,7 +103,6 @@ impl ObservationFingerprint {
             && self.branch.is_none()
             && self.existence == WorktreeExistence::Present
             && self.prunable.is_none()
-            && self.clean
     }
 }
 

@@ -41,7 +41,7 @@
 - [x] 3.1 Add a read-only Git worktree cleanliness probe using porcelain status
   and include staged, unstaged, and untracked changes in the observation
   fingerprint
-- [ ] 3.2 Map dirty observations to `dirty`, preserve `missing`/`diverged`/
+- [x] 3.2 Map dirty observations to `dirty`, preserve `missing`/`diverged`/
   `failed` precedence for association failures, and make workspace degradation
   and recovery idempotent
 - [ ] 3.3 Reconcile active leases at checkout and checkin boundaries while
