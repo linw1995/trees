@@ -11,7 +11,7 @@ use crate::paths::{self, PathError, StateDirectoryError};
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
 
 const CONNECTION_PRAGMAS: &str =
-    "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;";
+    "PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;";
 
 pub fn open_default() -> Result<SqliteConnection, DatabaseError> {
     let path = paths::database_path().map_err(DatabaseError::Path)?;
@@ -34,12 +34,8 @@ pub fn connect_read_only(path: &Path) -> Result<SqliteConnection, DatabaseError>
     let path_text = path
         .to_str()
         .ok_or_else(|| DatabaseError::PathNotUtf8(path.to_owned()))?;
-    let mut connection =
-        SqliteConnection::establish(path_text).map_err(DatabaseError::Connection)?;
-    connection
-        .batch_execute("PRAGMA query_only = ON; PRAGMA busy_timeout = 5000;")
-        .map_err(DatabaseError::Configuration)?;
-    Ok(connection)
+    let database_url = format!("sqlite://{path_text}?mode=ro");
+    SqliteConnection::establish(&database_url).map_err(DatabaseError::Connection)
 }
 
 pub fn connect(path: &Path) -> Result<SqliteConnection, DatabaseError> {
@@ -172,8 +168,20 @@ mod tests {
         drop(connection);
 
         let mut connection = connect_read_only(&path).expect("read-only database should open");
-        assert!(connection
-            .batch_execute("CREATE TABLE read_only_probe (id INTEGER);")
+        let workspace_id = WorkspaceId::new();
+        let now = crate::domain::Timestamp::now();
+        let workspace_path = crate::domain::CanonicalPath::resolve("Cargo.toml")
+            .expect("workspace path should resolve");
+        assert!(diesel::insert_into(crate::schema::workspaces::table)
+            .values(&crate::storage::NewWorkspace {
+                id: workspace_id,
+                canonical_path: workspace_path,
+                state: crate::domain::WorkspaceState::Creating,
+                created_at: now.clone(),
+                updated_at: now,
+                last_reconciled_at: None,
+            })
+            .execute(&mut connection)
             .is_err());
 
         drop(connection);
