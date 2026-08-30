@@ -10,6 +10,7 @@ fn run(cli: trees::cli::Cli) -> ExitCode {
     match cli.command {
         trees::cli::Command::Create(arguments) => run_create(arguments),
         trees::cli::Command::Checkin(arguments) => run_checkin(arguments),
+        trees::cli::Command::Config(arguments) => run_config(arguments),
         trees::cli::Command::Codex(arguments) => run_codex(arguments),
     }
 }
@@ -125,6 +126,25 @@ fn run_checkin(arguments: trees::cli::CheckinArgs) -> ExitCode {
             eprintln!("Error: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn run_config(arguments: trees::cli::ConfigArgs) -> ExitCode {
+    match arguments.command {
+        trees::cli::ConfigCommand::Set(arguments) => match arguments.setting {
+            trees::cli::ConfigSetting::WorkspacesDir => {
+                match trees::config::set_workspaces_directory(&arguments.value) {
+                    Ok(path) => {
+                        println!("workspaces_dir={}", path.display());
+                        ExitCode::SUCCESS
+                    }
+                    Err(error) => {
+                        eprintln!("Error: {error}");
+                        ExitCode::FAILURE
+                    }
+                }
+            }
+        },
     }
 }
 

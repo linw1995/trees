@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -18,6 +18,7 @@ pub struct Cli {
 pub enum Command {
     Create(CreateArgs),
     Checkin(CheckinArgs),
+    Config(ConfigArgs),
     Codex(CodexArgs),
 }
 
@@ -40,6 +41,31 @@ pub struct CheckinArgs {
 
     #[arg(long = "checkout-id", required = true, value_name = "CHECKOUT_ID")]
     pub checkout_id: String,
+}
+
+#[derive(Debug, Args)]
+pub struct ConfigArgs {
+    #[command(subcommand)]
+    pub command: ConfigCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigCommand {
+    Set(ConfigSetArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ConfigSetArgs {
+    #[arg(value_enum, value_name = "SETTING")]
+    pub setting: ConfigSetting,
+
+    #[arg(value_name = "VALUE")]
+    pub value: PathBuf,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub enum ConfigSetting {
+    WorkspacesDir,
 }
 
 #[derive(Debug, Args)]
@@ -164,6 +190,25 @@ mod tests {
         };
         assert_eq!(arguments.workspace_path, PathBuf::from("/tmp/workspace"));
         assert_eq!(arguments.checkout_id, "checkout-id");
+    }
+
+    #[test]
+    fn parses_workspace_directory_configuration() {
+        let cli = Cli::try_parse_from([
+            "trees",
+            "config",
+            "set",
+            "workspaces-dir",
+            "relative-workspaces",
+        ])
+        .expect("configuration command should parse");
+
+        let Command::Config(arguments) = cli.command else {
+            panic!("expected config command");
+        };
+        let ConfigCommand::Set(arguments) = arguments.command;
+        assert!(matches!(arguments.setting, ConfigSetting::WorkspacesDir));
+        assert_eq!(arguments.value, PathBuf::from("relative-workspaces"));
     }
 
     #[test]

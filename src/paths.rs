@@ -8,11 +8,13 @@ use crate::domain::WorkspaceId;
 
 const APPLICATION_NAME: &str = "trees";
 const DATABASE_NAME: &str = "db.sqlite";
+const CONFIGURATION_FILE_NAME: &str = "config.toml";
 const WORKSPACES_DIRECTORY_NAME: &str = "workspaces";
 
 #[derive(Debug)]
 pub enum PathError {
     HomeDirectoryUnavailable,
+    Configuration(String),
 }
 
 impl fmt::Display for PathError {
@@ -20,6 +22,12 @@ impl fmt::Display for PathError {
         match self {
             Self::HomeDirectoryUnavailable => {
                 formatter.write_str("the user home directory is unavailable")
+            }
+            Self::Configuration(error) => {
+                write!(
+                    formatter,
+                    "the workspace directory configuration is invalid: {error}"
+                )
             }
         }
     }
@@ -36,9 +44,20 @@ pub fn database_path() -> Result<PathBuf, PathError> {
 }
 
 pub fn managed_workspace_directory() -> Result<PathBuf, PathError> {
+    crate::config::workspaces_directory()
+        .map_err(|error| PathError::Configuration(error.to_string()))
+}
+
+pub fn default_managed_workspace_directory() -> Result<PathBuf, PathError> {
     Ok(platform_data_base()?
         .join(APPLICATION_NAME)
         .join(WORKSPACES_DIRECTORY_NAME))
+}
+
+pub fn configuration_path() -> Result<PathBuf, PathError> {
+    Ok(platform_config_base()?
+        .join(APPLICATION_NAME)
+        .join(CONFIGURATION_FILE_NAME))
 }
 
 pub fn generated_workspace_path(workspace_id: &WorkspaceId) -> Result<PathBuf, PathError> {
@@ -124,6 +143,10 @@ fn platform_data_base() -> Result<PathBuf, PathError> {
     platform_data_base_impl()
 }
 
+fn platform_config_base() -> Result<PathBuf, PathError> {
+    platform_config_base_impl()
+}
+
 #[cfg(target_os = "linux")]
 fn platform_state_base_impl() -> Result<PathBuf, PathError> {
     if let Some(path) = non_empty_environment_path("XDG_STATE_HOME") {
@@ -142,6 +165,15 @@ fn platform_data_base_impl() -> Result<PathBuf, PathError> {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn platform_config_base_impl() -> Result<PathBuf, PathError> {
+    if let Some(path) = non_empty_environment_path("XDG_CONFIG_HOME") {
+        Ok(path)
+    } else {
+        Ok(home_directory()?.join(".config"))
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn platform_state_base_impl() -> Result<PathBuf, PathError> {
     Ok(home_directory()?
@@ -151,6 +183,13 @@ fn platform_state_base_impl() -> Result<PathBuf, PathError> {
 
 #[cfg(target_os = "macos")]
 fn platform_data_base_impl() -> Result<PathBuf, PathError> {
+    Ok(home_directory()?
+        .join("Library")
+        .join("Application Support"))
+}
+
+#[cfg(target_os = "macos")]
+fn platform_config_base_impl() -> Result<PathBuf, PathError> {
     Ok(home_directory()?
         .join("Library")
         .join("Application Support"))
@@ -171,6 +210,15 @@ fn platform_data_base_impl() -> Result<PathBuf, PathError> {
         Ok(path)
     } else {
         Ok(home_directory()?.join("AppData").join("Local"))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn platform_config_base_impl() -> Result<PathBuf, PathError> {
+    if let Some(path) = non_empty_environment_path("APPDATA") {
+        Ok(path)
+    } else {
+        Ok(home_directory()?.join("AppData").join("Roaming"))
     }
 }
 
@@ -182,6 +230,11 @@ fn platform_state_base_impl() -> Result<PathBuf, PathError> {
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn platform_data_base_impl() -> Result<PathBuf, PathError> {
     Ok(home_directory()?.join(".local").join("share"))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn platform_config_base_impl() -> Result<PathBuf, PathError> {
+    Ok(home_directory()?.join(".config"))
 }
 
 fn home_directory() -> Result<PathBuf, PathError> {
@@ -235,6 +288,23 @@ mod tests {
         let path = state_directory().expect("state directory should resolve");
 
         assert!(path.is_absolute());
+    }
+
+    #[test]
+    fn configuration_path_is_absolute_and_uses_the_trees_directory() {
+        let path = configuration_path().expect("configuration path should resolve");
+
+        assert!(path.is_absolute());
+        assert_eq!(
+            path.parent()
+                .and_then(|parent| parent.file_name())
+                .and_then(|name| name.to_str()),
+            Some(APPLICATION_NAME)
+        );
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some(CONFIGURATION_FILE_NAME)
+        );
     }
 
     #[test]

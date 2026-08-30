@@ -1,5 +1,6 @@
 pub mod cli;
 pub mod codex;
+pub mod config;
 pub mod database;
 pub mod domain;
 pub mod git;
