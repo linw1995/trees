@@ -64,7 +64,7 @@
 - [x] 4.4 Implement identifier-based renewal with the fixed 24-hour extension,
   repository-set validation, lease heartbeat updates, and immutable renewal
   events
-- [ ] 4.5 Implement expired-lease recovery with a safe reconciliation gate and
+- [x] 4.5 Implement expired-lease recovery with a safe reconciliation gate and
   an atomic old-lease removal/new-lease acquisition path
 
 ## 5. Checkin Workflow and GC Integration

@@ -19,7 +19,8 @@ use crate::storage::{
     find_workspace_lease_by_id, insert_managed_workspace, insert_repo_worktree,
     insert_workspace_lease, persist_operation_intent, persist_operation_step_intent,
     record_operation_transition, record_repo_worktree_transition, record_workspace_checkout,
-    record_workspace_checkout_failure, record_workspace_transition, record_worktree_step_result,
+    record_workspace_checkout_failure, record_workspace_lease_expiration_failure,
+    record_workspace_lease_reclaim, record_workspace_transition, record_worktree_step_result,
     release_workspace_lease, with_short_transaction, EventDraft, NewManagedWorkspace,
     NewRepoWorktree, OperationIntent, OperationIntentError, TransitionMetadata,
 };
@@ -206,34 +207,54 @@ where
         fail_operation(connection, &operation.id, &primary);
         return Err(primary);
     }
-    if boundary.summary.workspace_state != WorkspaceState::Ready {
+    let old_lease = boundary.lease.as_ref();
+    if let Some(old_lease) = old_lease {
+        if !old_lease.lease_expires_at.has_expired() {
+            let primary = WorkspaceError::LeaseActive(candidate.id);
+            fail_operation(connection, &operation.id, &primary);
+            return Err(primary);
+        }
+        if boundary.summary.workspace_state != WorkspaceState::Ready {
+            let primary = WorkspaceError::NotReusable(candidate.canonical_path.clone());
+            let details_json = checkout_reclaim_details(plan, old_lease, None);
+            return Err(fail_expired_checkout(
+                connection,
+                &operation.id,
+                old_lease,
+                primary,
+                Some(details_json),
+            ));
+        }
+    } else if boundary.summary.workspace_state != WorkspaceState::Ready {
         let primary = WorkspaceError::NotReusable(candidate.canonical_path.clone());
-        fail_operation(connection, &operation.id, &primary);
-        return Err(primary);
-    }
-    if boundary.lease.is_some() {
-        let primary = WorkspaceError::LeaseActive(candidate.id);
         fail_operation(connection, &operation.id, &primary);
         return Err(primary);
     }
 
     let lease = WorkspaceLease::new(candidate.id, format!("process:{}", std::process::id()));
-    let details_json = checkout_details(plan, &lease);
-    if let Err(error) = record_workspace_checkout(
-        connection,
-        &operation.id,
-        &lease,
-        Some(details_json.clone()),
-    ) {
-        let primary = WorkspaceError::Database(error);
-        return Err(fail_checkout(
+    let details_json = old_lease
+        .map(|old_lease| checkout_reclaim_details(plan, old_lease, Some(&lease)))
+        .unwrap_or_else(|| checkout_details(plan, &lease));
+    let record_result = if let Some(old_lease) = old_lease {
+        record_workspace_lease_reclaim(
             connection,
             &operation.id,
-            &candidate.id,
-            &lease.id,
-            primary,
-            Some(details_json),
-        ));
+            old_lease,
+            &lease,
+            Some(details_json.clone()),
+        )
+    } else {
+        record_workspace_checkout(
+            connection,
+            &operation.id,
+            &lease,
+            Some(details_json.clone()),
+        )
+    };
+    if let Err(error) = record_result {
+        let primary = WorkspaceError::Database(error);
+        fail_operation(connection, &operation.id, &primary);
+        return Err(primary);
     }
 
     post_checkout();
@@ -287,6 +308,21 @@ fn checkout_details(plan: &AutomaticAllocationPlan, lease: &WorkspaceLease) -> J
     .expect("checkout details should serialize")
 }
 
+fn checkout_reclaim_details(
+    plan: &AutomaticAllocationPlan,
+    old_lease: &crate::storage::WorkspaceLeaseRow,
+    new_lease: Option<&WorkspaceLease>,
+) -> JsonDocument {
+    JsonDocument::from_serializable(&serde_json::json!({
+        "pool_key": plan.pool_key,
+        "workspace_root": plan.workspace_root,
+        "old_checkout_id": old_lease.id,
+        "old_lease_expires_at": old_lease.lease_expires_at,
+        "lease": new_lease,
+    }))
+    .expect("checkout reclaim details should serialize")
+}
+
 fn map_operation_error(error: OperationIntentError) -> WorkspaceError {
     match error {
         OperationIntentError::WorkspaceBusy(workspace_id) => {
@@ -325,6 +361,29 @@ fn fail_checkout(
         operation_id,
         workspace_id,
         checkout_id,
+        details_json,
+        error_json,
+    ) {
+        Ok(()) => primary,
+        Err(error) => WorkspaceError::Rollback {
+            primary: Box::new(primary),
+            rollback: Box::new(WorkspaceError::Database(error)),
+        },
+    }
+}
+
+fn fail_expired_checkout(
+    connection: &mut SqliteConnection,
+    operation_id: &crate::domain::OperationId,
+    old_lease: &crate::storage::WorkspaceLeaseRow,
+    primary: WorkspaceError,
+    details_json: Option<JsonDocument>,
+) -> WorkspaceError {
+    let error_json = error_document(&primary);
+    match record_workspace_lease_expiration_failure(
+        connection,
+        operation_id,
+        old_lease,
         details_json,
         error_json,
     ) {
@@ -1588,6 +1647,147 @@ mod tests {
 
         crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
             .expect("dirty test worktree should be removable");
+        drop(connection);
+        fs::remove_file(database_path).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn reclaims_an_expired_checkout_before_reusing_the_workspace() {
+        let (root, database_path, mut connection, plan, candidate, worktree_path) =
+            automatic_candidate_fixture();
+        let old_checkout = checkout_automatic_candidate(&mut connection, &plan, &candidate)
+            .expect("initial automatic checkout should succeed");
+        diesel::update(crate::schema::workspace_leases::table.find(old_checkout.checkout_id))
+            .set(crate::schema::workspace_leases::lease_expires_at.eq(Timestamp::now()))
+            .execute(&mut connection)
+            .expect("lease should be expired");
+
+        let new_checkout = checkout_automatic_candidate(&mut connection, &plan, &candidate)
+            .expect("expired checkout should be reclaimed");
+        assert_ne!(new_checkout.checkout_id, old_checkout.checkout_id);
+        assert_eq!(
+            crate::storage::find_workspace_lease(&mut connection, &candidate.id)
+                .expect("lease lookup should succeed")
+                .expect("new lease should exist")
+                .id,
+            new_checkout.checkout_id
+        );
+        assert!(matches!(
+            crate::storage::find_workspace_lease_by_id(&mut connection, &old_checkout.checkout_id),
+            Err(diesel::result::Error::NotFound)
+        ));
+        let expired_event = crate::schema::lifecycle_events::table
+            .filter(crate::schema::lifecycle_events::entity_id.eq(candidate.id.to_string()))
+            .filter(crate::schema::lifecycle_events::event_type.eq("workspace_checkout_expired"))
+            .select(crate::storage::EventRow::as_select())
+            .first(&mut connection)
+            .expect("lease expiration event should exist");
+        assert_eq!(
+            crate::storage::find_operation(&mut connection, &expired_event.operation_id)
+                .expect("reclaim operation should exist")
+                .state,
+            OperationState::Succeeded
+        );
+        assert!(expired_event
+            .details_json
+            .expect("expiration details should exist")
+            .to_string()
+            .contains(&old_checkout.checkout_id.to_string()));
+
+        crate::storage::release_workspace_lease(
+            &mut connection,
+            &candidate.id,
+            &new_checkout.checkout_id,
+        )
+        .expect("new lease should be releasable");
+        crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
+            .expect("test worktree should be removable");
+        drop(connection);
+        fs::remove_file(database_path).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn removes_an_expired_lease_without_reclaiming_a_dirty_workspace() {
+        let (root, database_path, mut connection, plan, candidate, worktree_path) =
+            automatic_candidate_fixture();
+        let old_checkout = checkout_automatic_candidate(&mut connection, &plan, &candidate)
+            .expect("initial automatic checkout should succeed");
+        diesel::update(crate::schema::workspace_leases::table.find(old_checkout.checkout_id))
+            .set(crate::schema::workspace_leases::lease_expires_at.eq(Timestamp::now()))
+            .execute(&mut connection)
+            .expect("lease should be expired");
+        fs::write(worktree_path.join("local-change"), "dirty\n")
+            .expect("worktree should become dirty");
+
+        let error = checkout_automatic_candidate(&mut connection, &plan, &candidate)
+            .expect_err("dirty workspace should reject expired lease reclaim");
+        assert!(matches!(error, WorkspaceError::NotReusable(_)));
+        assert!(
+            crate::storage::find_workspace_lease(&mut connection, &candidate.id)
+                .expect("lease lookup should succeed")
+                .is_none()
+        );
+        assert_eq!(
+            crate::storage::find_workspace(&mut connection, &candidate.id)
+                .expect("workspace lookup should succeed")
+                .state,
+            WorkspaceState::Degraded
+        );
+        let events = crate::schema::lifecycle_events::table
+            .filter(crate::schema::lifecycle_events::entity_id.eq(candidate.id.to_string()))
+            .select(crate::storage::EventRow::as_select())
+            .load::<crate::storage::EventRow>(&mut connection)
+            .expect("workspace events should be readable");
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == "workspace_checkout_expired"));
+        let failed_event = events
+            .iter()
+            .find(|event| event.event_type == "workspace_checkout_failed")
+            .expect("checkout failure event should exist");
+        assert_eq!(
+            crate::storage::find_operation(&mut connection, &failed_event.operation_id)
+                .expect("reclaim operation should exist")
+                .state,
+            OperationState::Failed
+        );
+
+        crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
+            .expect("dirty test worktree should be removable");
+        drop(connection);
+        fs::remove_file(database_path).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn protects_an_unexpired_checkout_from_reclamation() {
+        let (root, database_path, mut connection, plan, candidate, worktree_path) =
+            automatic_candidate_fixture();
+        let checkout = checkout_automatic_candidate(&mut connection, &plan, &candidate)
+            .expect("initial automatic checkout should succeed");
+
+        assert!(matches!(
+            checkout_automatic_candidate(&mut connection, &plan, &candidate),
+            Err(WorkspaceError::LeaseActive(workspace_id)) if workspace_id == candidate.id
+        ));
+        assert_eq!(
+            crate::storage::find_workspace_lease(&mut connection, &candidate.id)
+                .expect("lease lookup should succeed")
+                .expect("original lease should remain active")
+                .id,
+            checkout.checkout_id
+        );
+
+        crate::storage::release_workspace_lease(
+            &mut connection,
+            &candidate.id,
+            &checkout.checkout_id,
+        )
+        .expect("original lease should be releasable");
+        crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
+            .expect("test worktree should be removable");
         drop(connection);
         fs::remove_file(database_path).expect("state database should be removable");
         fs::remove_dir_all(root).expect("test root should be removable");

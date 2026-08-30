@@ -405,6 +405,65 @@ pub fn record_workspace_lease_reclaim(
     })
 }
 
+pub fn record_workspace_lease_expiration_failure(
+    connection: &mut SqliteConnection,
+    operation_id: &OperationId,
+    old_lease: &WorkspaceLeaseRow,
+    details_json: Option<JsonDocument>,
+    error_json: JsonDocument,
+) -> QueryResult<()> {
+    with_short_transaction(connection, |connection| {
+        let workspace = workspaces::table
+            .find(&old_lease.workspace_id)
+            .select(WorkspaceRow::as_select())
+            .first(connection)?;
+        let removed = diesel::delete(
+            workspace_leases::table
+                .filter(workspace_leases::workspace_id.eq(old_lease.workspace_id))
+                .filter(workspace_leases::id.eq(old_lease.id)),
+        )
+        .execute(connection)?;
+        if removed != 1 {
+            return Err(Error::NotFound);
+        }
+        finish_operation_in_transaction(
+            connection,
+            operation_id,
+            OperationState::Failed,
+            "checkout rejected expired lease",
+            None,
+            TransitionMetadata::new("operation_failed", "recovery")
+                .with_details(details_json.clone().unwrap_or_else(empty_json))
+                .with_error(error_json.clone()),
+        )?;
+        append_event(
+            connection,
+            &workspace_access_event(
+                operation_id,
+                &workspace,
+                "workspace_checkout_expired",
+                details_json.clone(),
+            ),
+        )?;
+        append_event(
+            connection,
+            &EventDraft {
+                operation_id: *operation_id,
+                entity_type: "workspace".to_owned(),
+                entity_id: workspace.id.to_string(),
+                event_type: "workspace_checkout_failed".to_owned(),
+                source: "recovery".to_owned(),
+                occurred_at: Timestamp::now(),
+                previous_state: Some(workspace.state.to_string()),
+                current_state: Some(workspace.state.to_string()),
+                details_json,
+                error_json: Some(error_json),
+            },
+        )?;
+        Ok(())
+    })
+}
+
 pub fn record_workspace_reclaimed(
     connection: &mut SqliteConnection,
     operation_id: &OperationId,
