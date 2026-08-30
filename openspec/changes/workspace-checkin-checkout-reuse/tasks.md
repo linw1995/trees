@@ -72,7 +72,7 @@
 - [x] 5.1 Implement token-protected checkin that retains the lease on dirty,
   missing, prunable, diverged, or failed worktrees and releases it only after
   a successful reusable-state check
-- [ ] 5.2 Wire Clap parsing and `main` dispatch for automatic create,
+- [x] 5.2 Wire Clap parsing and `main` dispatch for automatic create,
   renewal, and checkin; print stable machine-copiable workspace, pool key,
   checkout ID, and expiry fields while keeping human-readable errors
 - [ ] 5.3 Add `trees config set workspaces-dir <path>` and configuration

@@ -130,6 +130,32 @@ pub fn find_idle_automatic_candidate(
     connection: &mut SqliteConnection,
     plan: &AutomaticAllocationPlan,
 ) -> Result<Option<crate::storage::WorkspaceRow>, WorkspaceError> {
+    Ok(list_idle_automatic_candidates(connection, plan)?
+        .into_iter()
+        .next())
+}
+
+pub fn allocate_automatic_workspace(
+    connection: &mut SqliteConnection,
+    plan: &AutomaticAllocationPlan,
+) -> Result<AutomaticCheckoutResult, WorkspaceError> {
+    if plan.checkout_id.is_some() {
+        return renew_automatic(connection, plan);
+    }
+    for candidate in list_idle_automatic_candidates(connection, plan)? {
+        match checkout_automatic_candidate(connection, plan, &candidate) {
+            Ok(result) => return Ok(result),
+            Err(error) if is_retryable_allocation_error(&error) => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    provision_automatic(connection, plan)
+}
+
+fn list_idle_automatic_candidates(
+    connection: &mut SqliteConnection,
+    plan: &AutomaticAllocationPlan,
+) -> Result<Vec<crate::storage::WorkspaceRow>, WorkspaceError> {
     let candidates = crate::storage::list_automatic_workspace_candidates(
         connection,
         &plan.workspace_root,
@@ -167,7 +193,22 @@ pub fn find_idle_automatic_candidate(
             },
         )
     });
-    Ok(candidates.into_iter().next())
+    Ok(candidates)
+}
+
+fn is_retryable_allocation_error(error: &WorkspaceError) -> bool {
+    matches!(
+        error,
+        WorkspaceError::OperationActive(_)
+            | WorkspaceError::NotAutomatic(_)
+            | WorkspaceError::NotReusable(_)
+            | WorkspaceError::LeaseActive(_)
+            | WorkspaceError::Database(diesel::result::Error::NotFound)
+            | WorkspaceError::Database(diesel::result::Error::DatabaseError(
+                diesel::result::DatabaseErrorKind::UniqueViolation,
+                _,
+            ))
+    )
 }
 
 pub fn checkout_automatic_candidate(
@@ -1631,6 +1672,34 @@ mod tests {
             .expect("an idle candidate should exist");
         assert_eq!(candidate.id, older);
 
+        drop(connection);
+        fs::remove_file(database_path).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn allocates_an_existing_automatic_pool_slot() {
+        let (root, database_path, mut connection, plan, candidate, worktree_path) =
+            automatic_candidate_fixture();
+
+        let result = allocate_automatic_workspace(&mut connection, &plan)
+            .expect("automatic allocation should succeed");
+        assert_eq!(result.workspace_path, candidate.canonical_path);
+        assert_eq!(result.pool_key, plan.pool_key);
+        assert!(
+            crate::storage::find_workspace_lease(&mut connection, &candidate.id)
+                .expect("lease lookup should succeed")
+                .is_some()
+        );
+
+        crate::storage::release_workspace_lease(
+            &mut connection,
+            &candidate.id,
+            &result.checkout_id,
+        )
+        .expect("allocated lease should be releasable");
+        crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
+            .expect("test worktree should be removable");
         drop(connection);
         fs::remove_file(database_path).expect("state database should be removable");
         fs::remove_dir_all(root).expect("test root should be removable");
