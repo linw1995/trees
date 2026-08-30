@@ -75,7 +75,7 @@
 - [x] 5.2 Wire Clap parsing and `main` dispatch for automatic create,
   renewal, and checkin; print stable machine-copiable workspace, pool key,
   checkout ID, and expiry fields while keeping human-readable errors
-- [ ] 5.3 Add `trees config set workspaces-dir <path>` and configuration
+- [x] 5.3 Add `trees config set workspaces-dir <path>` and configuration
   loading, resolving configured paths to absolute values before persistence;
   keep database state and workspace content directories separate
 - [x] 5.4 Implement `trees gc --older-than <duration> [--dry-run] [--yes]
