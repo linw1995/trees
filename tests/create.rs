@@ -4,7 +4,9 @@ use std::process::Command;
 
 use diesel::prelude::*;
 
-use trees::domain::{CanonicalPath, OperationState, RepoWorktreeState, WorkspaceState};
+use trees::domain::{
+    CanonicalPath, OperationState, RepoWorktreeState, WorkspaceManagementMode, WorkspaceState,
+};
 use trees::git;
 use trees::reconciliation::reconcile_workspace;
 use trees::storage::{
@@ -88,6 +90,7 @@ fn creates_direct_child_worktrees_and_tracks_events() {
     .unwrap()
     .unwrap();
     assert_eq!(workspace.state, WorkspaceState::Ready);
+    assert_eq!(workspace.management_mode, WorkspaceManagementMode::Manual);
     assert_eq!(
         list_repo_worktrees(&mut connection, &workspace.id)
             .unwrap()

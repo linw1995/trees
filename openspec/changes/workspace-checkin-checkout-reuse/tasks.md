@@ -91,7 +91,7 @@
   `--yes` or `--force`, safe `--yes` bypass, forced-run warnings, and stable
   candidate/skipped/reclaimed/failed/not-checked-out/checked-out counts; ensure
   dry-run performs no SQLite, Git, or filesystem write
-- [ ] 5.7 Keep manual `trees create` and existing `trees codex` flows
+- [x] 5.7 Keep manual `trees create` and existing `trees codex` flows
   compatible; document repository-set allocation, generated automatic paths,
   automatic/manual mode, checkin ownership, and that only GC may remove an
   idle automatic workspace
