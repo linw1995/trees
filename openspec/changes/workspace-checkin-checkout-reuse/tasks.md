@@ -4,7 +4,7 @@
   `trees create <workspace-path> --repo ...`, lease renewal, and checkin
   command arguments, result output, error cases, and the UUID v7 checkout
   identifier
-- [ ] 1.2 Define `automatic` and `manual` workspace modes inferred from
+- [x] 1.2 Define `automatic` and `manual` workspace modes inferred from
   positional-path presence, and the rule that manual workspaces bypass all
   automated checkout/checkin and GC behavior
 - [ ] 1.3 Define the canonical repository-set pool key, least-recently-used

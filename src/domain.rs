@@ -87,6 +87,47 @@ uuid_identifier!(RepoWorktreeId);
 uuid_identifier!(OperationId);
 uuid_identifier!(EventId);
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, AsExpression, FromSqlRow)]
+#[diesel(sql_type = diesel::sql_types::Text)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceManagementMode {
+    Automatic,
+    Manual,
+}
+
+impl WorkspaceManagementMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Automatic => "automatic",
+            Self::Manual => "manual",
+        }
+    }
+
+    pub const fn is_automatic(self) -> bool {
+        matches!(self, Self::Automatic)
+    }
+
+    const ALL: &'static [&'static str] = &["automatic", "manual"];
+}
+
+impl fmt::Display for WorkspaceManagementMode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for WorkspaceManagementMode {
+    type Err = StateParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "automatic" => Ok(Self::Automatic),
+            "manual" => Ok(Self::Manual),
+            _ => Err(StateParseError::new(value, Self::ALL)),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum IdentifierError {
     InvalidUuid(uuid::Error),
@@ -518,6 +559,11 @@ mod tests {
     #[test]
     fn states_use_storage_names() {
         assert_eq!(WorkspaceState::Ready.to_string(), "ready");
+        assert_eq!(WorkspaceManagementMode::Automatic.to_string(), "automatic");
+        assert_eq!(
+            WorkspaceManagementMode::from_str("manual").unwrap(),
+            WorkspaceManagementMode::Manual
+        );
         assert_eq!(
             RepoWorktreeState::from_str("diverged").unwrap(),
             RepoWorktreeState::Diverged

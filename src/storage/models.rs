@@ -7,7 +7,7 @@ use diesel::sqlite::Sqlite;
 
 use crate::domain::{
     CanonicalPath, EventId, JsonDocument, OperationId, OperationState, RepoWorktreeId,
-    RepoWorktreeState, Timestamp, WorkspaceId, WorkspaceState,
+    RepoWorktreeState, Timestamp, WorkspaceId, WorkspaceManagementMode, WorkspaceState,
 };
 use crate::schema::{lifecycle_events, operations, repo_worktrees, workspaces};
 
@@ -36,6 +36,7 @@ impl_text_codec!(RepoWorktreeId);
 impl_text_codec!(OperationId);
 impl_text_codec!(EventId);
 impl_text_codec!(WorkspaceState);
+impl_text_codec!(WorkspaceManagementMode);
 impl_text_codec!(RepoWorktreeState);
 impl_text_codec!(OperationState);
 impl_text_codec!(CanonicalPath);
