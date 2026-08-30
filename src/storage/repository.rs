@@ -7,6 +7,7 @@ use crate::domain::{
     CanonicalPath, CheckoutId, JsonDocument, OperationId, OperationState, RepoWorktreeId,
     RepoWorktreeState, Timestamp, WorkspaceId, WorkspaceState,
 };
+use crate::lease::WorkspaceLease;
 use crate::schema::{lifecycle_events, operations, repo_worktrees, workspace_leases, workspaces};
 
 use super::models::{
@@ -153,6 +154,277 @@ pub fn release_workspace_lease(
     )
     .execute(connection)?;
     Ok(deleted == 1)
+}
+
+pub fn record_workspace_checkout(
+    connection: &mut SqliteConnection,
+    operation_id: &OperationId,
+    lease: &WorkspaceLease,
+    details_json: Option<JsonDocument>,
+) -> QueryResult<()> {
+    with_short_transaction(connection, |connection| {
+        insert_workspace_lease(connection, &NewWorkspaceLease::from(lease))?;
+        let workspace = workspaces::table
+            .find(&lease.workspace_id)
+            .select(WorkspaceRow::as_select())
+            .first(connection)?;
+        finish_operation_in_transaction(
+            connection,
+            operation_id,
+            OperationState::Succeeded,
+            "checkout complete",
+            None,
+            TransitionMetadata::new("operation_succeeded", "trees")
+                .with_details(details_json.clone().unwrap_or_else(empty_json)),
+        )?;
+        append_event(
+            connection,
+            &workspace_access_event(
+                operation_id,
+                &workspace,
+                "workspace_checked_out",
+                details_json,
+            ),
+        )?;
+        Ok(())
+    })
+}
+
+pub fn record_workspace_checkin(
+    connection: &mut SqliteConnection,
+    operation_id: &OperationId,
+    workspace_id: &WorkspaceId,
+    checkout_id: &CheckoutId,
+    details_json: Option<JsonDocument>,
+) -> QueryResult<()> {
+    with_short_transaction(connection, |connection| {
+        let workspace = workspaces::table
+            .find(workspace_id)
+            .select(WorkspaceRow::as_select())
+            .first(connection)?;
+        if !release_workspace_lease(connection, workspace_id, checkout_id)? {
+            return Err(Error::NotFound);
+        }
+        let occurred_at = Timestamp::now();
+        diesel::update(workspaces::table.find(workspace_id))
+            .set((
+                workspaces::last_checked_in_at.eq(&occurred_at),
+                workspaces::updated_at.eq(&occurred_at),
+            ))
+            .execute(connection)?;
+        finish_operation_in_transaction(
+            connection,
+            operation_id,
+            OperationState::Succeeded,
+            "checkin complete",
+            None,
+            TransitionMetadata::new("operation_succeeded", "trees")
+                .with_details(details_json.clone().unwrap_or_else(empty_json)),
+        )?;
+        append_event(
+            connection,
+            &workspace_access_event(
+                operation_id,
+                &workspace,
+                "workspace_checked_in",
+                details_json,
+            ),
+        )?;
+        Ok(())
+    })
+}
+
+pub fn record_workspace_lease_renewal(
+    connection: &mut SqliteConnection,
+    operation_id: &OperationId,
+    lease: &WorkspaceLease,
+    details_json: Option<JsonDocument>,
+) -> QueryResult<()> {
+    with_short_transaction(connection, |connection| {
+        if !renew_workspace_lease(
+            connection,
+            &lease.id,
+            &lease.lease_expires_at,
+            &lease.last_heartbeat_at,
+        )? {
+            return Err(Error::NotFound);
+        }
+        let workspace = workspaces::table
+            .find(&lease.workspace_id)
+            .select(WorkspaceRow::as_select())
+            .first(connection)?;
+        finish_operation_in_transaction(
+            connection,
+            operation_id,
+            OperationState::Succeeded,
+            "lease renewal complete",
+            None,
+            TransitionMetadata::new("operation_succeeded", "trees")
+                .with_details(details_json.clone().unwrap_or_else(empty_json)),
+        )?;
+        append_event(
+            connection,
+            &workspace_access_event(
+                operation_id,
+                &workspace,
+                "workspace_checkout_renewed",
+                details_json,
+            ),
+        )?;
+        Ok(())
+    })
+}
+
+pub fn record_workspace_lease_reclaim(
+    connection: &mut SqliteConnection,
+    operation_id: &OperationId,
+    old_lease: &WorkspaceLeaseRow,
+    new_lease: &WorkspaceLease,
+    details_json: Option<JsonDocument>,
+) -> QueryResult<()> {
+    with_short_transaction(connection, |connection| {
+        let removed = diesel::delete(
+            workspace_leases::table
+                .filter(workspace_leases::workspace_id.eq(old_lease.workspace_id))
+                .filter(workspace_leases::id.eq(old_lease.id)),
+        )
+        .execute(connection)?;
+        if removed != 1 {
+            return Err(Error::NotFound);
+        }
+        insert_workspace_lease(connection, &NewWorkspaceLease::from(new_lease))?;
+        let workspace = workspaces::table
+            .find(&new_lease.workspace_id)
+            .select(WorkspaceRow::as_select())
+            .first(connection)?;
+        finish_operation_in_transaction(
+            connection,
+            operation_id,
+            OperationState::Succeeded,
+            "checkout reclaim complete",
+            None,
+            TransitionMetadata::new("operation_succeeded", "recovery")
+                .with_details(details_json.clone().unwrap_or_else(empty_json)),
+        )?;
+        append_event(
+            connection,
+            &workspace_access_event(
+                operation_id,
+                &workspace,
+                "workspace_checkout_expired",
+                details_json.clone(),
+            ),
+        )?;
+        append_event(
+            connection,
+            &workspace_access_event(
+                operation_id,
+                &workspace,
+                "workspace_checked_out",
+                details_json,
+            ),
+        )?;
+        Ok(())
+    })
+}
+
+pub fn record_workspace_reclaimed(
+    connection: &mut SqliteConnection,
+    operation_id: &OperationId,
+    workspace_id: &WorkspaceId,
+    details_json: Option<JsonDocument>,
+) -> QueryResult<()> {
+    with_short_transaction(connection, |connection| {
+        let workspace = workspaces::table
+            .find(workspace_id)
+            .select(WorkspaceRow::as_select())
+            .first(connection)?;
+        let repositories = repo_worktrees::table
+            .filter(repo_worktrees::workspace_id.eq(workspace_id))
+            .select(RepoWorktreeRow::as_select())
+            .load::<RepoWorktreeRow>(connection)?;
+        let occurred_at = Timestamp::now();
+        for repository in &repositories {
+            diesel::update(repo_worktrees::table.find(&repository.id))
+                .set((
+                    repo_worktrees::state.eq(RepoWorktreeState::Reclaimed),
+                    repo_worktrees::last_observed_at.eq(&occurred_at),
+                ))
+                .execute(connection)?;
+            append_event(
+                connection,
+                &EventDraft {
+                    operation_id: *operation_id,
+                    entity_type: "repo_worktree".to_owned(),
+                    entity_id: repository.id.to_string(),
+                    event_type: "worktree_reclaimed".to_owned(),
+                    source: "trees".to_owned(),
+                    occurred_at: occurred_at.clone(),
+                    previous_state: Some(repository.state.to_string()),
+                    current_state: Some(RepoWorktreeState::Reclaimed.to_string()),
+                    details_json: details_json.clone(),
+                    error_json: None,
+                },
+            )?;
+        }
+        diesel::update(workspaces::table.find(workspace_id))
+            .set((
+                workspaces::state.eq(WorkspaceState::Reclaimed),
+                workspaces::updated_at.eq(&occurred_at),
+                workspaces::last_reconciled_at.eq(&occurred_at),
+                workspaces::reclaimed_at.eq(&occurred_at),
+            ))
+            .execute(connection)?;
+        finish_operation_in_transaction(
+            connection,
+            operation_id,
+            OperationState::Succeeded,
+            "garbage collection complete",
+            None,
+            TransitionMetadata::new("operation_succeeded", "trees")
+                .with_details(details_json.clone().unwrap_or_else(empty_json)),
+        )?;
+        append_event(
+            connection,
+            &EventDraft {
+                operation_id: *operation_id,
+                entity_type: "workspace".to_owned(),
+                entity_id: workspace.id.to_string(),
+                event_type: "workspace_reclaimed".to_owned(),
+                source: "trees".to_owned(),
+                occurred_at,
+                previous_state: Some(workspace.state.to_string()),
+                current_state: Some(WorkspaceState::Reclaimed.to_string()),
+                details_json,
+                error_json: None,
+            },
+        )?;
+        Ok(())
+    })
+}
+
+fn workspace_access_event(
+    operation_id: &OperationId,
+    workspace: &WorkspaceRow,
+    event_type: &str,
+    details_json: Option<JsonDocument>,
+) -> EventDraft {
+    EventDraft {
+        operation_id: *operation_id,
+        entity_type: "workspace".to_owned(),
+        entity_id: workspace.id.to_string(),
+        event_type: event_type.to_owned(),
+        source: "trees".to_owned(),
+        occurred_at: Timestamp::now(),
+        previous_state: Some(workspace.state.to_string()),
+        current_state: Some(workspace.state.to_string()),
+        details_json,
+        error_json: None,
+    }
+}
+
+fn empty_json() -> JsonDocument {
+    JsonDocument::parse("{}").expect("empty JSON object should parse")
 }
 
 pub fn insert_repo_worktree(
@@ -450,47 +722,65 @@ pub fn record_operation_transition(
     finished_at: Option<Timestamp>,
     metadata: TransitionMetadata,
 ) -> QueryResult<()> {
-    let pending_step = pending_step.into();
     with_short_transaction(connection, |connection| {
-        let operation = operations::table
-            .find(operation_id)
-            .select(OperationRow::as_select())
-            .first(connection)?;
-        let occurred_at = Timestamp::now();
-        let finished_at = finished_at.or_else(|| {
-            matches!(
-                state,
-                OperationState::Succeeded | OperationState::Failed | OperationState::RolledBack
-            )
-            .then_some(occurred_at.clone())
-        });
-
-        diesel::update(operations::table.find(operation_id))
-            .set((
-                operations::state.eq(state),
-                operations::pending_step.eq(pending_step),
-                operations::last_heartbeat_at.eq(&occurred_at),
-                operations::finished_at.eq(finished_at),
-                operations::error_json.eq(metadata.error_json.clone()),
-            ))
-            .execute(connection)?;
-        append_event(
+        finish_operation_in_transaction(
             connection,
-            &EventDraft {
-                operation_id: *operation_id,
-                entity_type: "operation".to_owned(),
-                entity_id: operation.id.to_string(),
-                event_type: metadata.event_type,
-                source: metadata.source,
-                occurred_at,
-                previous_state: Some(operation.state.to_string()),
-                current_state: Some(state.to_string()),
-                details_json: metadata.details_json,
-                error_json: metadata.error_json,
-            },
-        )?;
-        Ok(())
+            operation_id,
+            state,
+            pending_step,
+            finished_at,
+            metadata,
+        )
     })
+}
+
+fn finish_operation_in_transaction(
+    connection: &mut SqliteConnection,
+    operation_id: &OperationId,
+    state: OperationState,
+    pending_step: impl Into<String>,
+    finished_at: Option<Timestamp>,
+    metadata: TransitionMetadata,
+) -> QueryResult<()> {
+    let pending_step = pending_step.into();
+    let operation = operations::table
+        .find(operation_id)
+        .select(OperationRow::as_select())
+        .first(connection)?;
+    let occurred_at = Timestamp::now();
+    let finished_at = finished_at.or_else(|| {
+        matches!(
+            state,
+            OperationState::Succeeded | OperationState::Failed | OperationState::RolledBack
+        )
+        .then_some(occurred_at.clone())
+    });
+
+    diesel::update(operations::table.find(operation_id))
+        .set((
+            operations::state.eq(state),
+            operations::pending_step.eq(pending_step),
+            operations::last_heartbeat_at.eq(&occurred_at),
+            operations::finished_at.eq(finished_at),
+            operations::error_json.eq(metadata.error_json.clone()),
+        ))
+        .execute(connection)?;
+    append_event(
+        connection,
+        &EventDraft {
+            operation_id: *operation_id,
+            entity_type: "operation".to_owned(),
+            entity_id: operation.id.to_string(),
+            event_type: metadata.event_type,
+            source: metadata.source,
+            occurred_at,
+            previous_state: Some(operation.state.to_string()),
+            current_state: Some(state.to_string()),
+            details_json: metadata.details_json,
+            error_json: metadata.error_json,
+        },
+    )?;
+    Ok(())
 }
 
 pub fn persist_operation_step_intent(
@@ -864,6 +1154,102 @@ mod tests {
         assert!(find_workspace_lease(&mut connection, &workspace_id)
             .unwrap()
             .is_none());
+
+        drop(connection);
+        fs::remove_file(database_path).expect("temporary database should be removable");
+    }
+
+    #[test]
+    fn checkout_and_checkin_commit_lease_state_and_events_atomically() {
+        let database_path =
+            std::env::temp_dir().join(format!("trees-{}.sqlite", WorkspaceId::new()));
+        let mut connection = database::connect(&database_path).expect("database should open");
+        let workspace_id = WorkspaceId::new();
+        let workspace_path = CanonicalPath::resolve(".").expect("workspace path should resolve");
+        let now = Timestamp::now();
+
+        insert_workspace(
+            &mut connection,
+            &NewWorkspace {
+                id: workspace_id,
+                canonical_path: workspace_path,
+                state: WorkspaceState::Ready,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+                last_reconciled_at: None,
+            },
+        )
+        .expect("workspace should be inserted");
+
+        let checkout_operation = begin_operation(
+            &mut connection,
+            &OperationIntent::new(
+                workspace_id,
+                "checkout",
+                "process:test",
+                Timestamp::after_seconds(300),
+                "acquire lease",
+                JsonDocument::parse(r#"{"kind":"checkout"}"#).unwrap(),
+            ),
+        )
+        .expect("checkout operation should start");
+        let lease = WorkspaceLease::new(workspace_id, "process:test");
+        record_workspace_checkout(
+            &mut connection,
+            &checkout_operation.id,
+            &lease,
+            Some(JsonDocument::parse(r#"{"checkout":true}"#).unwrap()),
+        )
+        .expect("checkout should be recorded");
+        assert!(find_workspace_lease(&mut connection, &workspace_id)
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            find_operation(&mut connection, &checkout_operation.id)
+                .unwrap()
+                .state,
+            OperationState::Succeeded
+        );
+        assert_eq!(
+            list_events_for_operation(&mut connection, &checkout_operation.id)
+                .unwrap()
+                .len(),
+            2
+        );
+
+        let checkin_operation = begin_operation(
+            &mut connection,
+            &OperationIntent::new(
+                workspace_id,
+                "checkin",
+                "process:test",
+                Timestamp::after_seconds(300),
+                "release lease",
+                JsonDocument::parse(r#"{"kind":"checkin"}"#).unwrap(),
+            ),
+        )
+        .expect("checkin operation should start");
+        record_workspace_checkin(
+            &mut connection,
+            &checkin_operation.id,
+            &workspace_id,
+            &lease.id,
+            None,
+        )
+        .expect("checkin should be recorded");
+        assert!(find_workspace_lease(&mut connection, &workspace_id)
+            .unwrap()
+            .is_none());
+        assert!(find_workspace(&mut connection, &workspace_id)
+            .unwrap()
+            .last_checked_in_at
+            .is_some());
+        assert_eq!(
+            find_operation(&mut connection, &checkin_operation.id)
+                .unwrap()
+                .state,
+            OperationState::Succeeded
+        );
 
         drop(connection);
         fs::remove_file(database_path).expect("temporary database should be removable");

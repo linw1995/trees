@@ -2,10 +2,11 @@ use crate::domain::{
     CheckoutId, OperationState, RepoWorktreeState, Timestamp, WorkspaceId, WorkspaceManagementMode,
     WorkspaceState,
 };
+use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_LEASE_SECONDS: i64 = 24 * 60 * 60;
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceLease {
     pub id: CheckoutId,
     pub workspace_id: WorkspaceId,

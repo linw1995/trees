@@ -12,8 +12,10 @@ pub use repository::{
     find_workspace_lease_by_id, insert_event, insert_operation, insert_repo_worktree,
     insert_workspace, insert_workspace_lease, list_events_for_operation, list_repo_worktrees,
     persist_operation_intent, persist_operation_step_intent, record_operation_transition,
-    record_repo_worktree_transition, record_workspace_transition, record_worktree_step_result,
-    release_workspace_lease, renew_operation_lease, renew_workspace_lease,
-    update_workspace_observation, EventDraft, OperationIntentError, TransitionMetadata,
+    record_repo_worktree_transition, record_workspace_checkin, record_workspace_checkout,
+    record_workspace_lease_reclaim, record_workspace_lease_renewal, record_workspace_reclaimed,
+    record_workspace_transition, record_worktree_step_result, release_workspace_lease,
+    renew_operation_lease, renew_workspace_lease, update_workspace_observation, EventDraft,
+    OperationIntentError, TransitionMetadata,
 };
 pub use transaction::with_short_transaction;
