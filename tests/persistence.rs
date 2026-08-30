@@ -164,3 +164,37 @@ fn legacy_workspace_rows_default_to_manual_without_pool_metadata() {
     drop(connection);
     fs::remove_file(path).expect("temporary database should be removable");
 }
+
+#[test]
+fn automatic_workspace_metadata_and_timestamps_round_trip_as_absolute_values() {
+    let path = database_path();
+    let mut connection = database::connect(&path).expect("database should open");
+    let workspace_id = WorkspaceId::new();
+    let workspace_path = CanonicalPath::resolve(".").expect("workspace path should resolve");
+    let workspace_root = CanonicalPath::resolve("/tmp").expect("workspace root should resolve");
+    let now = Timestamp::now();
+
+    insert_workspace(&mut connection, &workspace(workspace_id, workspace_path))
+        .expect("workspace should be inserted");
+    diesel::update(trees::schema::workspaces::table.find(&workspace_id))
+        .set((
+            trees::schema::workspaces::management_mode.eq(WorkspaceManagementMode::Automatic),
+            trees::schema::workspaces::pool_key.eq(Some(r#"["/repo/api"]"#)),
+            trees::schema::workspaces::workspace_root.eq(Some(workspace_root.clone())),
+            trees::schema::workspaces::last_checked_in_at.eq(Some(now.clone())),
+            trees::schema::workspaces::reclaimed_at.eq::<Option<Timestamp>>(None),
+        ))
+        .execute(&mut connection)
+        .expect("automatic metadata should update");
+
+    let stored = trees::storage::find_workspace(&mut connection, &workspace_id)
+        .expect("workspace should be queryable");
+    assert_eq!(stored.management_mode, WorkspaceManagementMode::Automatic);
+    assert_eq!(stored.pool_key.as_deref(), Some(r#"["/repo/api"]"#));
+    assert_eq!(stored.workspace_root, Some(workspace_root));
+    assert_eq!(stored.last_checked_in_at, Some(now));
+    assert!(stored.canonical_path.as_path().is_absolute());
+
+    drop(connection);
+    fs::remove_file(path).expect("temporary database should be removable");
+}

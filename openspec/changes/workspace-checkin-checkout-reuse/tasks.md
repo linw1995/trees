@@ -32,7 +32,7 @@
 - [x] 2.4 Add typed persistence helpers for checkout, checkin, GC operations,
   access/reclamation events, old/new lease details, and atomic operation
   completion
-- [ ] 2.5 Verify lease acquisition races, wrong-token rejection, mode and
+- [x] 2.5 Verify lease acquisition races, wrong-token rejection, mode and
   timestamp persistence, tombstone retention, JSON detail validation, and
   migration upgrade/downgrade
 

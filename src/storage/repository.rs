@@ -1118,6 +1118,13 @@ mod tests {
         let row = insert_workspace_lease(&mut connection, &NewWorkspaceLease::from(&lease))
             .expect("lease should be inserted");
         assert_eq!(row.id, lease.id);
+        assert!(matches!(
+            insert_workspace_lease(
+                &mut connection,
+                &NewWorkspaceLease::from(&WorkspaceLease::new(workspace_id, "other")),
+            ),
+            Err(Error::DatabaseError(DatabaseErrorKind::UniqueViolation, _))
+        ));
         assert_eq!(
             find_workspace_lease(&mut connection, &workspace_id)
                 .unwrap()
@@ -1146,6 +1153,15 @@ mod tests {
                 .lease_expires_at,
             lease.lease_expires_at
         );
+
+        let wrong_checkout_id = CheckoutId::new();
+        assert!(
+            !release_workspace_lease(&mut connection, &workspace_id, &wrong_checkout_id,)
+                .expect("wrong checkout ID should not release a lease")
+        );
+        assert!(find_workspace_lease(&mut connection, &workspace_id)
+            .unwrap()
+            .is_some());
 
         assert!(
             release_workspace_lease(&mut connection, &workspace_id, &lease.id,)
@@ -1250,6 +1266,101 @@ mod tests {
                 .state,
             OperationState::Succeeded
         );
+
+        drop(connection);
+        fs::remove_file(database_path).expect("temporary database should be removable");
+    }
+
+    #[test]
+    fn workspace_reclamation_keeps_tombstones_and_prior_events() {
+        let database_path =
+            std::env::temp_dir().join(format!("trees-{}.sqlite", WorkspaceId::new()));
+        let mut connection = database::connect(&database_path).expect("database should open");
+        let workspace_id = WorkspaceId::new();
+        let workspace_path = CanonicalPath::resolve(".").expect("workspace path should resolve");
+        let worktree_path = CanonicalPath::resolve("/tmp").expect("worktree path should resolve");
+        let now = Timestamp::now();
+
+        insert_workspace(
+            &mut connection,
+            &NewWorkspace {
+                id: workspace_id,
+                canonical_path: workspace_path.clone(),
+                state: WorkspaceState::Ready,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+                last_reconciled_at: None,
+            },
+        )
+        .expect("workspace should be inserted");
+        let worktree = insert_repo_worktree(
+            &mut connection,
+            &NewRepoWorktree {
+                id: RepoWorktreeId::new(),
+                workspace_id,
+                repository_identity: workspace_path.clone(),
+                source_path: workspace_path,
+                worktree_path,
+                state: RepoWorktreeState::Attached,
+                last_head: Some("abc123".to_owned()),
+                last_observed_at: now.clone(),
+            },
+        )
+        .expect("worktree should be inserted");
+        let operation = begin_operation(
+            &mut connection,
+            &OperationIntent::new(
+                workspace_id,
+                "gc",
+                "process:test",
+                Timestamp::after_seconds(300),
+                "reclaim workspace",
+                JsonDocument::parse(r#"{"kind":"gc"}"#).unwrap(),
+            ),
+        )
+        .expect("GC operation should start");
+        append_event(
+            &mut connection,
+            &EventDraft {
+                operation_id: operation.id,
+                entity_type: "workspace".to_owned(),
+                entity_id: workspace_id.to_string(),
+                event_type: "workspace_checked_in".to_owned(),
+                source: "trees".to_owned(),
+                occurred_at: now,
+                previous_state: Some(WorkspaceState::Ready.to_string()),
+                current_state: Some(WorkspaceState::Ready.to_string()),
+                details_json: None,
+                error_json: None,
+            },
+        )
+        .expect("prior event should be inserted");
+
+        record_workspace_reclaimed(
+            &mut connection,
+            &operation.id,
+            &workspace_id,
+            Some(JsonDocument::parse(r#"{"forced":false}"#).unwrap()),
+        )
+        .expect("workspace should be reclaimed");
+
+        let workspace = find_workspace(&mut connection, &workspace_id).unwrap();
+        assert_eq!(workspace.state, WorkspaceState::Reclaimed);
+        assert!(workspace.reclaimed_at.is_some());
+        assert_eq!(
+            list_repo_worktrees(&mut connection, &workspace_id).unwrap()[0].state,
+            RepoWorktreeState::Reclaimed
+        );
+        let events = list_events_for_operation(&mut connection, &operation.id).unwrap();
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == "workspace_checked_in"));
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == "workspace_reclaimed"));
+        assert!(events
+            .iter()
+            .any(|event| event.entity_id == worktree.id.to_string()));
 
         drop(connection);
         fs::remove_file(database_path).expect("temporary database should be removable");
