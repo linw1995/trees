@@ -159,7 +159,6 @@ pub struct GcCandidate {
     pub checked_out: bool,
     pub expired_lease: bool,
     pub active_operation: bool,
-    pub database_safe: bool,
 }
 
 impl GcCandidate {
@@ -255,23 +254,18 @@ pub fn scan(
         let active_operation = find_running_operation(connection, &workspace.id)
             .map_err(GcError::Database)?
             .is_some();
-        let database_safe = age_eligible
-            && !checked_out
-            && !expired_lease
-            && !active_operation
-            && workspace.state == WorkspaceState::Ready;
-        if database_safe {
-            counts.safe_to_reclaim += 1;
-        }
-        candidates.push(GcCandidate {
+        let candidate = GcCandidate {
             workspace,
             idle_since,
             age_eligible,
             checked_out,
             expired_lease,
             active_operation,
-            database_safe,
-        });
+        };
+        if candidate.reason() == GcCandidateReason::Eligible {
+            counts.safe_to_reclaim += 1;
+        }
+        candidates.push(candidate);
     }
     Ok(GcScan {
         cutoff,
@@ -442,7 +436,7 @@ fn execution_skip_reason(candidate: &GcCandidate, force: bool) -> Option<GcCandi
     if candidate.workspace.state == WorkspaceState::Reclaimed {
         return Some(GcCandidateReason::Unhealthy);
     }
-    if !force && !candidate.database_safe {
+    if !force && candidate.workspace.state != WorkspaceState::Ready {
         return Some(GcCandidateReason::Unhealthy);
     }
     Some(GcCandidateReason::Eligible)
