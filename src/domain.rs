@@ -118,7 +118,7 @@ impl FromStr for WorkspaceManagementMode {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-pub struct WorkspaceManagementMetadata {
+pub(crate) struct WorkspaceManagementMetadata {
     pub mode: WorkspaceManagementMode,
     pub pool_key: Option<String>,
     pub workspace_root: Option<CanonicalPath>,

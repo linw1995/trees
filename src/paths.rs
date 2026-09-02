@@ -91,7 +91,8 @@ pub struct StateDirectoryError {
 }
 
 impl StateDirectoryError {
-    pub fn new(path: PathBuf, source: io::Error) -> Self {
+    #[cfg(test)]
+    pub(crate) fn new(path: PathBuf, source: io::Error) -> Self {
         Self {
             kind: StateDirectoryErrorKind::Io { path, source },
         }

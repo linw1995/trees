@@ -126,15 +126,6 @@ pub fn prepare_automatic(
     })
 }
 
-pub fn find_idle_automatic_candidate(
-    connection: &mut SqliteConnection,
-    plan: &AutomaticAllocationPlan,
-) -> Result<Option<crate::storage::WorkspaceRow>, WorkspaceError> {
-    Ok(list_idle_automatic_candidates(connection, plan)?
-        .into_iter()
-        .next())
-}
-
 pub fn allocate_automatic_workspace(
     connection: &mut SqliteConnection,
     plan: &AutomaticAllocationPlan,
@@ -1657,8 +1648,10 @@ mod tests {
                 .expect("candidate metadata should be updated");
         }
 
-        let candidate = find_idle_automatic_candidate(&mut connection, &plan)
+        let candidate = list_idle_automatic_candidates(&mut connection, &plan)
             .expect("candidate lookup should succeed")
+            .into_iter()
+            .next()
             .expect("an idle candidate should exist");
         assert_eq!(candidate.id, older);
 
@@ -1738,8 +1731,10 @@ mod tests {
             ))
             .execute(&mut connection)
             .expect("workspace metadata should be updated");
-        let candidate = find_idle_automatic_candidate(&mut connection, &plan)
+        let candidate = list_idle_automatic_candidates(&mut connection, &plan)
             .expect("candidate lookup should succeed")
+            .into_iter()
+            .next()
             .expect("automatic candidate should exist");
         let worktree_path = crate::storage::list_repo_worktrees(&mut connection, &candidate.id)
             .expect("worktree lookup should succeed")
