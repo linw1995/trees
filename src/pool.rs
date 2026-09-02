@@ -1,8 +1,6 @@
-use std::cmp::Ordering;
-
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{CanonicalPath, Timestamp, WorkspaceId};
+use crate::domain::CanonicalPath;
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -32,36 +30,12 @@ impl std::fmt::Display for RepositorySetKey {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct PoolCandidate {
-    pub id: WorkspaceId,
-    pub last_checked_in_at: Option<Timestamp>,
-    pub created_at: Timestamp,
-}
-
-pub fn compare_candidates(left: &PoolCandidate, right: &PoolCandidate) -> Ordering {
-    idle_timestamp(left)
-        .cmp(idle_timestamp(right))
-        .then_with(|| left.id.to_string().cmp(&right.id.to_string()))
-}
-
-fn idle_timestamp(candidate: &PoolCandidate) -> &Timestamp {
-    candidate
-        .last_checked_in_at
-        .as_ref()
-        .unwrap_or(&candidate.created_at)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn path(value: &str) -> CanonicalPath {
         CanonicalPath::from_absolute(value).expect("test path should be absolute")
-    }
-
-    fn timestamp(value: &str) -> Timestamp {
-        Timestamp::parse(value).expect("test timestamp should be valid")
     }
 
     #[test]
@@ -71,27 +45,5 @@ mod tests {
 
         assert_eq!(first, second);
         assert_eq!(first.as_str(), r#"["/repo/api","/repo/web"]"#);
-    }
-
-    #[test]
-    fn candidates_use_last_checkin_then_creation_and_id() {
-        let created = timestamp("2026-01-01T00:00:00Z");
-        let checked_in = timestamp("2026-02-01T00:00:00Z");
-        let mut candidates = [
-            PoolCandidate {
-                id: WorkspaceId::new(),
-                last_checked_in_at: Some(checked_in.clone()),
-                created_at: created.clone(),
-            },
-            PoolCandidate {
-                id: WorkspaceId::new(),
-                last_checked_in_at: None,
-                created_at: created,
-            },
-        ];
-
-        candidates.sort_by(compare_candidates);
-
-        assert!(candidates[0].last_checked_in_at.is_none());
     }
 }

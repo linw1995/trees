@@ -180,18 +180,14 @@ fn list_idle_automatic_candidates(
     }
     let mut candidates = idle_candidates;
     candidates.sort_by(|left, right| {
-        crate::pool::compare_candidates(
-            &crate::pool::PoolCandidate {
-                id: left.id,
-                last_checked_in_at: left.last_checked_in_at.clone(),
-                created_at: left.created_at.clone(),
-            },
-            &crate::pool::PoolCandidate {
-                id: right.id,
-                last_checked_in_at: right.last_checked_in_at.clone(),
-                created_at: right.created_at.clone(),
-            },
-        )
+        let left_idle = left.last_checked_in_at.as_ref().unwrap_or(&left.created_at);
+        let right_idle = right
+            .last_checked_in_at
+            .as_ref()
+            .unwrap_or(&right.created_at);
+        left_idle
+            .cmp(right_idle)
+            .then_with(|| left.id.to_string().cmp(&right.id.to_string()))
     });
     Ok(candidates)
 }
