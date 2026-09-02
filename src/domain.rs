@@ -130,8 +130,6 @@ pub struct WorkspaceManagementMetadata {
     pub mode: WorkspaceManagementMode,
     pub pool_key: Option<String>,
     pub workspace_root: Option<CanonicalPath>,
-    pub last_checked_in_at: Option<Timestamp>,
-    pub reclaimed_at: Option<Timestamp>,
 }
 
 #[derive(Debug)]

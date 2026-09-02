@@ -716,8 +716,6 @@ fn provision_automatic_new(
         mode: WorkspaceManagementMode::Automatic,
         pool_key: Some(normalized_plan.pool_key.as_str().to_owned()),
         workspace_root: Some(normalized_plan.workspace_root.clone()),
-        last_checked_in_at: None,
-        reclaimed_at: None,
     };
     let intent_json = JsonDocument::from_serializable(&serde_json::json!({
         "allocation": normalized_plan,
@@ -896,8 +894,6 @@ pub fn initialize_creation(
             mode: WorkspaceManagementMode::Manual,
             pool_key: None,
             workspace_root: None,
-            last_checked_in_at: None,
-            reclaimed_at: None,
         },
         None,
         intent_json,
@@ -951,8 +947,8 @@ fn initialize_creation_with_metadata(
                 management_mode: management.mode,
                 pool_key: management.pool_key.clone(),
                 workspace_root: management.workspace_root.clone(),
-                last_checked_in_at: management.last_checked_in_at.clone(),
-                reclaimed_at: management.reclaimed_at.clone(),
+                last_checked_in_at: None,
+                reclaimed_at: None,
             },
         )?;
         for repository in &repositories {
