@@ -3,15 +3,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::domain::{CanonicalPath, CanonicalPathError, WorkspaceManagementMode};
-
-pub fn infer_workspace_mode(workspace_path: Option<&Path>) -> WorkspaceManagementMode {
-    if workspace_path.is_some() {
-        WorkspaceManagementMode::Manual
-    } else {
-        WorkspaceManagementMode::Automatic
-    }
-}
+use crate::domain::{CanonicalPath, CanonicalPathError};
 
 pub fn validate_workspace_root(
     workspace_path: &Path,
@@ -403,18 +395,6 @@ mod tests {
             assert!(!error.to_string().is_empty());
             let _ = std::error::Error::source(&error);
         }
-    }
-
-    #[test]
-    fn infers_workspace_mode_from_path_presence() {
-        assert_eq!(
-            infer_workspace_mode(Some(Path::new("/tmp/workspace"))),
-            WorkspaceManagementMode::Manual
-        );
-        assert_eq!(
-            infer_workspace_mode(None),
-            WorkspaceManagementMode::Automatic
-        );
     }
 
     #[test]
