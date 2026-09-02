@@ -26,10 +26,6 @@ impl WorkspaceLease {
         }
     }
 
-    pub fn is_expired(&self) -> bool {
-        self.lease_expires_at.has_expired()
-    }
-
     pub fn renew(&mut self) {
         let now = Timestamp::now();
         self.last_heartbeat_at = now;
@@ -49,7 +45,7 @@ mod tests {
 
         assert_eq!(lease.workspace_id, workspace_id);
         assert_eq!(lease.owner_id, "process:1");
-        assert!(!lease.is_expired());
+        assert!(!lease.lease_expires_at.has_expired());
 
         lease.renew();
 
@@ -68,6 +64,6 @@ mod tests {
         assert!(Timestamp::parse(lease.last_heartbeat_at.to_string()).is_ok());
 
         lease.lease_expires_at = Timestamp::parse("2020-01-01T00:00:00Z").unwrap();
-        assert!(lease.is_expired());
+        assert!(lease.lease_expires_at.has_expired());
     }
 }
