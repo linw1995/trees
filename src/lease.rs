@@ -1,7 +1,4 @@
-use crate::domain::{
-    CheckoutId, OperationState, RepoWorktreeState, Timestamp, WorkspaceId, WorkspaceManagementMode,
-    WorkspaceState,
-};
+use crate::domain::{CheckoutId, Timestamp, WorkspaceId};
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_LEASE_SECONDS: i64 = 24 * 60 * 60;
@@ -40,23 +37,6 @@ impl WorkspaceLease {
     }
 }
 
-pub fn can_allocate_workspace(
-    mode: WorkspaceManagementMode,
-    workspace_state: WorkspaceState,
-    worktree_states: &[RepoWorktreeState],
-    lease: Option<&WorkspaceLease>,
-    operation_state: Option<OperationState>,
-) -> bool {
-    mode.is_automatic()
-        && workspace_state == WorkspaceState::Ready
-        && !worktree_states.is_empty()
-        && worktree_states
-            .iter()
-            .all(|state| *state == RepoWorktreeState::Attached)
-        && lease.is_none()
-        && operation_state.is_none()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,53 +69,5 @@ mod tests {
 
         lease.lease_expires_at = Timestamp::parse("2020-01-01T00:00:00Z").unwrap();
         assert!(lease.is_expired());
-    }
-
-    #[test]
-    fn allocation_requires_automatic_ready_clean_attached_unleased_workspace() {
-        let states = [RepoWorktreeState::Attached];
-
-        assert!(can_allocate_workspace(
-            WorkspaceManagementMode::Automatic,
-            WorkspaceState::Ready,
-            &states,
-            None,
-            None
-        ));
-        assert!(!can_allocate_workspace(
-            WorkspaceManagementMode::Manual,
-            WorkspaceState::Ready,
-            &states,
-            None,
-            None
-        ));
-        assert!(!can_allocate_workspace(
-            WorkspaceManagementMode::Automatic,
-            WorkspaceState::Degraded,
-            &states,
-            None,
-            None
-        ));
-        assert!(!can_allocate_workspace(
-            WorkspaceManagementMode::Automatic,
-            WorkspaceState::Ready,
-            &[RepoWorktreeState::Dirty],
-            None,
-            None
-        ));
-        assert!(!can_allocate_workspace(
-            WorkspaceManagementMode::Automatic,
-            WorkspaceState::Ready,
-            &states,
-            Some(&WorkspaceLease::new(WorkspaceId::new(), "process:test")),
-            None
-        ));
-        assert!(!can_allocate_workspace(
-            WorkspaceManagementMode::Automatic,
-            WorkspaceState::Ready,
-            &states,
-            None,
-            Some(OperationState::Running)
-        ));
     }
 }

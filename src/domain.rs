@@ -104,10 +104,6 @@ impl WorkspaceManagementMode {
         }
     }
 
-    pub const fn is_automatic(self) -> bool {
-        matches!(self, Self::Automatic)
-    }
-
     const ALL: &'static [&'static str] = &["automatic", "manual"];
 }
 
