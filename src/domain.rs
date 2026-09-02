@@ -31,14 +31,6 @@ macro_rules! uuid_identifier {
             pub fn new() -> Self {
                 Self(Uuid::now_v7())
             }
-
-            pub fn as_uuid(&self) -> &Uuid {
-                &self.0
-            }
-
-            pub fn into_uuid(self) -> Uuid {
-                self.0
-            }
         }
 
         impl Default for $name {
@@ -439,18 +431,6 @@ impl JsonDocument {
             .map(Self)
             .map_err(JsonDocumentError::Parse)
     }
-
-    pub fn as_value(&self) -> &Value {
-        &self.0
-    }
-
-    pub fn into_value(self) -> Value {
-        self.0
-    }
-
-    pub fn to_canonical_string(&self) -> Result<String, JsonDocumentError> {
-        serde_json::to_string(&self.0).map_err(JsonDocumentError::Serialize)
-    }
 }
 
 impl fmt::Display for JsonDocument {
@@ -573,7 +553,7 @@ mod tests {
         let identifier = WorkspaceId::new();
         let text = identifier.to_string();
 
-        assert_eq!(identifier.as_uuid().get_version_num(), 7);
+        assert_eq!(Uuid::parse_str(&text).unwrap().get_version_num(), 7);
         assert_eq!(
             WorkspaceId::from_str(&text).expect("identifier should parse"),
             identifier
@@ -630,7 +610,7 @@ mod tests {
     fn json_documents_are_validated_and_canonicalized() {
         let document = JsonDocument::parse(r#"{"b":2,"a":1}"#).expect("JSON should parse");
 
-        assert_eq!(document.to_canonical_string().unwrap(), r#"{"a":1,"b":2}"#);
+        assert_eq!(document.to_string(), r#"{"a":1,"b":2}"#);
         assert!(JsonDocument::parse("not json").is_err());
     }
 
