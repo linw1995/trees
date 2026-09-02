@@ -36,7 +36,7 @@ impl fmt::Display for PathError {
 impl std::error::Error for PathError {}
 
 pub fn state_directory() -> Result<PathBuf, PathError> {
-    Ok(platform_state_base()?.join(APPLICATION_NAME))
+    Ok(platform_state_base_impl()?.join(APPLICATION_NAME))
 }
 
 pub fn database_path() -> Result<PathBuf, PathError> {
@@ -49,13 +49,13 @@ pub fn managed_workspace_directory() -> Result<PathBuf, PathError> {
 }
 
 pub fn default_managed_workspace_directory() -> Result<PathBuf, PathError> {
-    Ok(platform_data_base()?
+    Ok(platform_data_base_impl()?
         .join(APPLICATION_NAME)
         .join(WORKSPACES_DIRECTORY_NAME))
 }
 
 pub fn configuration_path() -> Result<PathBuf, PathError> {
-    Ok(platform_config_base()?
+    Ok(platform_config_base_impl()?
         .join(APPLICATION_NAME)
         .join(CONFIGURATION_FILE_NAME))
 }
@@ -133,18 +133,6 @@ impl From<PathError> for StateDirectoryError {
             kind: StateDirectoryErrorKind::Path(error),
         }
     }
-}
-
-fn platform_state_base() -> Result<PathBuf, PathError> {
-    platform_state_base_impl()
-}
-
-fn platform_data_base() -> Result<PathBuf, PathError> {
-    platform_data_base_impl()
-}
-
-fn platform_config_base() -> Result<PathBuf, PathError> {
-    platform_config_base_impl()
 }
 
 #[cfg(target_os = "linux")]
