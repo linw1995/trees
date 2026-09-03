@@ -33,6 +33,9 @@ pub struct CreateArgs {
 
     #[arg(long = "checkout-id", value_name = "CHECKOUT_ID")]
     pub checkout_id: Option<String>,
+
+    #[arg(long, help = "Print the create result as JSON")]
+    pub json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -151,6 +154,7 @@ mod tests {
             [PathBuf::from("/tmp/one"), PathBuf::from("/tmp/two")]
         );
         assert_eq!(arguments.checkout_id, None);
+        assert!(!arguments.json);
     }
 
     #[test]
@@ -169,6 +173,7 @@ mod tests {
             [PathBuf::from("/tmp/one"), PathBuf::from("/tmp/two")]
         );
         assert_eq!(arguments.checkout_id, None);
+        assert!(!arguments.json);
     }
 
     #[test]
@@ -188,6 +193,18 @@ mod tests {
         };
         assert_eq!(arguments.workspace_path, None);
         assert_eq!(arguments.checkout_id.as_deref(), Some("checkout-id"));
+        assert!(!arguments.json);
+    }
+
+    #[test]
+    fn parses_create_json_output_flag() {
+        let cli = Cli::try_parse_from(["trees", "create", "--repo", "/tmp/one", "--json"])
+            .expect("create command should parse");
+
+        let Command::Create(arguments) = cli.command else {
+            panic!("expected create command");
+        };
+        assert!(arguments.json);
     }
 
     #[test]

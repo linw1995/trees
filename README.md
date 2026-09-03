@@ -51,11 +51,12 @@ trees create --repo /path/to/api --repo /path/to/web --checkout-id CHECKOUT_ID
 trees checkin /absolute/path/to/workspace --checkout-id CHECKOUT_ID
 ```
 
-The first command prints `workspace_path`, `pool_key`, `checkout_id`, and
-`lease_expires_at` fields. Keep the checkout ID with the caller that owns the
-workspace; pass it to renew the 24-hour lease or to check in. Checkin retains
-the lease when Git reports dirty, missing, prunable, diverged, or failed
-worktrees, so the owner can repair the workspace before returning it.
+The automatic command prints Bash assignments that can be captured by a shell:
+`WORKSPACE_PATH`, `POOL_KEY`, `CHECKOUT_ID`, and `LEASE_EXPIRES_AT`. Use
+`--json` for a single JSON object instead. Keep the checkout ID with the caller
+that owns the workspace; pass it to renew the 24-hour lease or to check in.
+Checkin retains the lease when Git reports dirty, missing, prunable, diverged,
+or failed worktrees, so the owner can repair the workspace before returning it.
 
 The command shape selects the management mode. An explicit workspace path is
 manual and remains outside automatic leasing and GC; omitting the path is

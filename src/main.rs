@@ -22,6 +22,7 @@ fn run_create(arguments: trees::cli::CreateArgs) -> ExitCode {
         workspace_path,
         repositories,
         checkout_id,
+        json,
     } = arguments;
     match workspace_path {
         Some(workspace_path) => {
@@ -34,6 +35,9 @@ fn run_create(arguments: trees::cli::CreateArgs) -> ExitCode {
                 repositories,
             }) {
                 Ok(result) => {
+                    if json {
+                        return print_json(&result);
+                    }
                     println!("Created workspace: {}", result.workspace_path);
                     for path in result.worktree_paths {
                         println!("Attached worktree: {}", path.display());
@@ -46,13 +50,14 @@ fn run_create(arguments: trees::cli::CreateArgs) -> ExitCode {
                 }
             }
         }
-        None => run_automatic_create(repositories, checkout_id),
+        None => run_automatic_create(repositories, checkout_id, json),
     }
 }
 
 fn run_automatic_create(
     repositories: Vec<std::path::PathBuf>,
     checkout_id: Option<String>,
+    json: bool,
 ) -> ExitCode {
     let checkout_id = match checkout_id {
         Some(value) => match value.parse::<trees::domain::CheckoutId>() {
@@ -84,8 +89,12 @@ fn run_automatic_create(
     };
     match trees::workspace::allocate_automatic_workspace(&mut connection, &plan) {
         Ok(result) => {
-            print_automatic_checkout_result(&result);
-            ExitCode::SUCCESS
+            if json {
+                print_json(&result)
+            } else {
+                print_automatic_checkout_result(&result);
+                ExitCode::SUCCESS
+            }
         }
         Err(error) => {
             eprintln!("Error: {error}");
@@ -259,10 +268,34 @@ fn run_gc(arguments: trees::cli::GcArgs) -> ExitCode {
 }
 
 fn print_automatic_checkout_result(result: &trees::workspace::AutomaticCheckoutResult) {
-    println!("workspace_path={}", result.workspace_path);
-    println!("pool_key={}", result.pool_key);
-    println!("checkout_id={}", result.checkout_id);
-    println!("lease_expires_at={}", result.lease_expires_at);
+    println!("{}", automatic_checkout_shell_output(result));
+}
+
+fn automatic_checkout_shell_output(result: &trees::workspace::AutomaticCheckoutResult) -> String {
+    format!(
+        "WORKSPACE_PATH={}\nPOOL_KEY={}\nCHECKOUT_ID={}\nLEASE_EXPIRES_AT={}",
+        bash_quote(&result.workspace_path.to_string()),
+        bash_quote(&result.pool_key.to_string()),
+        bash_quote(&result.checkout_id.to_string()),
+        bash_quote(&result.lease_expires_at.to_string()),
+    )
+}
+
+fn bash_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn print_json<T: serde::Serialize>(value: &T) -> ExitCode {
+    match serde_json::to_string(value) {
+        Ok(output) => {
+            println!("{output}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("Error: failed to serialize JSON output: {error}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn run_codex(arguments: trees::cli::CodexArgs) -> ExitCode {
@@ -337,5 +370,37 @@ mod tests {
         .expect("create command should parse");
 
         assert_eq!(run(cli), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn quotes_shell_output_values_for_bash() {
+        assert_eq!(
+            bash_quote("/tmp/workspace with space"),
+            "'/tmp/workspace with space'"
+        );
+        assert_eq!(bash_quote("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn serializes_automatic_checkout_as_json() {
+        let result = trees::workspace::AutomaticCheckoutResult {
+            workspace_path: trees::domain::CanonicalPath::from_absolute("/tmp/workspace")
+                .expect("workspace path should be absolute"),
+            pool_key: trees::pool::RepositorySetKey::from_repositories(&[
+                trees::domain::CanonicalPath::from_absolute("/repo/api")
+                    .expect("repository path should be absolute"),
+            ]),
+            checkout_id: trees::domain::CheckoutId::new(),
+            lease_expires_at: trees::domain::Timestamp::parse("2026-09-03T00:00:00Z")
+                .expect("lease expiry should be valid"),
+        };
+        let output = serde_json::to_string(&result).expect("checkout should serialize as JSON");
+        let value: serde_json::Value =
+            serde_json::from_str(&output).expect("checkout JSON should be valid");
+
+        assert_eq!(value["workspace_path"], "/tmp/workspace");
+        assert_eq!(value["pool_key"], "[\"/repo/api\"]");
+        assert!(value["checkout_id"].is_string());
+        assert_eq!(value["lease_expires_at"], "2026-09-03T00:00:00Z");
     }
 }

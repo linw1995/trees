@@ -54,7 +54,7 @@ pub struct AutomaticRepositoryPlan {
     pub head: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AutomaticCheckoutResult {
     pub workspace_path: CanonicalPath,
     pub pool_key: crate::pool::RepositorySetKey,
@@ -62,7 +62,7 @@ pub struct AutomaticCheckoutResult {
     pub lease_expires_at: Timestamp,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CheckinResult {
     pub workspace_path: CanonicalPath,
     pub checkout_id: CheckoutId,
@@ -1063,7 +1063,7 @@ fn execute_creation_with_lease(
     Ok(())
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CreationResult {
     pub workspace_path: CanonicalPath,
     pub worktree_paths: Vec<PathBuf>,
