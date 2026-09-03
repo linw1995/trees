@@ -82,9 +82,10 @@ automated retention.
 
 The CLI SHALL provide automatic creation as `trees create --repo
 <repository-path>...` without a positional workspace path. The command
-SHALL canonicalize the repositories, derive a stable pool key from the sorted
-set of Git common-directory identities, and search for an idle automatic
-workspace with the exact key. It SHALL reconcile candidates before selection,
+SHALL canonicalize the repositories, resolve a UUID-backed pool using its
+indexed hash and exact canonical JSON set of Git common-directory identities,
+and search for an idle automatic workspace referencing that pool. It SHALL
+reconcile candidates before selection,
 acquire a checkout lease for a reusable candidate, and provision a new
 automatic workspace below the Trees-managed workspace root when no safe
 candidate exists. The successful result SHALL include the allocated workspace
@@ -111,7 +112,7 @@ path and checkout identifier.
 - **WHEN** no idle automatic workspace matches the exact repository set
 - **THEN** Trees generates a path below its managed workspace root, creates
   direct-child detached worktrees from each repository's current `HEAD`,
-  records the pool key, and returns the new workspace already checked out
+  records the pool UUID, and returns the new workspace already checked out
 
 #### Scenario: Retry a Pool Race
 
