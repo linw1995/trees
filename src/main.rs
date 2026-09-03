@@ -399,7 +399,11 @@ mod tests {
             serde_json::from_str(&output).expect("checkout JSON should be valid");
 
         assert_eq!(value["workspace_path"], "/tmp/workspace");
-        assert_eq!(value["pool_key"], "[\"/repo/api\"]");
+        let pool_key = value["pool_key"]
+            .as_str()
+            .expect("pool key should be a string");
+        assert!(pool_key.starts_with("blake3:"));
+        assert_eq!(pool_key.len(), "blake3:".len() + 64);
         assert!(value["checkout_id"].is_string());
         assert_eq!(value["lease_expires_at"], "2026-09-03T00:00:00Z");
     }

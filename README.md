@@ -57,6 +57,7 @@ The automatic command prints Bash assignments that can be captured by a shell:
 that owns the workspace; pass it to renew the 24-hour lease or to check in.
 Checkin retains the lease when Git reports dirty, missing, prunable, diverged,
 or failed worktrees, so the owner can repair the workspace before returning it.
+`POOL_KEY` is a fixed-length BLAKE3 fingerprint of the canonical repository set.
 
 The command shape selects the management mode. An explicit workspace path is
 manual and remains outside automatic leasing and GC; omitting the path is

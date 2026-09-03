@@ -147,10 +147,17 @@ fn list_idle_automatic_candidates(
     connection: &mut SqliteConnection,
     plan: &AutomaticAllocationPlan,
 ) -> Result<Vec<crate::storage::WorkspaceRow>, WorkspaceError> {
+    let identities = plan
+        .repositories
+        .iter()
+        .map(|repository| repository.repository_identity.clone())
+        .collect::<Vec<_>>();
+    let legacy_pool_key = crate::pool::legacy_repository_set_key(&identities);
     let candidates = crate::storage::list_automatic_workspace_candidates(
         connection,
         &plan.workspace_root,
         plan.pool_key.as_str(),
+        &legacy_pool_key,
     )
     .map_err(WorkspaceError::Database)?;
     let mut idle_candidates = Vec::new();
@@ -450,7 +457,7 @@ pub fn renew_automatic(
     if workspace.management_mode != WorkspaceManagementMode::Automatic {
         return Err(WorkspaceError::NotAutomatic(workspace.canonical_path));
     }
-    if workspace.pool_key.as_deref() != Some(plan.pool_key.as_str()) {
+    if !matches_pool_key(plan, workspace.pool_key.as_deref()) {
         return Err(WorkspaceError::RepositorySetMismatch(workspace.id));
     }
     if lease_row.lease_expires_at.has_expired() {
@@ -484,7 +491,7 @@ pub fn renew_automatic(
         fail_operation(connection, &operation.id, &primary);
         return Err(primary);
     }
-    if boundary.workspace.pool_key.as_deref() != Some(plan.pool_key.as_str()) {
+    if !matches_pool_key(plan, boundary.workspace.pool_key.as_deref()) {
         let primary = WorkspaceError::RepositorySetMismatch(boundary.workspace.id);
         fail_operation(connection, &operation.id, &primary);
         return Err(primary);
@@ -635,6 +642,16 @@ fn checkin_details(workspace_path: &CanonicalPath, checkout_id: CheckoutId) -> J
         "checkout_id": checkout_id,
     }))
     .expect("checkin details should serialize")
+}
+
+fn matches_pool_key(plan: &AutomaticAllocationPlan, stored_pool_key: Option<&str>) -> bool {
+    let identities = plan
+        .repositories
+        .iter()
+        .map(|repository| repository.repository_identity.clone())
+        .collect::<Vec<_>>();
+    let legacy_pool_key = crate::pool::legacy_repository_set_key(&identities);
+    stored_pool_key == Some(plan.pool_key.as_str()) || stored_pool_key == Some(&legacy_pool_key)
 }
 
 fn fail_checkin(
@@ -1617,6 +1634,13 @@ mod tests {
         let now = Timestamp::parse("2026-01-01T00:00:00Z").unwrap();
         let older = WorkspaceId::new();
         let newer = WorkspaceId::new();
+        let legacy_pool_key = crate::pool::legacy_repository_set_key(
+            &plan
+                .repositories
+                .iter()
+                .map(|repository| repository.repository_identity.clone())
+                .collect::<Vec<_>>(),
+        );
         for (id, name, checked_in_at) in [
             (older, "older", "2026-01-01T00:00:00Z"),
             (newer, "newer", "2026-02-01T00:00:00Z"),
@@ -1639,7 +1663,11 @@ mod tests {
                 .set((
                     crate::schema::workspaces::management_mode
                         .eq(crate::domain::WorkspaceManagementMode::Automatic),
-                    crate::schema::workspaces::pool_key.eq(Some(plan.pool_key.as_str())),
+                    crate::schema::workspaces::pool_key.eq(Some(if id == older {
+                        legacy_pool_key.as_str()
+                    } else {
+                        plan.pool_key.as_str()
+                    })),
                     crate::schema::workspaces::workspace_root.eq(Some(plan.workspace_root.clone())),
                     crate::schema::workspaces::last_checked_in_at
                         .eq(Some(Timestamp::parse(checked_in_at).unwrap())),

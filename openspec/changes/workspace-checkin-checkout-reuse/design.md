@@ -75,9 +75,9 @@ The lease table stores the current claim only:
 - `checked_out_at`: the acquisition time;
 - `lease_expires_at`: the finite expiry time;
 - `last_heartbeat_at`: the last successful acquisition or renewal time.
-- `pool_key` on an automatic workspace row: a canonical serialized, sorted
-  set of Git common-directory identities used for exact pool matching. Manual
-  rows may leave this field null.
+- `pool_key` on an automatic workspace row: a versioned BLAKE3 fingerprint of
+  the canonical serialized, sorted set of Git common-directory identities used
+  for exact pool matching. Manual rows may leave this field null.
 - `workspace_root` on an automatic workspace row: the absolute resolved
   `workspaces_dir` used as the pool namespace. Manual rows may leave this
   field null.

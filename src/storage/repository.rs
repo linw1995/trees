@@ -111,11 +111,16 @@ pub fn list_automatic_workspace_candidates(
     connection: &mut SqliteConnection,
     workspace_root: &CanonicalPath,
     pool_key: &str,
+    legacy_pool_key: &str,
 ) -> QueryResult<Vec<WorkspaceRow>> {
     workspaces::table
         .filter(workspaces::management_mode.eq(WorkspaceManagementMode::Automatic))
         .filter(workspaces::workspace_root.eq(Some(workspace_root)))
-        .filter(workspaces::pool_key.eq(Some(pool_key)))
+        .filter(
+            workspaces::pool_key
+                .eq(Some(pool_key))
+                .or(workspaces::pool_key.eq(Some(legacy_pool_key))),
+        )
         .filter(workspaces::state.eq(WorkspaceState::Ready))
         .order(workspaces::id.asc())
         .select(WorkspaceRow::as_select())
