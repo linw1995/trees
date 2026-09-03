@@ -396,7 +396,10 @@ mod tests {
             serde_json::from_str(&output).expect("checkout JSON should be valid");
 
         assert_eq!(value["workspace_path"], "/tmp/workspace");
-        assert!(value["pool_key"].as_str().is_some());
+        let pool_key = value["pool_key"]
+            .as_str()
+            .expect("pool key should be a string");
+        assert!(pool_key.parse::<trees::domain::PoolId>().is_ok());
         assert!(value["checkout_id"].is_string());
         assert_eq!(value["lease_expires_at"], "2026-09-03T00:00:00Z");
     }

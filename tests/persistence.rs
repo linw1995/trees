@@ -1,6 +1,9 @@
 use std::fs;
 
+use diesel::migration::MigrationSource;
 use diesel::prelude::*;
+use diesel::sqlite::SqliteConnection;
+use diesel::Connection;
 use diesel_migrations::MigrationHarness;
 
 use trees::database;
@@ -166,6 +169,138 @@ fn migration_preserves_operation_and_event_rows_without_rebuilding_them() {
 
     drop(connection);
     fs::remove_file(path).expect("temporary database should be removable");
+}
+
+#[test]
+fn migration_three_normalizes_a_database_already_at_migration_two() {
+    let root = std::env::temp_dir().join(format!("trees-migration-{}", WorkspaceId::new()));
+    fs::create_dir_all(&root).expect("migration test root should be created");
+    let path = root.join("state.sqlite");
+    let mut connection = SqliteConnection::establish(path.to_str().expect("path should be UTF-8"))
+        .expect("legacy database should open");
+    let migrations = MigrationSource::<diesel::sqlite::Sqlite>::migrations(&database::MIGRATIONS)
+        .expect("embedded migrations should load");
+    diesel::migration::MigrationConnection::setup(&mut connection)
+        .expect("migration metadata table should be created");
+    connection
+        .run_migrations(&migrations[..2])
+        .expect("legacy migrations should apply");
+
+    let workspace_id = WorkspaceId::new();
+    let repo_worktree_id = trees::domain::RepoWorktreeId::new();
+    let workspace_path = CanonicalPath::from_absolute(root.join("workspace"))
+        .expect("workspace path should be absolute");
+    let workspace_root = CanonicalPath::from_absolute(root.join("managed"))
+        .expect("workspace root should be absolute");
+    let source_path =
+        CanonicalPath::from_absolute(root.join("source")).expect("source path should be absolute");
+    let worktree_path = CanonicalPath::from_absolute(root.join("workspace/repo"))
+        .expect("worktree path should be absolute");
+    let repository_set =
+        trees::pool::RepositorySetKey::from_repositories(std::slice::from_ref(&source_path));
+    let now = Timestamp::now();
+
+    diesel::sql_query(
+        "INSERT INTO workspaces (id, canonical_path, state, created_at, updated_at, \
+         last_reconciled_at, management_mode, pool_key, workspace_root, \
+         last_checked_in_at, reclaimed_at) \
+         VALUES (?, ?, 'ready', ?, ?, NULL, 'automatic', ?, ?, ?, NULL)",
+    )
+    .bind::<diesel::sql_types::Text, _>(workspace_id.to_string())
+    .bind::<diesel::sql_types::Text, _>(workspace_path.to_string())
+    .bind::<diesel::sql_types::Text, _>(now.to_string())
+    .bind::<diesel::sql_types::Text, _>(now.to_string())
+    .bind::<diesel::sql_types::Text, _>(repository_set.hash_key().to_owned())
+    .bind::<diesel::sql_types::Text, _>(workspace_root.to_string())
+    .bind::<diesel::sql_types::Text, _>(now.to_string())
+    .execute(&mut connection)
+    .expect("legacy workspace should be inserted");
+    diesel::sql_query(
+        "INSERT INTO repo_worktrees (id, workspace_id, repository_identity, source_path, \
+         worktree_path, state, last_head, last_observed_at) \
+         VALUES (?, ?, ?, ?, ?, 'attached', ?, ?)",
+    )
+    .bind::<diesel::sql_types::Text, _>(repo_worktree_id.to_string())
+    .bind::<diesel::sql_types::Text, _>(workspace_id.to_string())
+    .bind::<diesel::sql_types::Text, _>(source_path.to_string())
+    .bind::<diesel::sql_types::Text, _>(source_path.to_string())
+    .bind::<diesel::sql_types::Text, _>(worktree_path.to_string())
+    .bind::<diesel::sql_types::Text, _>("abc123")
+    .bind::<diesel::sql_types::Text, _>(now.to_string())
+    .execute(&mut connection)
+    .expect("legacy repo worktree should be inserted");
+    let second_workspace_id = WorkspaceId::new();
+    let second_repo_worktree_id = trees::domain::RepoWorktreeId::new();
+    let second_workspace_path = CanonicalPath::from_absolute(root.join("workspace-two"))
+        .expect("second workspace path should be absolute");
+    let second_worktree_path = CanonicalPath::from_absolute(root.join("workspace-two/repo"))
+        .expect("second worktree path should be absolute");
+    diesel::sql_query(
+        "INSERT INTO workspaces (id, canonical_path, state, created_at, updated_at, \
+         last_reconciled_at, management_mode, pool_key, workspace_root, \
+         last_checked_in_at, reclaimed_at) \
+         VALUES (?, ?, 'ready', ?, ?, NULL, 'automatic', ?, ?, ?, NULL)",
+    )
+    .bind::<diesel::sql_types::Text, _>(second_workspace_id.to_string())
+    .bind::<diesel::sql_types::Text, _>(second_workspace_path.to_string())
+    .bind::<diesel::sql_types::Text, _>(now.to_string())
+    .bind::<diesel::sql_types::Text, _>(now.to_string())
+    .bind::<diesel::sql_types::Text, _>(repository_set.repositories_json().to_owned())
+    .bind::<diesel::sql_types::Text, _>(workspace_root.to_string())
+    .bind::<diesel::sql_types::Text, _>(now.to_string())
+    .execute(&mut connection)
+    .expect("second legacy workspace should be inserted");
+    diesel::sql_query(
+        "INSERT INTO repo_worktrees (id, workspace_id, repository_identity, source_path, \
+         worktree_path, state, last_head, last_observed_at) \
+         VALUES (?, ?, ?, ?, ?, 'attached', ?, ?)",
+    )
+    .bind::<diesel::sql_types::Text, _>(second_repo_worktree_id.to_string())
+    .bind::<diesel::sql_types::Text, _>(second_workspace_id.to_string())
+    .bind::<diesel::sql_types::Text, _>(source_path.to_string())
+    .bind::<diesel::sql_types::Text, _>(source_path.to_string())
+    .bind::<diesel::sql_types::Text, _>(second_worktree_path.to_string())
+    .bind::<diesel::sql_types::Text, _>("def456")
+    .bind::<diesel::sql_types::Text, _>(now.to_string())
+    .execute(&mut connection)
+    .expect("second legacy repo worktree should be inserted");
+
+    connection
+        .run_pending_migrations(database::MIGRATIONS)
+        .expect("pool registry migration should apply");
+    let workspace = trees::storage::find_workspace(&mut connection, &workspace_id)
+        .expect("workspace should be queryable");
+    let pool_id = workspace
+        .pool_key
+        .expect("automatic workspace should reference a pool");
+    let pool = trees::storage::find_workspace_pool_by_id(&mut connection, &pool_id)
+        .expect("pool should be queryable");
+    assert_eq!(pool.repositories_json, repository_set.repositories_json());
+    let origin = trees::storage::find_origin_repository_by_identity(&mut connection, &source_path)
+        .expect("origin repository should be queryable")
+        .expect("origin repository should exist");
+    let links = trees::storage::list_workspace_pool_repositories(&mut connection, &pool_id)
+        .expect("pool repository links should be queryable");
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].repository_id, origin.id);
+    assert_eq!(origin.source_path, source_path);
+    assert_eq!(
+        trees::storage::find_workspace(&mut connection, &second_workspace_id)
+            .expect("second workspace should be queryable")
+            .pool_key,
+        Some(pool_id)
+    );
+
+    connection
+        .revert_last_migration(database::MIGRATIONS)
+        .expect("pool registry migration should revert");
+    connection
+        .run_pending_migrations(database::MIGRATIONS)
+        .expect("pool registry migration should rerun");
+
+    drop(connection);
+    fs::remove_file(path).expect("migration database should be removable");
+    fs::remove_dir_all(root).expect("migration test root should be removable");
 }
 
 #[test]

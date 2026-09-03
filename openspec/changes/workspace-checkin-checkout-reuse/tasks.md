@@ -22,9 +22,9 @@
 
 ## 2. Persistence and Migration
 
-- [x] 2.1 Add migration `00000000000002` for management mode, the UUID-backed
-  pool registry, origin repositories and pool relations, absolute
-  workspace-root namespace, idle and reclamation timestamps, the
+- [x] 2.1 Add migrations `00000000000002` and `00000000000003` for management
+  mode, the UUID-backed pool registry, origin repositories and pool relations,
+  absolute workspace-root namespace, idle and reclamation timestamps, the
   `dirty`/`reclaimed` state constraints, and the current `workspace_leases`
   table with one active lease per workspace
 - [x] 2.2 Backfill legacy explicit-path workspace records as `manual` without

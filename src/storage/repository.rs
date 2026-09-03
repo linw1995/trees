@@ -175,7 +175,11 @@ pub fn find_workspace_pool(
     repository_set: &RepositorySetKey,
 ) -> QueryResult<Option<WorkspacePoolRow>> {
     workspace_pools::table
-        .filter(workspace_pools::hash_key.eq(repository_set.hash_key()))
+        .filter(
+            workspace_pools::hash_key
+                .eq(repository_set.hash_key())
+                .or(workspace_pools::hash_key.eq(repository_set.repositories_json())),
+        )
         .filter(workspace_pools::repositories_json.eq(repository_set.repositories_json()))
         .select(WorkspacePoolRow::as_select())
         .first(connection)

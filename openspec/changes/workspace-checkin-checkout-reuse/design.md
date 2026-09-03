@@ -367,11 +367,11 @@ and is not implicitly coupled to this lease in this change.
 
 ## Migration Plan
 
-1. Add a forward-only migration for workspace management mode, GC timestamps,
-   reclaimed states, the pool registry, origin repositories, pool relations,
-   `workspace_leases`, and their indexes. Existing explicit-path workspace rows
-   are backfilled as `manual` and start with no active lease; the migration does
-   not touch Git or delete files.
+1. Add the workspace reuse migration and a follow-up normalization migration
+   for management mode, GC timestamps, reclaimed states, the pool registry,
+   origin repositories, pool relations, `workspace_leases`, and their indexes.
+   Existing explicit-path workspace rows are backfilled as `manual` and start
+   with no active lease; the migrations do not touch Git or delete files.
 2. Extend the repository and domain layers without changing existing
    workspace or repo-worktree identifiers.
 3. Make reconciliation understand `dirty` worktrees before enabling pool
