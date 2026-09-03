@@ -6,11 +6,15 @@ use diesel::sql_types::Text;
 use diesel::sqlite::Sqlite;
 
 use crate::domain::{
-    CanonicalPath, CheckoutId, EventId, JsonDocument, OperationId, OperationState, RepoWorktreeId,
-    RepoWorktreeState, Timestamp, WorkspaceId, WorkspaceManagementMode, WorkspaceState,
+    CanonicalPath, CheckoutId, EventId, JsonDocument, OperationId, OperationState,
+    OriginRepositoryId, PoolId, RepoWorktreeId, RepoWorktreeState, Timestamp, WorkspaceId,
+    WorkspaceManagementMode, WorkspaceState,
 };
 use crate::lease::WorkspaceLease;
-use crate::schema::{lifecycle_events, operations, repo_worktrees, workspace_leases, workspaces};
+use crate::schema::{
+    lifecycle_events, operations, origin_repositories, repo_worktrees, workspace_leases,
+    workspace_pool_repositories, workspace_pools, workspaces,
+};
 
 macro_rules! impl_text_codec {
     ($type:ty) => {
@@ -33,6 +37,8 @@ macro_rules! impl_text_codec {
 }
 
 impl_text_codec!(WorkspaceId);
+impl_text_codec!(PoolId);
+impl_text_codec!(OriginRepositoryId);
 impl_text_codec!(RepoWorktreeId);
 impl_text_codec!(OperationId);
 impl_text_codec!(EventId);
@@ -56,7 +62,7 @@ pub struct WorkspaceRow {
     pub updated_at: Timestamp,
     pub last_reconciled_at: Option<Timestamp>,
     pub management_mode: WorkspaceManagementMode,
-    pub pool_key: Option<String>,
+    pub pool_key: Option<PoolId>,
     pub workspace_root: Option<CanonicalPath>,
     pub last_checked_in_at: Option<Timestamp>,
     pub reclaimed_at: Option<Timestamp>,
@@ -83,10 +89,60 @@ pub struct NewManagedWorkspace {
     pub updated_at: Timestamp,
     pub last_reconciled_at: Option<Timestamp>,
     pub management_mode: WorkspaceManagementMode,
-    pub pool_key: Option<String>,
+    pub pool_key: Option<PoolId>,
     pub workspace_root: Option<CanonicalPath>,
     pub last_checked_in_at: Option<Timestamp>,
     pub reclaimed_at: Option<Timestamp>,
+}
+
+#[derive(Debug, Clone, Queryable, Selectable, Identifiable)]
+#[diesel(table_name = workspace_pools)]
+#[diesel(check_for_backend(Sqlite))]
+pub struct WorkspacePoolRow {
+    pub id: PoolId,
+    pub hash_key: String,
+    pub repositories_json: String,
+}
+
+#[derive(Debug, Insertable)]
+#[diesel(table_name = workspace_pools)]
+pub struct NewWorkspacePool {
+    pub id: PoolId,
+    pub hash_key: String,
+    pub repositories_json: String,
+}
+
+#[derive(Debug, Clone, Queryable, Selectable, Identifiable)]
+#[diesel(table_name = workspace_pool_repositories)]
+#[diesel(primary_key(pool_id, repository_id))]
+#[diesel(check_for_backend(Sqlite))]
+pub struct WorkspacePoolRepositoryRow {
+    pub pool_id: PoolId,
+    pub repository_id: OriginRepositoryId,
+}
+
+#[derive(Debug, Insertable)]
+#[diesel(table_name = workspace_pool_repositories)]
+pub struct NewWorkspacePoolRepository {
+    pub pool_id: PoolId,
+    pub repository_id: OriginRepositoryId,
+}
+
+#[derive(Debug, Clone, Queryable, Selectable, Identifiable)]
+#[diesel(table_name = origin_repositories)]
+#[diesel(check_for_backend(Sqlite))]
+pub struct OriginRepositoryRow {
+    pub id: OriginRepositoryId,
+    pub repository_identity: CanonicalPath,
+    pub source_path: CanonicalPath,
+}
+
+#[derive(Debug, Insertable)]
+#[diesel(table_name = origin_repositories)]
+pub struct NewOriginRepository {
+    pub id: OriginRepositoryId,
+    pub repository_identity: CanonicalPath,
+    pub source_path: CanonicalPath,
 }
 
 #[derive(Debug, Queryable, Selectable, Identifiable)]
@@ -138,12 +194,12 @@ impl From<WorkspaceLeaseRow> for WorkspaceLease {
     }
 }
 
-#[derive(Debug, Queryable, Selectable, Identifiable)]
+#[derive(Debug, Queryable, Identifiable)]
 #[diesel(table_name = repo_worktrees)]
-#[diesel(check_for_backend(Sqlite))]
 pub struct RepoWorktreeRow {
     pub id: RepoWorktreeId,
     pub workspace_id: WorkspaceId,
+    pub origin_repository_id: OriginRepositoryId,
     pub repository_identity: CanonicalPath,
     pub source_path: CanonicalPath,
     pub worktree_path: CanonicalPath,
@@ -157,8 +213,7 @@ pub struct RepoWorktreeRow {
 pub struct NewRepoWorktree {
     pub id: RepoWorktreeId,
     pub workspace_id: WorkspaceId,
-    pub repository_identity: CanonicalPath,
-    pub source_path: CanonicalPath,
+    pub origin_repository_id: OriginRepositoryId,
     pub worktree_path: CanonicalPath,
     pub state: RepoWorktreeState,
     pub last_head: Option<String>,

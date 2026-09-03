@@ -7,10 +7,11 @@
 - [x] 1.2 Define `automatic` and `manual` workspace modes inferred from
   positional-path presence, and the rule that manual workspaces bypass all
   automated checkout/checkin and GC behavior
-- [x] 1.3 Define the canonical repository-set pool key, least-recently-used
-  candidate ordering, configurable platform-specific `workspaces_dir`,
-  absolute root normalization, generated path format, and allocation retry
-  behavior after a lease race
+- [x] 1.3 Define the UUID-backed repository-set pool registry, indexed hash and
+  exact canonical JSON matching, least-recently-used candidate ordering,
+  configurable platform-specific `workspaces_dir`, absolute root
+  normalization, generated path format, and allocation retry behavior after a
+  lease race
 - [x] 1.4 Add a typed checkout lease model with owner, acquisition, expiry,
   and heartbeat timestamps; define the reusable-workspace predicate and
   explicit mode/access/health separation
@@ -21,14 +22,16 @@
 
 ## 2. Persistence and Migration
 
-- [x] 2.1 Add migration `00000000000002` for management mode, pool key,
-  absolute workspace-root namespace, idle and reclamation timestamps, the
+- [x] 2.1 Add migration `00000000000002` for management mode, the UUID-backed
+  pool registry, origin repositories and pool relations, absolute
+  workspace-root namespace, idle and reclamation timestamps, the
   `dirty`/`reclaimed` state constraints, and the current `workspace_leases`
   table with one active lease per workspace
 - [x] 2.2 Backfill legacy explicit-path workspace records as `manual` without
   touching Git or the filesystem, and provide a reversible down migration
-- [x] 2.3 Add Diesel schema/models and repository operations for acquiring,
-  renewing, reading, and releasing leases without runtime raw SQL
+- [x] 2.3 Add Diesel schema/models and repository operations for origin
+  repositories, pool relations, and acquiring, renewing, reading, and
+  releasing leases without runtime raw SQL
 - [x] 2.4 Add typed persistence helpers for checkout, checkin, GC operations,
   access/reclamation events, old/new lease details, and atomic operation
   completion

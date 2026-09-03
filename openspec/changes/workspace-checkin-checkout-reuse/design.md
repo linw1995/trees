@@ -67,6 +67,21 @@ because their intended retention policy cannot be inferred safely; a future
 explicit adopt operation can opt such a row into a pool. GC remains opt-in per
 invocation and requires an explicit age threshold.
 
+The pool registry stores repository-set identity separately from workspace
+slots:
+
+- `workspace_pools.id`: the stable UUID used as `pool_key` by workspace rows;
+- `workspace_pools.hash_key`: a BLAKE3 fingerprint used for indexed lookup;
+- `workspace_pools.repositories_json`: the canonical sorted JSON array used for
+  exact matching after the hash lookup;
+- `workspace_pool_repositories`: the many-to-many relation between pools and
+  origin repositories;
+- `origin_repositories`: one row per Git common-directory identity, including
+  the canonical source path shared by worktrees and pools.
+
+The hash is intentionally not unique. A hash collision creates separate pool
+rows and the canonical JSON comparison selects the correct one.
+
 The lease table stores the current claim only:
 
 - `id`: the UUID v7 checkout identifier;
@@ -75,9 +90,8 @@ The lease table stores the current claim only:
 - `checked_out_at`: the acquisition time;
 - `lease_expires_at`: the finite expiry time;
 - `last_heartbeat_at`: the last successful acquisition or renewal time.
-- `pool_key` on an automatic workspace row: a versioned BLAKE3 fingerprint of
-  the canonical serialized, sorted set of Git common-directory identities used
-  for exact pool matching. Manual rows may leave this field null.
+- `pool_key` on an automatic workspace row: the UUID of its registry pool.
+  Manual rows may leave this field null.
 - `workspace_root` on an automatic workspace row: the absolute resolved
   `workspaces_dir` used as the pool namespace. Manual rows may leave this
   field null.
@@ -133,10 +147,11 @@ trees checkin <workspace-path> --checkout-id <checkout-id>
 ```
 
 The automatic form does not accept a concrete workspace path. It canonicalizes
-and inspects every repository, derives a stable pool key from the sorted set
-of Git common-directory identities, and searches only `automatic` workspaces
-with the same key. It filters out rows that are not `ready`, have an active
-operation or lease, or fail the live reusable-worktree predicate.
+and inspects every repository, derives a BLAKE3 hash and canonical JSON array
+from the sorted set of Git common-directory identities, resolves the matching
+pool registry UUID, and searches only `automatic` workspaces that reference
+that pool. It filters out rows that are not `ready`, have an active operation
+or lease, or fail the live reusable-worktree predicate.
 
 If multiple candidates remain, Trees selects the least-recently-used slot by
 `last_checked_in_at`, falls back to `created_at` for a never-used slot, and
@@ -353,9 +368,10 @@ and is not implicitly coupled to this lease in this change.
 ## Migration Plan
 
 1. Add a forward-only migration for workspace management mode, GC timestamps,
-   reclaimed states, `workspace_leases`, and its expiry index. Existing
-   explicit-path workspace rows are backfilled as `manual` and start with no
-   active lease; the migration does not touch Git or delete files.
+   reclaimed states, the pool registry, origin repositories, pool relations,
+   `workspace_leases`, and their indexes. Existing explicit-path workspace rows
+   are backfilled as `manual` and start with no active lease; the migration does
+   not touch Git or delete files.
 2. Extend the repository and domain layers without changing existing
    workspace or repo-worktree identifiers.
 3. Make reconciliation understand `dirty` worktrees before enabling pool

@@ -386,10 +386,7 @@ mod tests {
         let result = trees::workspace::AutomaticCheckoutResult {
             workspace_path: trees::domain::CanonicalPath::from_absolute("/tmp/workspace")
                 .expect("workspace path should be absolute"),
-            pool_key: trees::pool::RepositorySetKey::from_repositories(&[
-                trees::domain::CanonicalPath::from_absolute("/repo/api")
-                    .expect("repository path should be absolute"),
-            ]),
+            pool_key: trees::domain::PoolId::new(),
             checkout_id: trees::domain::CheckoutId::new(),
             lease_expires_at: trees::domain::Timestamp::parse("2026-09-03T00:00:00Z")
                 .expect("lease expiry should be valid"),
@@ -399,11 +396,7 @@ mod tests {
             serde_json::from_str(&output).expect("checkout JSON should be valid");
 
         assert_eq!(value["workspace_path"], "/tmp/workspace");
-        let pool_key = value["pool_key"]
-            .as_str()
-            .expect("pool key should be a string");
-        assert!(pool_key.starts_with("blake3:"));
-        assert_eq!(pool_key.len(), "blake3:".len() + 64);
+        assert!(value["pool_key"].as_str().is_some());
         assert!(value["checkout_id"].is_string());
         assert_eq!(value["lease_expires_at"], "2026-09-03T00:00:00Z");
     }

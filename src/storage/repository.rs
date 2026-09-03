@@ -4,16 +4,22 @@ use diesel::sqlite::SqliteConnection;
 use std::fmt;
 
 use crate::domain::{
-    CanonicalPath, CheckoutId, JsonDocument, OperationId, OperationState, RepoWorktreeId,
-    RepoWorktreeState, Timestamp, WorkspaceId, WorkspaceManagementMode, WorkspaceState,
+    CanonicalPath, CheckoutId, JsonDocument, OperationId, OperationState, OriginRepositoryId,
+    PoolId, RepoWorktreeId, RepoWorktreeState, Timestamp, WorkspaceId, WorkspaceManagementMode,
+    WorkspaceState,
 };
 use crate::lease::WorkspaceLease;
-use crate::schema::{lifecycle_events, operations, repo_worktrees, workspace_leases, workspaces};
+use crate::pool::RepositorySetKey;
+use crate::schema::{
+    lifecycle_events, operations, origin_repositories, repo_worktrees, workspace_leases,
+    workspace_pool_repositories, workspace_pools, workspaces,
+};
 
 use super::models::{
-    EventRow, NewEvent, NewManagedWorkspace, NewOperation, NewRepoWorktree, NewWorkspace,
-    NewWorkspaceLease, OperationIntent, OperationRow, RepoWorktreeRow, WorkspaceLeaseRow,
-    WorkspaceRow,
+    EventRow, NewEvent, NewManagedWorkspace, NewOperation, NewOriginRepository, NewRepoWorktree,
+    NewWorkspace, NewWorkspaceLease, NewWorkspacePool, NewWorkspacePoolRepository, OperationIntent,
+    OperationRow, OriginRepositoryRow, RepoWorktreeRow, WorkspaceLeaseRow,
+    WorkspacePoolRepositoryRow, WorkspacePoolRow, WorkspaceRow,
 };
 use super::transaction::with_short_transaction;
 
@@ -107,20 +113,157 @@ pub fn find_workspace(
         .first(connection)
 }
 
+pub fn find_origin_repository_by_identity(
+    connection: &mut SqliteConnection,
+    repository_identity: &CanonicalPath,
+) -> QueryResult<Option<OriginRepositoryRow>> {
+    origin_repositories::table
+        .filter(origin_repositories::repository_identity.eq(repository_identity))
+        .select(OriginRepositoryRow::as_select())
+        .first(connection)
+        .optional()
+}
+
+pub fn insert_origin_repository(
+    connection: &mut SqliteConnection,
+    value: &NewOriginRepository,
+) -> QueryResult<OriginRepositoryRow> {
+    diesel::insert_into(origin_repositories::table)
+        .values(value)
+        .execute(connection)?;
+    origin_repositories::table
+        .find(&value.id)
+        .select(OriginRepositoryRow::as_select())
+        .first(connection)
+}
+
+pub fn ensure_origin_repository(
+    connection: &mut SqliteConnection,
+    repository_identity: &CanonicalPath,
+    source_path: &CanonicalPath,
+) -> QueryResult<OriginRepositoryRow> {
+    if let Some(repository) = find_origin_repository_by_identity(connection, repository_identity)? {
+        if repository.source_path != *source_path {
+            diesel::update(origin_repositories::table.find(repository.id))
+                .set(origin_repositories::source_path.eq(source_path))
+                .execute(connection)?;
+            return origin_repositories::table
+                .find(repository.id)
+                .select(OriginRepositoryRow::as_select())
+                .first(connection);
+        }
+        return Ok(repository);
+    }
+
+    let value = NewOriginRepository {
+        id: OriginRepositoryId::new(),
+        repository_identity: repository_identity.clone(),
+        source_path: source_path.clone(),
+    };
+    match insert_origin_repository(connection, &value) {
+        Ok(repository) => Ok(repository),
+        Err(Error::DatabaseError(DatabaseErrorKind::UniqueViolation, _)) => {
+            find_origin_repository_by_identity(connection, repository_identity)?
+                .ok_or(Error::NotFound)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+pub fn find_workspace_pool(
+    connection: &mut SqliteConnection,
+    repository_set: &RepositorySetKey,
+) -> QueryResult<Option<WorkspacePoolRow>> {
+    workspace_pools::table
+        .filter(workspace_pools::hash_key.eq(repository_set.hash_key()))
+        .filter(workspace_pools::repositories_json.eq(repository_set.repositories_json()))
+        .select(WorkspacePoolRow::as_select())
+        .first(connection)
+        .optional()
+}
+
+pub fn find_workspace_pool_by_id(
+    connection: &mut SqliteConnection,
+    pool_id: &PoolId,
+) -> QueryResult<WorkspacePoolRow> {
+    workspace_pools::table
+        .find(pool_id)
+        .select(WorkspacePoolRow::as_select())
+        .first(connection)
+}
+
+pub fn insert_workspace_pool(
+    connection: &mut SqliteConnection,
+    value: &NewWorkspacePool,
+) -> QueryResult<WorkspacePoolRow> {
+    diesel::insert_into(workspace_pools::table)
+        .values(value)
+        .execute(connection)?;
+    workspace_pools::table
+        .find(&value.id)
+        .select(WorkspacePoolRow::as_select())
+        .first(connection)
+}
+
+pub fn ensure_workspace_pool(
+    connection: &mut SqliteConnection,
+    repository_set: &RepositorySetKey,
+) -> QueryResult<WorkspacePoolRow> {
+    if let Some(pool) = find_workspace_pool(connection, repository_set)? {
+        return Ok(pool);
+    }
+
+    let value = NewWorkspacePool {
+        id: PoolId::new(),
+        hash_key: repository_set.hash_key().to_owned(),
+        repositories_json: repository_set.repositories_json().to_owned(),
+    };
+    match insert_workspace_pool(connection, &value) {
+        Ok(pool) => Ok(pool),
+        Err(Error::DatabaseError(DatabaseErrorKind::UniqueViolation, _)) => {
+            find_workspace_pool(connection, repository_set)?.ok_or(Error::NotFound)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+pub fn insert_workspace_pool_repositories(
+    connection: &mut SqliteConnection,
+    values: &[NewWorkspacePoolRepository],
+) -> QueryResult<usize> {
+    if values.is_empty() {
+        return Ok(0);
+    }
+    let mut inserted = 0;
+    for value in values {
+        inserted += diesel::insert_into(workspace_pool_repositories::table)
+            .values(value)
+            .on_conflict_do_nothing()
+            .execute(connection)?;
+    }
+    Ok(inserted)
+}
+
+pub fn list_workspace_pool_repositories(
+    connection: &mut SqliteConnection,
+    pool_id: &PoolId,
+) -> QueryResult<Vec<WorkspacePoolRepositoryRow>> {
+    workspace_pool_repositories::table
+        .filter(workspace_pool_repositories::pool_id.eq(pool_id))
+        .order(workspace_pool_repositories::repository_id.asc())
+        .select(WorkspacePoolRepositoryRow::as_select())
+        .load(connection)
+}
+
 pub fn list_automatic_workspace_candidates(
     connection: &mut SqliteConnection,
     workspace_root: &CanonicalPath,
-    pool_key: &str,
-    legacy_pool_key: &str,
+    pool_id: &PoolId,
 ) -> QueryResult<Vec<WorkspaceRow>> {
     workspaces::table
         .filter(workspaces::management_mode.eq(WorkspaceManagementMode::Automatic))
         .filter(workspaces::workspace_root.eq(Some(workspace_root)))
-        .filter(
-            workspaces::pool_key
-                .eq(Some(pool_key))
-                .or(workspaces::pool_key.eq(Some(legacy_pool_key))),
-        )
+        .filter(workspaces::pool_key.eq(Some(pool_id)))
         .filter(workspaces::state.eq(WorkspaceState::Ready))
         .order(workspaces::id.asc())
         .select(WorkspaceRow::as_select())
@@ -533,10 +676,7 @@ pub fn record_workspace_reclaimed(
             .find(workspace_id)
             .select(WorkspaceRow::as_select())
             .first(connection)?;
-        let repositories = repo_worktrees::table
-            .filter(repo_worktrees::workspace_id.eq(workspace_id))
-            .select(RepoWorktreeRow::as_select())
-            .load::<RepoWorktreeRow>(connection)?;
+        let repositories = list_repo_worktrees(connection, workspace_id)?;
         let occurred_at = Timestamp::now();
         for repository in &repositories {
             diesel::update(repo_worktrees::table.find(&repository.id))
@@ -719,8 +859,19 @@ pub fn insert_repo_worktree(
         .values(value)
         .execute(connection)?;
     repo_worktrees::table
-        .find(&value.id)
-        .select(RepoWorktreeRow::as_select())
+        .inner_join(origin_repositories::table)
+        .filter(repo_worktrees::id.eq(&value.id))
+        .select((
+            repo_worktrees::id,
+            repo_worktrees::workspace_id,
+            origin_repositories::id,
+            origin_repositories::repository_identity,
+            origin_repositories::source_path,
+            repo_worktrees::worktree_path,
+            repo_worktrees::state,
+            repo_worktrees::last_head,
+            repo_worktrees::last_observed_at,
+        ))
         .first(connection)
 }
 
@@ -729,9 +880,20 @@ pub fn list_repo_worktrees(
     workspace_id: &WorkspaceId,
 ) -> QueryResult<Vec<RepoWorktreeRow>> {
     repo_worktrees::table
+        .inner_join(origin_repositories::table)
         .filter(repo_worktrees::workspace_id.eq(workspace_id))
         .order(repo_worktrees::worktree_path.asc())
-        .select(RepoWorktreeRow::as_select())
+        .select((
+            repo_worktrees::id,
+            repo_worktrees::workspace_id,
+            origin_repositories::id,
+            origin_repositories::repository_identity,
+            origin_repositories::source_path,
+            repo_worktrees::worktree_path,
+            repo_worktrees::state,
+            repo_worktrees::last_head,
+            repo_worktrees::last_observed_at,
+        ))
         .load(connection)
 }
 
@@ -1331,10 +1493,17 @@ mod tests {
     use super::*;
     use crate::database;
     use crate::domain::{
-        CanonicalPath, EventId, JsonDocument, OperationId, OperationState, RepoWorktreeId,
+        CanonicalPath, EventId, JsonDocument, OperationId, OperationState, PoolId, RepoWorktreeId,
         RepoWorktreeState, Timestamp, WorkspaceId, WorkspaceState,
     };
     use crate::lease::WorkspaceLease;
+    use crate::pool::RepositorySetKey;
+
+    fn origin_id(connection: &mut SqliteConnection, path: &CanonicalPath) -> OriginRepositoryId {
+        ensure_origin_repository(connection, path, path)
+            .expect("origin repository should be available")
+            .id
+    }
 
     #[test]
     fn repositories_round_trip_typed_rows() {
@@ -1366,13 +1535,13 @@ mod tests {
             workspace_id
         );
 
+        let origin_repository_id = origin_id(&mut connection, &workspace_path);
         let worktree = insert_repo_worktree(
             &mut connection,
             &NewRepoWorktree {
                 id: RepoWorktreeId::new(),
                 workspace_id,
-                repository_identity: workspace_path.clone(),
-                source_path: workspace_path.clone(),
+                origin_repository_id,
                 worktree_path: CanonicalPath::resolve("/tmp")
                     .expect("temporary path should resolve"),
                 state: RepoWorktreeState::Pending,
@@ -1440,6 +1609,58 @@ mod tests {
             1
         );
         assert_eq!(event.operation_id, operation_id);
+
+        drop(connection);
+        fs::remove_file(database_path).expect("temporary database should be removable");
+    }
+
+    #[test]
+    fn pool_lookup_verifies_repository_json_after_hash_filtering() {
+        let database_path =
+            std::env::temp_dir().join(format!("trees-{}.sqlite", WorkspaceId::new()));
+        let mut connection = database::connect(&database_path).expect("database should open");
+        let first =
+            RepositorySetKey::from_repositories(&[CanonicalPath::from_absolute("/repo/first")
+                .expect("repository path should be absolute")]);
+        let second =
+            RepositorySetKey::from_repositories(&[CanonicalPath::from_absolute("/repo/second")
+                .expect("repository path should be absolute")]);
+        let first_pool = insert_workspace_pool(
+            &mut connection,
+            &NewWorkspacePool {
+                id: PoolId::new(),
+                hash_key: first.hash_key().to_owned(),
+                repositories_json: first.repositories_json().to_owned(),
+            },
+        )
+        .expect("first pool should be inserted");
+        let second_pool = insert_workspace_pool(
+            &mut connection,
+            &NewWorkspacePool {
+                id: PoolId::new(),
+                hash_key: first.hash_key().to_owned(),
+                repositories_json: second.repositories_json().to_owned(),
+            },
+        )
+        .expect("colliding pool should be inserted");
+
+        assert_eq!(
+            find_workspace_pool(&mut connection, &first)
+                .expect("first pool lookup should succeed")
+                .expect("first pool should exist")
+                .id,
+            first_pool.id
+        );
+        assert_eq!(
+            workspace_pools::table
+                .filter(workspace_pools::hash_key.eq(first.hash_key()))
+                .filter(workspace_pools::repositories_json.eq(second.repositories_json()))
+                .select(WorkspacePoolRow::as_select())
+                .first::<WorkspacePoolRow>(&mut connection)
+                .expect("second pool lookup should succeed")
+                .id,
+            second_pool.id
+        );
 
         drop(connection);
         fs::remove_file(database_path).expect("temporary database should be removable");
@@ -1646,13 +1867,13 @@ mod tests {
             },
         )
         .expect("workspace should be inserted");
+        let origin_repository_id = origin_id(&mut connection, &workspace_path);
         let worktree = insert_repo_worktree(
             &mut connection,
             &NewRepoWorktree {
                 id: RepoWorktreeId::new(),
                 workspace_id,
-                repository_identity: workspace_path.clone(),
-                source_path: workspace_path,
+                origin_repository_id,
                 worktree_path,
                 state: RepoWorktreeState::Attached,
                 last_head: Some("abc123".to_owned()),
@@ -1978,13 +2199,13 @@ mod tests {
             ),
         )
         .expect("operation should start");
+        let origin_repository_id = origin_id(&mut connection, &workspace_path);
         let worktree = insert_repo_worktree(
             &mut connection,
             &NewRepoWorktree {
                 id: RepoWorktreeId::new(),
                 workspace_id,
-                repository_identity: workspace_path.clone(),
-                source_path: workspace_path,
+                origin_repository_id,
                 worktree_path: CanonicalPath::resolve("/tmp")
                     .expect("temporary path should resolve"),
                 state: RepoWorktreeState::Pending,

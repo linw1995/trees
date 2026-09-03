@@ -75,6 +75,8 @@ macro_rules! uuid_identifier {
 }
 
 uuid_identifier!(WorkspaceId);
+uuid_identifier!(PoolId);
+uuid_identifier!(OriginRepositoryId);
 uuid_identifier!(RepoWorktreeId);
 uuid_identifier!(OperationId);
 uuid_identifier!(EventId);
@@ -120,7 +122,7 @@ impl FromStr for WorkspaceManagementMode {
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct WorkspaceManagementMetadata {
     pub mode: WorkspaceManagementMode,
-    pub pool_key: Option<String>,
+    pub pool_key: Option<PoolId>,
     pub workspace_root: Option<CanonicalPath>,
 }
 

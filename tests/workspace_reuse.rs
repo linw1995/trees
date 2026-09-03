@@ -9,7 +9,10 @@ use trees::domain::{
 };
 use trees::gc;
 use trees::git;
-use trees::storage::{find_workspace, find_workspace_by_path, list_repo_worktrees};
+use trees::storage::{
+    find_origin_repository_by_identity, find_workspace, find_workspace_by_path,
+    find_workspace_pool_by_id, list_repo_worktrees, list_workspace_pool_repositories,
+};
 use trees::workspace::{
     allocate_automatic_workspace, checkin_automatic, create_with_connection, prepare_automatic,
     prepare_create, provision_automatic, AutomaticCreateRequest, CreateRequest,
@@ -153,6 +156,42 @@ fn reuses_the_same_automatic_slot_across_checkin_cycles() {
         second.checkout_id,
     )
     .expect("second allocation should check in");
+    cleanup_fixture(fixture);
+}
+
+#[test]
+fn persists_origin_repositories_once_and_links_them_to_pool() {
+    let mut fixture = automatic_fixture();
+    let pool_id = fixture
+        .workspace
+        .pool_key
+        .expect("automatic workspace should reference a pool");
+    let pool = find_workspace_pool_by_id(&mut fixture.connection, &pool_id)
+        .expect("workspace pool lookup should succeed");
+    assert_eq!(pool.hash_key, fixture.plan.repository_set.hash_key());
+    assert_eq!(
+        pool.repositories_json,
+        fixture.plan.repository_set.repositories_json()
+    );
+
+    let origin = find_origin_repository_by_identity(
+        &mut fixture.connection,
+        &fixture.plan.repositories[0].repository_identity,
+    )
+    .expect("origin repository lookup should succeed")
+    .expect("origin repository should exist");
+    assert_eq!(origin.source_path, fixture.plan.repositories[0].source_path);
+
+    let links = list_workspace_pool_repositories(&mut fixture.connection, &pool_id)
+        .expect("pool repository links should be readable");
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].repository_id, origin.id);
+
+    let worktrees = list_repo_worktrees(&mut fixture.connection, &fixture.workspace.id)
+        .expect("worktree lookup should succeed");
+    assert_eq!(worktrees.len(), 1);
+    assert_eq!(worktrees[0].origin_repository_id, origin.id);
+
     cleanup_fixture(fixture);
 }
 

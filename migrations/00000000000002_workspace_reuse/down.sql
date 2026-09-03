@@ -52,21 +52,26 @@ INSERT INTO repo_worktrees_v1 (
     last_observed_at
 )
 SELECT
-    id,
-    workspace_id,
-    repository_identity,
-    source_path,
-    worktree_path,
+    legacy.id,
+    legacy.workspace_id,
+    origin.repository_identity,
+    origin.source_path,
+    legacy.worktree_path,
     CASE
-        WHEN state IN ('dirty', 'reclaimed') THEN 'failed'
-        ELSE state
+        WHEN legacy.state IN ('dirty', 'reclaimed') THEN 'failed'
+        ELSE legacy.state
     END,
-    last_head,
-    last_observed_at
-FROM repo_worktrees;
+    legacy.last_head,
+    legacy.last_observed_at
+FROM repo_worktrees AS legacy
+JOIN origin_repositories AS origin
+    ON origin.id = legacy.origin_repository_id;
 
+DROP TABLE workspace_pool_repositories;
 DROP TABLE repo_worktrees;
 DROP TABLE workspaces;
+DROP TABLE workspace_pools;
+DROP TABLE origin_repositories;
 
 ALTER TABLE workspaces_v1 RENAME TO workspaces;
 ALTER TABLE repo_worktrees_v1 RENAME TO repo_worktrees;

@@ -782,8 +782,10 @@ mod tests {
     use crate::database;
     use crate::domain::{WorkspaceId, WorkspaceManagementMode};
     use crate::lease::WorkspaceLease;
+    use crate::pool::RepositorySetKey;
     use crate::storage::{
-        insert_managed_workspace, insert_workspace_lease, NewManagedWorkspace, NewWorkspaceLease,
+        ensure_workspace_pool, insert_managed_workspace, insert_workspace_lease,
+        NewManagedWorkspace, NewWorkspaceLease,
     };
     use crate::workspace::{
         checkin_automatic, prepare_automatic, provision_automatic, AutomaticCreateRequest,
@@ -901,7 +903,17 @@ mod tests {
         let mut connection = database::connect(&database_path).expect("database should open");
         let old = timestamp("2020-01-01T00:00:00Z");
         let young = timestamp("2099-01-01T00:00:00Z");
-        let pool_key = Some("[\"/repo/example\"]".to_owned());
+        let pool_key = Some(
+            ensure_workspace_pool(
+                &mut connection,
+                &RepositorySetKey::from_repositories(&[CanonicalPath::from_absolute(
+                    "/repo/example",
+                )
+                .expect("repository path should be absolute")]),
+            )
+            .expect("workspace pool should be available")
+            .id,
+        );
         let entries = [
             (WorkspaceState::Ready, old.clone(), None),
             (WorkspaceState::Ready, young, None),
@@ -925,7 +937,7 @@ mod tests {
                     updated_at: old.clone(),
                     last_reconciled_at: None,
                     management_mode: WorkspaceManagementMode::Automatic,
-                    pool_key: pool_key.clone(),
+                    pool_key,
                     workspace_root: Some(workspace_root.clone()),
                     last_checked_in_at: Some(idle_since),
                     reclaimed_at: None,

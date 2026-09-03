@@ -9,8 +9,9 @@ use trees::domain::{
     WorkspaceManagementMode, WorkspaceState,
 };
 use trees::storage::{
-    begin_operation, find_operation, insert_event, insert_workspace, persist_operation_intent,
-    EventRow, NewEvent, NewWorkspace, OperationIntent, OperationIntentError,
+    begin_operation, ensure_origin_repository, find_operation, insert_event, insert_repo_worktree,
+    insert_workspace, list_repo_worktrees, persist_operation_intent, EventRow, NewEvent,
+    NewRepoWorktree, NewWorkspace, OperationIntent, OperationIntentError,
 };
 
 fn database_path() -> std::path::PathBuf {
@@ -60,6 +61,21 @@ fn migration_preserves_operation_and_event_rows_without_rebuilding_them() {
         &workspace(workspace_id, workspace_path.clone()),
     )
     .expect("workspace should be inserted");
+    let origin = ensure_origin_repository(&mut connection, &workspace_path, &workspace_path)
+        .expect("origin repository should be inserted");
+    insert_repo_worktree(
+        &mut connection,
+        &NewRepoWorktree {
+            id: trees::domain::RepoWorktreeId::new(),
+            workspace_id,
+            origin_repository_id: origin.id,
+            worktree_path: CanonicalPath::resolve("/tmp").expect("worktree path should resolve"),
+            state: trees::domain::RepoWorktreeState::Pending,
+            last_head: None,
+            last_observed_at: Timestamp::now(),
+        },
+    )
+    .expect("repo worktree should be inserted");
     let operation = begin_operation(
         &mut connection,
         &OperationIntent::new(
@@ -138,6 +154,14 @@ fn migration_preserves_operation_and_event_rows_without_rebuilding_them() {
             .expect("workspace should survive upgrade")
             .canonical_path,
         workspace_path
+    );
+    let repositories = list_repo_worktrees(&mut connection, &workspace_id)
+        .expect("repo worktrees should survive upgrade");
+    assert_eq!(repositories.len(), 1);
+    assert_eq!(repositories[0].repository_identity, workspace_path);
+    assert_eq!(
+        repositories[0].source_path,
+        repositories[0].repository_identity
     );
 
     drop(connection);
@@ -267,13 +291,21 @@ fn automatic_workspace_metadata_and_timestamps_round_trip_as_absolute_values() {
     let workspace_path = CanonicalPath::resolve(".").expect("workspace path should resolve");
     let workspace_root = CanonicalPath::resolve("/tmp").expect("workspace root should resolve");
     let now = Timestamp::now();
+    let pool = trees::storage::ensure_workspace_pool(
+        &mut connection,
+        &trees::pool::RepositorySetKey::from_repositories(&[CanonicalPath::from_absolute(
+            "/repo/api",
+        )
+        .expect("repository path should be absolute")]),
+    )
+    .expect("workspace pool should be available");
 
     insert_workspace(&mut connection, &workspace(workspace_id, workspace_path))
         .expect("workspace should be inserted");
     diesel::update(trees::schema::workspaces::table.find(&workspace_id))
         .set((
             trees::schema::workspaces::management_mode.eq(WorkspaceManagementMode::Automatic),
-            trees::schema::workspaces::pool_key.eq(Some(r#"["/repo/api"]"#)),
+            trees::schema::workspaces::pool_key.eq(Some(pool.id)),
             trees::schema::workspaces::workspace_root.eq(Some(workspace_root.clone())),
             trees::schema::workspaces::last_checked_in_at.eq(Some(now.clone())),
             trees::schema::workspaces::reclaimed_at.eq::<Option<Timestamp>>(None),
@@ -284,7 +316,7 @@ fn automatic_workspace_metadata_and_timestamps_round_trip_as_absolute_values() {
     let stored = trees::storage::find_workspace(&mut connection, &workspace_id)
         .expect("workspace should be queryable");
     assert_eq!(stored.management_mode, WorkspaceManagementMode::Automatic);
-    assert_eq!(stored.pool_key.as_deref(), Some(r#"["/repo/api"]"#));
+    assert_eq!(stored.pool_key, Some(pool.id));
     assert_eq!(stored.workspace_root, Some(workspace_root));
     assert_eq!(stored.last_checked_in_at, Some(now));
     assert!(stored.canonical_path.as_path().is_absolute());

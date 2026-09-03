@@ -5,23 +5,28 @@ use crate::domain::CanonicalPath;
 const HASH_PREFIX: &str = "blake3:";
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct RepositorySetKey(String);
+pub struct RepositorySetKey {
+    hash_key: String,
+    repositories_json: String,
+}
 
 impl RepositorySetKey {
     pub fn from_repositories(repositories: &[CanonicalPath]) -> Self {
         let canonical = canonical_repository_set(repositories);
         let digest = blake3::hash(canonical.as_bytes());
-        Self(format!("{HASH_PREFIX}{}", digest.to_hex()))
+        Self {
+            hash_key: format!("{HASH_PREFIX}{}", digest.to_hex()),
+            repositories_json: canonical,
+        }
     }
 
-    pub fn as_str(&self) -> &str {
-        &self.0
+    pub fn hash_key(&self) -> &str {
+        &self.hash_key
     }
-}
 
-pub(crate) fn legacy_repository_set_key(repositories: &[CanonicalPath]) -> String {
-    canonical_repository_set(repositories)
+    pub fn repositories_json(&self) -> &str {
+        &self.repositories_json
+    }
 }
 
 fn canonical_repository_set(repositories: &[CanonicalPath]) -> String {
@@ -35,7 +40,7 @@ fn canonical_repository_set(repositories: &[CanonicalPath]) -> String {
 
 impl std::fmt::Display for RepositorySetKey {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(self.as_str())
+        formatter.write_str(self.hash_key())
     }
 }
 
@@ -53,11 +58,8 @@ mod tests {
         let second = RepositorySetKey::from_repositories(&[path("/repo/api"), path("/repo/web")]);
 
         assert_eq!(first, second);
-        assert!(first.as_str().starts_with(HASH_PREFIX));
-        assert_eq!(first.as_str().len(), HASH_PREFIX.len() + 64);
-        assert_ne!(
-            first.as_str(),
-            legacy_repository_set_key(&[path("/repo/api"), path("/repo/web")])
-        );
+        assert!(first.hash_key().starts_with(HASH_PREFIX));
+        assert_eq!(first.hash_key().len(), HASH_PREFIX.len() + 64);
+        assert_eq!(first.repositories_json(), r#"["/repo/api","/repo/web"]"#);
     }
 }
