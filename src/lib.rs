@@ -1,3 +1,4 @@
+pub mod claim;
 pub mod cli;
 pub mod codex;
 pub mod config;
@@ -5,7 +6,6 @@ pub mod database;
 pub mod domain;
 pub mod gc;
 pub mod git;
-pub mod lease;
 pub mod naming;
 pub mod paths;
 pub mod pool;

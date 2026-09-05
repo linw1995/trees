@@ -9,10 +9,10 @@ use crate::domain::{
 use crate::git::GitError;
 use crate::storage::{
     append_event, claim_expired_operation, finalize_creation, find_operation,
-    find_running_operation, find_workspace, find_workspace_lease, list_repo_worktrees,
+    find_running_operation, find_workspace, find_workspace_claim, list_repo_worktrees,
     record_operation_transition, record_repo_worktree_transition, record_workspace_transition,
     update_workspace_observation, EventDraft, OperationRow, RepoWorktreeRow, TransitionMetadata,
-    WorkspaceLeaseRow, WorkspaceRow,
+    WorkspaceClaimRow, WorkspaceRow,
 };
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -25,7 +25,7 @@ pub struct ReconciliationSummary {
 pub struct AccessBoundary {
     pub summary: ReconciliationSummary,
     pub workspace: WorkspaceRow,
-    pub lease: Option<WorkspaceLeaseRow>,
+    pub claim: Option<WorkspaceClaimRow>,
 }
 
 pub fn reconcile_workspace_for_access(
@@ -36,12 +36,12 @@ pub fn reconcile_workspace_for_access(
     let summary = reconcile_workspace(connection, workspace_id, operation_id)?;
     let workspace =
         find_workspace(connection, workspace_id).map_err(ReconciliationError::Database)?;
-    let lease =
-        find_workspace_lease(connection, workspace_id).map_err(ReconciliationError::Database)?;
+    let claim =
+        find_workspace_claim(connection, workspace_id).map_err(ReconciliationError::Database)?;
     Ok(AccessBoundary {
         summary,
         workspace,
-        lease,
+        claim,
     })
 }
 
@@ -861,7 +861,7 @@ mod tests {
     }
 
     #[test]
-    fn access_boundary_reconciles_git_and_returns_current_lease() {
+    fn access_boundary_reconciles_git_and_returns_current_claim() {
         let (root, mut connection, context) = setup_context();
         execute_creation(&mut connection, &context).expect("creation should execute");
         crate::storage::finalize_creation(
@@ -879,21 +879,21 @@ mod tests {
         .expect("access boundary should reconcile");
         assert_eq!(boundary.summary.workspace_state, WorkspaceState::Ready);
         assert_eq!(boundary.workspace.state, WorkspaceState::Ready);
-        assert!(boundary.lease.is_none());
+        assert!(boundary.claim.is_none());
 
-        let lease = crate::lease::WorkspaceLease::new(context.workspace_id, "process:test");
-        crate::storage::insert_workspace_lease(
+        let claim = crate::claim::WorkspaceClaim::new(context.workspace_id, "process:test");
+        crate::storage::insert_workspace_claim(
             &mut connection,
-            &crate::storage::NewWorkspaceLease::from(&lease),
+            &crate::storage::NewWorkspaceClaim::from(&claim),
         )
-        .expect("lease should be inserted");
-        let checked_out = reconcile_workspace_for_access(
+        .expect("claim should be inserted");
+        let claimed = reconcile_workspace_for_access(
             &mut connection,
             &context.workspace_id,
             &context.operation_id,
         )
-        .expect("checked-out boundary should reconcile");
-        assert_eq!(checked_out.lease.unwrap().id, lease.id);
+        .expect("claimed boundary should reconcile");
+        assert_eq!(claimed.claim.unwrap().id, claim.id);
 
         crate::git::remove_worktree(
             &context.repositories[0].plan.source_path,

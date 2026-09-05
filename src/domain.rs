@@ -80,7 +80,7 @@ uuid_identifier!(OriginRepositoryId);
 uuid_identifier!(RepoWorktreeId);
 uuid_identifier!(OperationId);
 uuid_identifier!(EventId);
-uuid_identifier!(CheckoutId);
+uuid_identifier!(ClaimId);
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, AsExpression, FromSqlRow)]
 #[diesel(sql_type = diesel::sql_types::Text)]
@@ -565,11 +565,11 @@ mod tests {
         );
         assert!(WorkspaceId::from_str(&Uuid::nil().to_string()).is_err());
 
-        let checkout_id = CheckoutId::new();
-        let encoded = serde_json::to_string(&checkout_id).expect("checkout ID should serialize");
+        let claim_id = ClaimId::new();
+        let encoded = serde_json::to_string(&claim_id).expect("claim ID should serialize");
         assert_eq!(
-            serde_json::from_str::<CheckoutId>(&encoded).expect("checkout ID should deserialize"),
-            checkout_id
+            serde_json::from_str::<ClaimId>(&encoded).expect("claim ID should deserialize"),
+            claim_id
         );
     }
 

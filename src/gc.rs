@@ -11,7 +11,7 @@ use crate::domain::{
 use crate::git;
 use crate::reconciliation;
 use crate::storage::{
-    begin_operation, find_running_operation, find_workspace, find_workspace_lease,
+    begin_operation, find_running_operation, find_workspace, find_workspace_claim,
     list_automatic_workspaces, list_repo_worktrees, record_workspace_gc_failure,
     record_workspace_gc_skipped, record_workspace_reclaimed, OperationIntent, OperationIntentError,
     RepoWorktreeRow,
@@ -120,7 +120,7 @@ pub enum GcCandidateReason {
     Eligible,
     Young,
     CheckedOut,
-    ExpiredLease,
+    ExpiredClaim,
     ActiveOperation,
     Unhealthy,
     UnsafeRoot,
@@ -137,7 +137,7 @@ impl fmt::Display for GcCandidateReason {
             Self::Eligible => "eligible",
             Self::Young => "young",
             Self::CheckedOut => "checked_out",
-            Self::ExpiredLease => "expired_lease",
+            Self::ExpiredClaim => "expired_claim",
             Self::ActiveOperation => "active_operation",
             Self::Unhealthy => "unhealthy",
             Self::UnsafeRoot => "unsafe_root",
@@ -157,7 +157,7 @@ pub struct GcCandidate {
     pub idle_since: Timestamp,
     pub age_eligible: bool,
     pub checked_out: bool,
-    pub expired_lease: bool,
+    pub expired_claim: bool,
     pub active_operation: bool,
 }
 
@@ -167,8 +167,8 @@ impl GcCandidate {
             GcCandidateReason::Young
         } else if self.checked_out {
             GcCandidateReason::CheckedOut
-        } else if self.expired_lease {
-            GcCandidateReason::ExpiredLease
+        } else if self.expired_claim {
+            GcCandidateReason::ExpiredClaim
         } else if self.active_operation {
             GcCandidateReason::ActiveOperation
         } else if self.workspace.state != WorkspaceState::Ready {
@@ -231,13 +231,13 @@ pub fn scan(
     };
     let mut candidates = Vec::with_capacity(workspaces.len());
     for workspace in workspaces {
-        let lease = find_workspace_lease(connection, &workspace.id).map_err(GcError::Database)?;
-        let checked_out = lease
+        let claim = find_workspace_claim(connection, &workspace.id).map_err(GcError::Database)?;
+        let checked_out = claim
             .as_ref()
-            .is_some_and(|lease| !lease.lease_expires_at.has_expired());
-        let expired_lease = lease
+            .is_some_and(|claim| !claim.lease_expires_at.has_expired());
+        let expired_claim = claim
             .as_ref()
-            .is_some_and(|lease| lease.lease_expires_at.has_expired());
+            .is_some_and(|claim| claim.lease_expires_at.has_expired());
         if checked_out {
             counts.checked_out += 1;
         } else {
@@ -259,7 +259,7 @@ pub fn scan(
             idle_since,
             age_eligible,
             checked_out,
-            expired_lease,
+            expired_claim,
             active_operation,
         };
         if candidate.reason() == GcCandidateReason::Eligible {
@@ -327,18 +327,23 @@ pub fn execute(
         }
 
         let workspace = find_workspace(connection, &workspace_id).map_err(GcError::Database)?;
-        let lease = find_workspace_lease(connection, &workspace_id).map_err(GcError::Database)?;
-        if lease.is_some() {
+        let claim = find_workspace_claim(connection, &workspace_id).map_err(GcError::Database)?;
+        if let Some(claim) = claim {
+            let reason = if claim.lease_expires_at.has_expired() {
+                GcCandidateReason::ExpiredClaim
+            } else {
+                GcCandidateReason::CheckedOut
+            };
             finish_gc_skip(
                 connection,
                 &operation.id,
                 &workspace_id,
                 details_json,
-                GcCandidateReason::CheckedOut,
+                reason,
             )?;
             report.skipped.push(GcSkipped {
                 workspace_path: workspace.canonical_path,
-                reason: GcCandidateReason::CheckedOut,
+                reason,
             });
             continue;
         }
@@ -427,8 +432,8 @@ fn execution_skip_reason(candidate: &GcCandidate, force: bool) -> Option<GcCandi
     if candidate.checked_out {
         return Some(GcCandidateReason::CheckedOut);
     }
-    if candidate.expired_lease {
-        return Some(GcCandidateReason::ExpiredLease);
+    if candidate.expired_claim {
+        return Some(GcCandidateReason::ExpiredClaim);
     }
     if candidate.active_operation {
         return Some(GcCandidateReason::ActiveOperation);
@@ -779,16 +784,16 @@ mod tests {
     use diesel::prelude::*;
 
     use super::*;
+    use crate::claim::WorkspaceClaim;
     use crate::database;
     use crate::domain::{WorkspaceId, WorkspaceManagementMode};
-    use crate::lease::WorkspaceLease;
     use crate::pool::RepositorySetKey;
     use crate::storage::{
-        ensure_workspace_pool, insert_managed_workspace, insert_workspace_lease,
-        NewManagedWorkspace, NewWorkspaceLease,
+        ensure_workspace_pool, insert_managed_workspace, insert_workspace_claim,
+        NewManagedWorkspace, NewWorkspaceClaim,
     };
     use crate::workspace::{
-        checkin_automatic, prepare_automatic, provision_automatic, AutomaticCreateRequest,
+        prepare_automatic, provision_automatic, release_automatic_workspace, AutomaticCreateRequest,
     };
 
     fn test_root() -> PathBuf {
@@ -835,19 +840,15 @@ mod tests {
         let mut connection = database::connect(&database_path).expect("database should open");
         let mut plan = prepare_automatic(&AutomaticCreateRequest {
             repositories: vec![source_path],
-            checkout_id: None,
+            claim_id: None,
         })
         .expect("automatic allocation plan should be prepared");
         plan.workspace_root = CanonicalPath::from_absolute(root.join("managed"))
             .expect("workspace root should be absolute");
         let checkout = provision_automatic(&mut connection, &plan)
             .expect("automatic workspace should be provisioned");
-        checkin_automatic(
-            &mut connection,
-            &checkout.workspace_path,
-            checkout.checkout_id,
-        )
-        .expect("workspace should be checked in");
+        release_automatic_workspace(&mut connection, &checkout.workspace_path, checkout.claim_id)
+            .expect("workspace should be checked in");
         let mut workspace =
             crate::storage::find_workspace_by_path(&mut connection, &checkout.workspace_path)
                 .expect("workspace lookup should succeed")
@@ -949,11 +950,11 @@ mod tests {
             )
             .expect("workspace should be inserted");
             if let Some(lease_kind) = lease_kind {
-                let mut lease = WorkspaceLease::new(id, lease_kind);
+                let mut lease = WorkspaceClaim::new(id, lease_kind);
                 if lease_kind == "expired" {
                     lease.lease_expires_at = old.clone();
                 }
-                insert_workspace_lease(&mut connection, &NewWorkspaceLease::from(&lease))
+                insert_workspace_claim(&mut connection, &NewWorkspaceClaim::from(&lease))
                     .expect("lease should be inserted");
             }
         }
@@ -990,7 +991,7 @@ mod tests {
         assert!(result
             .candidates
             .iter()
-            .any(|candidate| candidate.reason() == GcCandidateReason::ExpiredLease));
+            .any(|candidate| candidate.reason() == GcCandidateReason::ExpiredClaim));
         assert_eq!(workspace_ids.len(), 5);
 
         drop(connection);

@@ -31,8 +31,12 @@ pub struct CreateArgs {
     #[arg(long = "repo", required = true, value_name = "REPOSITORY_PATH")]
     pub repositories: Vec<PathBuf>,
 
-    #[arg(long = "checkout-id", value_name = "CHECKOUT_ID")]
-    pub checkout_id: Option<String>,
+    #[arg(
+        long = "claim-id",
+        visible_alias = "checkout-id",
+        value_name = "CLAIM_ID"
+    )]
+    pub claim_id: Option<String>,
 
     #[arg(long, help = "Print the create result as JSON")]
     pub json: bool,
@@ -43,8 +47,13 @@ pub struct CheckinArgs {
     #[arg(value_name = "WORKSPACE_PATH")]
     pub workspace_path: PathBuf,
 
-    #[arg(long = "checkout-id", required = true, value_name = "CHECKOUT_ID")]
-    pub checkout_id: String,
+    #[arg(
+        long = "claim-id",
+        visible_alias = "checkout-id",
+        required = true,
+        value_name = "CLAIM_ID"
+    )]
+    pub claim_id: String,
 }
 
 #[derive(Debug, Args)]
@@ -153,7 +162,7 @@ mod tests {
             arguments.repositories,
             [PathBuf::from("/tmp/one"), PathBuf::from("/tmp/two")]
         );
-        assert_eq!(arguments.checkout_id, None);
+        assert_eq!(arguments.claim_id, None);
         assert!(!arguments.json);
     }
 
@@ -172,7 +181,7 @@ mod tests {
             arguments.repositories,
             [PathBuf::from("/tmp/one"), PathBuf::from("/tmp/two")]
         );
-        assert_eq!(arguments.checkout_id, None);
+        assert_eq!(arguments.claim_id, None);
         assert!(!arguments.json);
     }
 
@@ -192,7 +201,7 @@ mod tests {
             panic!("expected create command");
         };
         assert_eq!(arguments.workspace_path, None);
-        assert_eq!(arguments.checkout_id.as_deref(), Some("checkout-id"));
+        assert_eq!(arguments.claim_id.as_deref(), Some("checkout-id"));
         assert!(!arguments.json);
     }
 
@@ -208,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_checkin_with_a_checkout_id() {
+    fn parses_checkin_with_a_claim_id() {
         let cli = Cli::try_parse_from([
             "trees",
             "checkin",
@@ -222,7 +231,7 @@ mod tests {
             panic!("expected checkin command");
         };
         assert_eq!(arguments.workspace_path, PathBuf::from("/tmp/workspace"));
-        assert_eq!(arguments.checkout_id, "checkout-id");
+        assert_eq!(arguments.claim_id, "checkout-id");
     }
 
     #[test]

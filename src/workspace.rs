@@ -5,28 +5,28 @@ use std::path::PathBuf;
 use diesel::sqlite::SqliteConnection;
 use serde::Serialize;
 
+use crate::claim::WorkspaceClaim;
 use crate::domain::{
-    CanonicalPath, CheckoutId, JsonDocument, OperationState, OriginRepositoryId, PoolId,
+    CanonicalPath, ClaimId, JsonDocument, OperationState, OriginRepositoryId, PoolId,
     RepoWorktreeId, RepoWorktreeState, Timestamp, WorkspaceId, WorkspaceManagementMetadata,
     WorkspaceManagementMode, WorkspaceState,
 };
 use crate::git::{self, GitError};
-use crate::lease::WorkspaceLease;
 use crate::naming::{self, NamingError, WorktreePlan};
 use crate::reconciliation::{self, ReconciliationError};
 use crate::storage::{
     append_event, begin_operation, ensure_origin_repository, finalize_automatic_creation,
     finalize_creation as finalize_persisted_creation, find_workspace, find_workspace_by_path,
-    find_workspace_lease_by_id, find_workspace_pool, find_workspace_pool_by_id,
-    insert_managed_workspace, insert_repo_worktree, insert_workspace_lease,
-    insert_workspace_pool_repositories, persist_operation_intent, persist_operation_step_intent,
-    record_operation_transition, record_repo_worktree_transition, record_workspace_checkin,
-    record_workspace_checkin_rejection, record_workspace_checkout,
-    record_workspace_checkout_failure, record_workspace_lease_expiration_failure,
-    record_workspace_lease_reclaim, record_workspace_transition, record_worktree_step_result,
-    release_workspace_lease, with_short_transaction, EventDraft, NewManagedWorkspace,
-    NewRepoWorktree, NewWorkspacePoolRepository, OperationIntent, OperationIntentError,
-    TransitionMetadata,
+    find_workspace_claim, find_workspace_claim_by_id, find_workspace_pool,
+    find_workspace_pool_by_id, insert_managed_workspace, insert_repo_worktree,
+    insert_workspace_claim, insert_workspace_pool_repositories, persist_operation_intent,
+    persist_operation_step_intent, record_operation_transition, record_repo_worktree_transition,
+    record_workspace_acquire, record_workspace_acquire_failure,
+    record_workspace_claim_expiration_failure, record_workspace_claim_reclaim,
+    record_workspace_claim_renewal, record_workspace_release, record_workspace_release_rejection,
+    record_workspace_transition, record_worktree_step_result, release_workspace_claim,
+    with_short_transaction, EventDraft, NewManagedWorkspace, NewRepoWorktree,
+    NewWorkspacePoolRepository, OperationIntent, OperationIntentError, TransitionMetadata,
 };
 use crate::validation::{self, ValidationError};
 
@@ -39,7 +39,7 @@ pub struct CreateRequest {
 #[derive(Debug, Clone)]
 pub struct AutomaticCreateRequest {
     pub repositories: Vec<PathBuf>,
-    pub checkout_id: Option<CheckoutId>,
+    pub claim_id: Option<ClaimId>,
 }
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
@@ -47,7 +47,7 @@ pub struct AutomaticAllocationPlan {
     pub workspace_root: CanonicalPath,
     pub repository_set: crate::pool::RepositorySetKey,
     pub repositories: Vec<AutomaticRepositoryPlan>,
-    pub checkout_id: Option<CheckoutId>,
+    pub claim_id: Option<ClaimId>,
 }
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
@@ -58,17 +58,17 @@ pub struct AutomaticRepositoryPlan {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct AutomaticCheckoutResult {
+pub struct AutomaticClaimResult {
     pub workspace_path: CanonicalPath,
     pub pool_key: PoolId,
-    pub checkout_id: CheckoutId,
+    pub claim_id: ClaimId,
     pub lease_expires_at: Timestamp,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CheckinResult {
     pub workspace_path: CanonicalPath,
-    pub checkout_id: CheckoutId,
+    pub claim_id: ClaimId,
     pub checked_in_at: Timestamp,
 }
 
@@ -126,19 +126,19 @@ pub fn prepare_automatic(
         workspace_root,
         repository_set: crate::pool::RepositorySetKey::from_repositories(&identities),
         repositories: plans,
-        checkout_id: request.checkout_id,
+        claim_id: request.claim_id,
     })
 }
 
 pub fn allocate_automatic_workspace(
     connection: &mut SqliteConnection,
     plan: &AutomaticAllocationPlan,
-) -> Result<AutomaticCheckoutResult, WorkspaceError> {
-    if plan.checkout_id.is_some() {
+) -> Result<AutomaticClaimResult, WorkspaceError> {
+    if plan.claim_id.is_some() {
         return renew_automatic(connection, plan);
     }
     for candidate in list_idle_automatic_candidates(connection, plan)? {
-        match checkout_automatic_candidate(connection, plan, &candidate) {
+        match acquire_automatic_candidate(connection, plan, &candidate) {
             Ok(result) => return Ok(result),
             Err(error) if is_retryable_allocation_error(&error) => continue,
             Err(error) => return Err(error),
@@ -166,9 +166,9 @@ fn list_idle_automatic_candidates(
         {
             continue;
         }
-        if crate::storage::find_workspace_lease(connection, &workspace.id)
+        if find_workspace_claim(connection, &workspace.id)
             .map_err(WorkspaceError::Database)?
-            .is_some()
+            .is_some_and(|claim| !claim.lease_expires_at.has_expired())
         {
             continue;
         }
@@ -194,7 +194,7 @@ fn is_retryable_allocation_error(error: &WorkspaceError) -> bool {
         WorkspaceError::OperationActive(_)
             | WorkspaceError::NotAutomatic(_)
             | WorkspaceError::NotReusable(_)
-            | WorkspaceError::LeaseActive(_)
+            | WorkspaceError::ClaimActive(_)
             | WorkspaceError::Database(diesel::result::Error::NotFound)
             | WorkspaceError::Database(diesel::result::Error::DatabaseError(
                 diesel::result::DatabaseErrorKind::UniqueViolation,
@@ -203,20 +203,20 @@ fn is_retryable_allocation_error(error: &WorkspaceError) -> bool {
     )
 }
 
-pub fn checkout_automatic_candidate(
+pub fn acquire_automatic_candidate(
     connection: &mut SqliteConnection,
     plan: &AutomaticAllocationPlan,
     candidate: &crate::storage::WorkspaceRow,
-) -> Result<AutomaticCheckoutResult, WorkspaceError> {
-    checkout_automatic_candidate_with_post_checkout_hook(connection, plan, candidate, || {})
+) -> Result<AutomaticClaimResult, WorkspaceError> {
+    acquire_automatic_candidate_with_post_acquire_hook(connection, plan, candidate, || {})
 }
 
-fn checkout_automatic_candidate_with_post_checkout_hook<F>(
+fn acquire_automatic_candidate_with_post_acquire_hook<F>(
     connection: &mut SqliteConnection,
     plan: &AutomaticAllocationPlan,
     candidate: &crate::storage::WorkspaceRow,
-    post_checkout: F,
-) -> Result<AutomaticCheckoutResult, WorkspaceError>
+    post_acquire: F,
+) -> Result<AutomaticClaimResult, WorkspaceError>
 where
     F: FnOnce(),
 {
@@ -224,10 +224,10 @@ where
     let intent_json = JsonDocument::from_serializable(plan).map_err(WorkspaceError::Json)?;
     let intent = OperationIntent::new(
         candidate.id,
-        "checkout",
+        "acquire",
         owner_id,
         Timestamp::after_seconds(300),
-        "acquire workspace lease",
+        "acquire workspace claim",
         intent_json,
     );
     let operation = begin_operation(connection, &intent).map_err(map_operation_error)?;
@@ -253,47 +253,48 @@ where
         fail_operation(connection, &operation.id, &primary);
         return Err(primary);
     };
-    let old_lease = boundary.lease.as_ref();
-    if let Some(old_lease) = old_lease {
-        if !old_lease.lease_expires_at.has_expired() {
-            let primary = WorkspaceError::LeaseActive(candidate.id);
-            fail_operation(connection, &operation.id, &primary);
-            return Err(primary);
-        }
-        if boundary.summary.workspace_state != WorkspaceState::Ready {
-            let primary = WorkspaceError::NotReusable(candidate.canonical_path.clone());
-            let details_json = checkout_reclaim_details(plan, pool_id, old_lease, None);
-            return Err(fail_expired_checkout(
-                connection,
-                &operation.id,
-                old_lease,
-                primary,
-                Some(details_json),
-            ));
-        }
-    } else if boundary.summary.workspace_state != WorkspaceState::Ready {
+    let old_claim = boundary.claim.as_ref();
+    if old_claim.is_some_and(|claim| !claim.lease_expires_at.has_expired()) {
+        let primary = WorkspaceError::ClaimActive(candidate.id);
+        fail_operation(connection, &operation.id, &primary);
+        return Err(primary);
+    }
+    if let Some(old_claim) =
+        old_claim.filter(|_| boundary.summary.workspace_state != WorkspaceState::Ready)
+    {
+        let primary = WorkspaceError::NotReusable(candidate.canonical_path.clone());
+        let details_json = acquire_claim_reclaim_details(plan, pool_id, old_claim, None);
+        return Err(fail_expired_acquire(
+            connection,
+            &operation.id,
+            old_claim,
+            primary,
+            Some(details_json),
+        ));
+    }
+    if old_claim.is_none() && boundary.summary.workspace_state != WorkspaceState::Ready {
         let primary = WorkspaceError::NotReusable(candidate.canonical_path.clone());
         fail_operation(connection, &operation.id, &primary);
         return Err(primary);
     }
 
-    let lease = WorkspaceLease::new(candidate.id, format!("process:{}", std::process::id()));
-    let details_json = old_lease
-        .map(|old_lease| checkout_reclaim_details(plan, pool_id, old_lease, Some(&lease)))
-        .unwrap_or_else(|| checkout_details(plan, &lease, pool_id));
-    let record_result = if let Some(old_lease) = old_lease {
-        record_workspace_lease_reclaim(
+    let claim = WorkspaceClaim::new(candidate.id, format!("process:{}", std::process::id()));
+    let details_json = old_claim
+        .map(|old_claim| acquire_claim_reclaim_details(plan, pool_id, old_claim, Some(&claim)))
+        .unwrap_or_else(|| acquire_details(plan, &claim, pool_id));
+    let record_result = if let Some(old_claim) = old_claim {
+        record_workspace_claim_reclaim(
             connection,
             &operation.id,
-            old_lease,
-            &lease,
+            old_claim,
+            &claim,
             Some(details_json.clone()),
         )
     } else {
-        record_workspace_checkout(
+        record_workspace_acquire(
             connection,
             &operation.id,
-            &lease,
+            &claim,
             Some(details_json.clone()),
         )
     };
@@ -303,7 +304,7 @@ where
         return Err(primary);
     }
 
-    post_checkout();
+    post_acquire();
 
     let final_boundary = match reconciliation::reconcile_workspace_for_access(
         connection,
@@ -313,67 +314,67 @@ where
         Ok(boundary) => boundary,
         Err(error) => {
             let primary = WorkspaceError::Reconciliation(error);
-            return Err(fail_checkout(
+            return Err(fail_acquire(
                 connection,
                 &operation.id,
                 &candidate.id,
-                &lease.id,
+                &claim.id,
                 primary,
                 Some(details_json),
             ));
         }
     };
     if final_boundary.summary.workspace_state != WorkspaceState::Ready
-        || final_boundary.lease.as_ref().map(|value| value.id) != Some(lease.id)
+        || final_boundary.claim.as_ref().map(|value| value.id) != Some(claim.id)
     {
         let primary = WorkspaceError::NotReusable(candidate.canonical_path.clone());
-        return Err(fail_checkout(
+        return Err(fail_acquire(
             connection,
             &operation.id,
             &candidate.id,
-            &lease.id,
+            &claim.id,
             primary,
             Some(details_json),
         ));
     }
 
-    Ok(AutomaticCheckoutResult {
+    Ok(AutomaticClaimResult {
         workspace_path: candidate.canonical_path.clone(),
         pool_key: pool_id,
-        checkout_id: lease.id,
-        lease_expires_at: lease.lease_expires_at,
+        claim_id: claim.id,
+        lease_expires_at: claim.lease_expires_at,
     })
 }
 
-fn checkout_details(
+fn acquire_details(
     plan: &AutomaticAllocationPlan,
-    lease: &WorkspaceLease,
+    claim: &WorkspaceClaim,
     pool_id: PoolId,
 ) -> JsonDocument {
     JsonDocument::from_serializable(&serde_json::json!({
         "pool_key": pool_id,
         "hash_key": plan.repository_set.hash_key(),
         "workspace_root": plan.workspace_root,
-        "lease": lease,
+        "claim": claim,
     }))
-    .expect("checkout details should serialize")
+    .expect("acquire details should serialize")
 }
 
-fn checkout_reclaim_details(
+fn acquire_claim_reclaim_details(
     plan: &AutomaticAllocationPlan,
     pool_id: PoolId,
-    old_lease: &crate::storage::WorkspaceLeaseRow,
-    new_lease: Option<&WorkspaceLease>,
+    old_claim: &crate::storage::WorkspaceClaimRow,
+    new_claim: Option<&WorkspaceClaim>,
 ) -> JsonDocument {
     JsonDocument::from_serializable(&serde_json::json!({
         "pool_key": pool_id,
         "hash_key": plan.repository_set.hash_key(),
         "workspace_root": plan.workspace_root,
-        "old_checkout_id": old_lease.id,
-        "old_lease_expires_at": old_lease.lease_expires_at,
-        "lease": new_lease,
+        "old_claim_id": old_claim.id,
+        "old_lease_expires_at": old_claim.lease_expires_at,
+        "claim": new_claim,
     }))
-    .expect("checkout reclaim details should serialize")
+    .expect("claim recovery details should serialize")
 }
 
 fn map_operation_error(error: OperationIntentError) -> WorkspaceError {
@@ -394,26 +395,26 @@ fn fail_operation(
         connection,
         operation_id,
         OperationState::Failed,
-        "checkout failed",
+        "operation failed",
         None,
         TransitionMetadata::new("operation_failed", "trees").with_error(error_document(error)),
     );
 }
 
-fn fail_checkout(
+fn fail_acquire(
     connection: &mut SqliteConnection,
     operation_id: &crate::domain::OperationId,
     workspace_id: &WorkspaceId,
-    checkout_id: &CheckoutId,
+    claim_id: &ClaimId,
     primary: WorkspaceError,
     details_json: Option<JsonDocument>,
 ) -> WorkspaceError {
     let error_json = error_document(&primary);
-    match record_workspace_checkout_failure(
+    match record_workspace_acquire_failure(
         connection,
         operation_id,
         workspace_id,
-        checkout_id,
+        claim_id,
         details_json,
         error_json,
     ) {
@@ -425,18 +426,152 @@ fn fail_checkout(
     }
 }
 
-fn fail_expired_checkout(
+fn fail_expired_acquire(
     connection: &mut SqliteConnection,
     operation_id: &crate::domain::OperationId,
-    old_lease: &crate::storage::WorkspaceLeaseRow,
+    old_claim: &crate::storage::WorkspaceClaimRow,
     primary: WorkspaceError,
     details_json: Option<JsonDocument>,
 ) -> WorkspaceError {
     let error_json = error_document(&primary);
-    match record_workspace_lease_expiration_failure(
+    match record_workspace_claim_expiration_failure(
         connection,
         operation_id,
-        old_lease,
+        old_claim,
+        details_json,
+        error_json,
+    ) {
+        Ok(()) => primary,
+        Err(error) => WorkspaceError::Rollback {
+            primary: Box::new(primary),
+            rollback: Box::new(WorkspaceError::Database(error)),
+        },
+    }
+}
+
+pub fn release_automatic_workspace(
+    connection: &mut SqliteConnection,
+    workspace_path: &CanonicalPath,
+    claim_id: ClaimId,
+) -> Result<CheckinResult, WorkspaceError> {
+    let workspace = find_workspace_by_path(connection, workspace_path)
+        .map_err(WorkspaceError::Database)?
+        .ok_or_else(|| WorkspaceError::WorkspaceNotFound(workspace_path.clone()))?;
+    if workspace.management_mode != WorkspaceManagementMode::Automatic {
+        return Err(WorkspaceError::NotAutomatic(workspace.canonical_path));
+    }
+    let claim =
+        match find_workspace_claim(connection, &workspace.id).map_err(WorkspaceError::Database)? {
+            Some(claim) if claim.id == claim_id => claim,
+            _ => return Err(WorkspaceError::ClaimNotFound(claim_id)),
+        };
+    if claim.lease_expires_at.has_expired() {
+        return Err(WorkspaceError::ClaimExpired(claim_id));
+    }
+
+    let intent_json = JsonDocument::from_serializable(&serde_json::json!({
+        "workspace_path": workspace_path,
+        "claim_id": claim_id,
+    }))
+    .map_err(WorkspaceError::Json)?;
+    let intent = OperationIntent::new(
+        workspace.id,
+        "release",
+        format!("process:{}", std::process::id()),
+        Timestamp::after_seconds(300),
+        "release workspace claim",
+        intent_json,
+    );
+    let operation = begin_operation(connection, &intent).map_err(map_operation_error)?;
+    let boundary = match reconciliation::reconcile_workspace_for_access(
+        connection,
+        &workspace.id,
+        &operation.id,
+    ) {
+        Ok(boundary) => boundary,
+        Err(error) => {
+            let primary = WorkspaceError::Reconciliation(error);
+            fail_operation(connection, &operation.id, &primary);
+            return Err(primary);
+        }
+    };
+    if boundary.workspace.management_mode != WorkspaceManagementMode::Automatic {
+        let primary = WorkspaceError::NotAutomatic(boundary.workspace.canonical_path);
+        fail_operation(connection, &operation.id, &primary);
+        return Err(primary);
+    }
+    let Some(active_claim) = boundary.claim.as_ref() else {
+        let primary = WorkspaceError::ClaimNotFound(claim_id);
+        fail_operation(connection, &operation.id, &primary);
+        return Err(primary);
+    };
+    if active_claim.id != claim_id {
+        let primary = WorkspaceError::ClaimNotFound(claim_id);
+        fail_operation(connection, &operation.id, &primary);
+        return Err(primary);
+    }
+    if active_claim.lease_expires_at.has_expired() {
+        let primary = WorkspaceError::ClaimExpired(claim_id);
+        fail_operation(connection, &operation.id, &primary);
+        return Err(primary);
+    }
+
+    // Do not release the claim until live reconciliation proves the slot is
+    // safe to reuse; a rejected checkin intentionally keeps the claim.
+    let details_json = release_details(workspace_path, claim_id);
+    if boundary.summary.workspace_state != WorkspaceState::Ready {
+        let primary = WorkspaceError::NotReusable(workspace.canonical_path.clone());
+        return Err(fail_release(
+            connection,
+            &operation.id,
+            &workspace.id,
+            primary,
+            Some(details_json),
+        ));
+    }
+    if let Err(error) = record_workspace_release(
+        connection,
+        &operation.id,
+        &workspace.id,
+        &claim_id,
+        Some(details_json),
+    ) {
+        let primary = WorkspaceError::Database(error);
+        fail_operation(connection, &operation.id, &primary);
+        return Err(primary);
+    }
+    let checked_in_workspace =
+        find_workspace(connection, &workspace.id).map_err(WorkspaceError::Database)?;
+    let checked_in_at = checked_in_workspace
+        .last_checked_in_at
+        .ok_or_else(|| WorkspaceError::Database(diesel::result::Error::NotFound))?;
+    Ok(CheckinResult {
+        workspace_path: checked_in_workspace.canonical_path,
+        claim_id,
+        checked_in_at,
+    })
+}
+
+fn release_details(workspace_path: &CanonicalPath, claim_id: ClaimId) -> JsonDocument {
+    JsonDocument::from_serializable(&serde_json::json!({
+        "workspace_path": workspace_path,
+        "claim_id": claim_id,
+    }))
+    .expect("release details should serialize")
+}
+
+fn fail_release(
+    connection: &mut SqliteConnection,
+    operation_id: &crate::domain::OperationId,
+    workspace_id: &WorkspaceId,
+    primary: WorkspaceError,
+    details_json: Option<JsonDocument>,
+) -> WorkspaceError {
+    let error_json = error_document(&primary);
+    match record_workspace_release_rejection(
+        connection,
+        operation_id,
+        workspace_id,
         details_json,
         error_json,
     ) {
@@ -451,24 +586,22 @@ fn fail_expired_checkout(
 pub fn renew_automatic(
     connection: &mut SqliteConnection,
     plan: &AutomaticAllocationPlan,
-) -> Result<AutomaticCheckoutResult, WorkspaceError> {
-    let checkout_id = plan
-        .checkout_id
-        .ok_or(WorkspaceError::RenewalRequiresCheckoutId)?;
-    let lease_row = match find_workspace_lease_by_id(connection, &checkout_id) {
-        Ok(lease) => lease,
+) -> Result<AutomaticClaimResult, WorkspaceError> {
+    let claim_id = plan
+        .claim_id
+        .ok_or(WorkspaceError::RenewalRequiresClaimId)?;
+    let claim_row = match find_workspace_claim_by_id(connection, &claim_id) {
+        Ok(claim) => claim,
         Err(diesel::result::Error::NotFound) => {
-            return Err(WorkspaceError::CheckoutNotFound(checkout_id));
+            return Err(WorkspaceError::ClaimNotFound(claim_id));
         }
         Err(error) => return Err(WorkspaceError::Database(error)),
     };
     let workspace =
-        find_workspace(connection, &lease_row.workspace_id).map_err(WorkspaceError::Database)?;
+        find_workspace(connection, &claim_row.workspace_id).map_err(WorkspaceError::Database)?;
     if workspace.management_mode != WorkspaceManagementMode::Automatic {
         return Err(WorkspaceError::NotAutomatic(workspace.canonical_path));
     }
-    // Renewal follows the leased workspace's pool; the current root only
-    // scopes new allocation and must not invalidate an existing checkout.
     let pool_id = workspace
         .pool_key
         .ok_or(WorkspaceError::RepositorySetMismatch(workspace.id))?;
@@ -482,17 +615,17 @@ pub fn renew_automatic(
     if pool.repositories_json != plan.repository_set.repositories_json() {
         return Err(WorkspaceError::RepositorySetMismatch(workspace.id));
     }
-    if lease_row.lease_expires_at.has_expired() {
-        return Err(WorkspaceError::LeaseExpired(checkout_id));
+    if claim_row.lease_expires_at.has_expired() {
+        return Err(WorkspaceError::ClaimExpired(claim_id));
     }
 
     let intent_json = JsonDocument::from_serializable(plan).map_err(WorkspaceError::Json)?;
     let intent = OperationIntent::new(
         workspace.id,
-        "checkout_renew",
+        "claim_renew",
         format!("process:{}", std::process::id()),
         Timestamp::after_seconds(300),
-        "renew checkout lease",
+        "renew workspace claim",
         intent_json,
     );
     let operation = begin_operation(connection, &intent).map_err(map_operation_error)?;
@@ -508,203 +641,62 @@ pub fn renew_automatic(
             return Err(primary);
         }
     };
-    if boundary.workspace.management_mode != WorkspaceManagementMode::Automatic {
-        let primary = WorkspaceError::NotAutomatic(boundary.workspace.canonical_path);
-        fail_operation(connection, &operation.id, &primary);
-        return Err(primary);
-    }
-    if boundary.workspace.pool_key != Some(pool_id) {
+    if boundary.workspace.management_mode != WorkspaceManagementMode::Automatic
+        || boundary.workspace.pool_key != Some(pool_id)
+    {
         let primary = WorkspaceError::RepositorySetMismatch(boundary.workspace.id);
         fail_operation(connection, &operation.id, &primary);
         return Err(primary);
     }
-    let Some(active_lease) = boundary.lease else {
-        let primary = WorkspaceError::CheckoutNotFound(checkout_id);
+    let Some(active_claim) = boundary.claim else {
+        let primary = WorkspaceError::ClaimNotFound(claim_id);
         fail_operation(connection, &operation.id, &primary);
         return Err(primary);
     };
-    if active_lease.id != checkout_id {
-        let primary = WorkspaceError::CheckoutNotFound(checkout_id);
+    if active_claim.id != claim_id {
+        let primary = WorkspaceError::ClaimNotFound(claim_id);
         fail_operation(connection, &operation.id, &primary);
         return Err(primary);
     }
-    if active_lease.lease_expires_at.has_expired() {
-        let primary = WorkspaceError::LeaseExpired(checkout_id);
+    if active_claim.lease_expires_at.has_expired() {
+        let primary = WorkspaceError::ClaimExpired(claim_id);
         fail_operation(connection, &operation.id, &primary);
         return Err(primary);
     }
 
-    let mut lease = WorkspaceLease::from(active_lease);
-    lease.renew();
-    let details_json = checkout_details(plan, &lease, pool.id);
-    if let Err(error) = crate::storage::record_workspace_lease_renewal(
-        connection,
-        &operation.id,
-        &lease,
-        Some(details_json),
-    ) {
+    let mut claim = WorkspaceClaim::from(active_claim);
+    claim.renew();
+    let details_json = acquire_details(plan, &claim, pool.id);
+    if let Err(error) =
+        record_workspace_claim_renewal(connection, &operation.id, &claim, Some(details_json))
+    {
         let primary = WorkspaceError::Database(error);
         fail_operation(connection, &operation.id, &primary);
         return Err(primary);
     }
 
-    Ok(AutomaticCheckoutResult {
+    Ok(AutomaticClaimResult {
         workspace_path: boundary.workspace.canonical_path,
         pool_key: pool.id,
-        checkout_id: lease.id,
-        lease_expires_at: lease.lease_expires_at,
+        claim_id: claim.id,
+        lease_expires_at: claim.lease_expires_at,
     })
-}
-
-pub fn checkin_automatic(
-    connection: &mut SqliteConnection,
-    workspace_path: &CanonicalPath,
-    checkout_id: CheckoutId,
-) -> Result<CheckinResult, WorkspaceError> {
-    let workspace = find_workspace_by_path(connection, workspace_path)
-        .map_err(WorkspaceError::Database)?
-        .ok_or_else(|| WorkspaceError::WorkspaceNotFound(workspace_path.clone()))?;
-    if workspace.management_mode != WorkspaceManagementMode::Automatic {
-        return Err(WorkspaceError::NotAutomatic(workspace.canonical_path));
-    }
-    let lease = match crate::storage::find_workspace_lease(connection, &workspace.id)
-        .map_err(WorkspaceError::Database)?
-    {
-        Some(lease) if lease.id == checkout_id => lease,
-        _ => return Err(WorkspaceError::CheckoutNotFound(checkout_id)),
-    };
-    if lease.lease_expires_at.has_expired() {
-        return Err(WorkspaceError::LeaseExpired(checkout_id));
-    }
-
-    let intent_json = JsonDocument::from_serializable(&serde_json::json!({
-        "workspace_path": workspace_path,
-        "checkout_id": checkout_id,
-    }))
-    .map_err(WorkspaceError::Json)?;
-    let intent = OperationIntent::new(
-        workspace.id,
-        "checkin",
-        format!("process:{}", std::process::id()),
-        Timestamp::after_seconds(300),
-        "release checkout lease",
-        intent_json,
-    );
-    let operation = begin_operation(connection, &intent).map_err(map_operation_error)?;
-    let boundary = match reconciliation::reconcile_workspace_for_access(
-        connection,
-        &workspace.id,
-        &operation.id,
-    ) {
-        Ok(boundary) => boundary,
-        Err(error) => {
-            let primary = WorkspaceError::Reconciliation(error);
-            fail_operation(connection, &operation.id, &primary);
-            return Err(primary);
-        }
-    };
-    if boundary.workspace.management_mode != WorkspaceManagementMode::Automatic {
-        let primary = WorkspaceError::NotAutomatic(boundary.workspace.canonical_path);
-        fail_operation(connection, &operation.id, &primary);
-        return Err(primary);
-    }
-    let Some(active_lease) = boundary.lease.as_ref() else {
-        let primary = WorkspaceError::CheckoutNotFound(checkout_id);
-        fail_operation(connection, &operation.id, &primary);
-        return Err(primary);
-    };
-    if active_lease.id != checkout_id {
-        let primary = WorkspaceError::CheckoutNotFound(checkout_id);
-        fail_operation(connection, &operation.id, &primary);
-        return Err(primary);
-    }
-    if active_lease.lease_expires_at.has_expired() {
-        let primary = WorkspaceError::LeaseExpired(checkout_id);
-        fail_operation(connection, &operation.id, &primary);
-        return Err(primary);
-    }
-
-    // Do not release the lease until live reconciliation proves the slot is
-    // safe to reuse; a rejected checkin intentionally keeps the claim.
-    let details_json = checkin_details(workspace_path, checkout_id);
-    if boundary.summary.workspace_state != WorkspaceState::Ready {
-        let primary = WorkspaceError::NotReusable(workspace.canonical_path.clone());
-        return Err(fail_checkin(
-            connection,
-            &operation.id,
-            &workspace.id,
-            primary,
-            Some(details_json),
-        ));
-    }
-    if let Err(error) = record_workspace_checkin(
-        connection,
-        &operation.id,
-        &workspace.id,
-        &checkout_id,
-        Some(details_json),
-    ) {
-        let primary = WorkspaceError::Database(error);
-        fail_operation(connection, &operation.id, &primary);
-        return Err(primary);
-    }
-    let checked_in_workspace =
-        find_workspace(connection, &workspace.id).map_err(WorkspaceError::Database)?;
-    let checked_in_at = checked_in_workspace
-        .last_checked_in_at
-        .ok_or_else(|| WorkspaceError::Database(diesel::result::Error::NotFound))?;
-    Ok(CheckinResult {
-        workspace_path: checked_in_workspace.canonical_path,
-        checkout_id,
-        checked_in_at,
-    })
-}
-
-fn checkin_details(workspace_path: &CanonicalPath, checkout_id: CheckoutId) -> JsonDocument {
-    JsonDocument::from_serializable(&serde_json::json!({
-        "workspace_path": workspace_path,
-        "checkout_id": checkout_id,
-    }))
-    .expect("checkin details should serialize")
-}
-
-fn fail_checkin(
-    connection: &mut SqliteConnection,
-    operation_id: &crate::domain::OperationId,
-    workspace_id: &WorkspaceId,
-    primary: WorkspaceError,
-    details_json: Option<JsonDocument>,
-) -> WorkspaceError {
-    let error_json = error_document(&primary);
-    match record_workspace_checkin_rejection(
-        connection,
-        operation_id,
-        workspace_id,
-        details_json,
-        error_json,
-    ) {
-        Ok(()) => primary,
-        Err(error) => WorkspaceError::Rollback {
-            primary: Box::new(primary),
-            rollback: Box::new(WorkspaceError::Database(error)),
-        },
-    }
 }
 
 pub fn provision_automatic(
     connection: &mut SqliteConnection,
     plan: &AutomaticAllocationPlan,
-) -> Result<AutomaticCheckoutResult, WorkspaceError> {
-    let Some(checkout_id) = plan.checkout_id else {
+) -> Result<AutomaticClaimResult, WorkspaceError> {
+    let Some(claim_id) = plan.claim_id else {
         return provision_automatic_new(connection, plan);
     };
-    Err(WorkspaceError::ProvisioningHasCheckoutId(checkout_id))
+    Err(WorkspaceError::ProvisioningHasClaimId(claim_id))
 }
 
 fn provision_automatic_new(
     connection: &mut SqliteConnection,
     plan: &AutomaticAllocationPlan,
-) -> Result<AutomaticCheckoutResult, WorkspaceError> {
+) -> Result<AutomaticClaimResult, WorkspaceError> {
     if plan.repositories.is_empty() {
         return Err(WorkspaceError::Validation(ValidationError::NoRepositories));
     }
@@ -740,7 +732,7 @@ fn provision_automatic_new(
     let (workspace_id, workspace_path) =
         next_generated_workspace(connection, normalized_plan.workspace_root.as_path())?;
     let creation_plan = automatic_creation_plan(&normalized_plan, workspace_path.clone())?;
-    let lease = WorkspaceLease::new(workspace_id, format!("process:{}", std::process::id()));
+    let claim = WorkspaceClaim::new(workspace_id, format!("process:{}", std::process::id()));
     let management = WorkspaceManagementMetadata {
         mode: WorkspaceManagementMode::Automatic,
         pool_key: Some(pool.id),
@@ -749,14 +741,14 @@ fn provision_automatic_new(
         "allocation": normalized_plan,
         "workspace_id": workspace_id,
         "workspace_path": workspace_path,
-        "checkout_id": lease.id,
+        "claim_id": claim.id,
     }))
     .map_err(WorkspaceError::Json)?;
     let context = initialize_creation_with_metadata(
         connection,
         creation_plan,
         management,
-        Some(&lease),
+        Some(&claim),
         intent_json,
     )?;
 
@@ -766,10 +758,10 @@ fn provision_automatic_new(
         &context.operation_id,
     ) {
         let primary = WorkspaceError::Reconciliation(error);
-        return fail_creation(connection, &context, &[], None, Some(&lease), primary)
+        return fail_creation(connection, &context, &[], None, Some(&claim), primary)
             .map(|_| unreachable!("automatic provisioning rollback always fails the operation"));
     }
-    execute_creation_with_lease(connection, &context, Some(&lease))?;
+    execute_creation_with_claim(connection, &context, Some(&claim))?;
     let summary = match reconciliation::reconcile_workspace(
         connection,
         &context.workspace_id,
@@ -784,7 +776,7 @@ fn provision_automatic_new(
                 &context,
                 &completed,
                 None,
-                Some(&lease),
+                Some(&claim),
                 primary,
             )
             .map(|_| unreachable!("automatic provisioning rollback always fails the operation"));
@@ -798,18 +790,18 @@ fn provision_automatic_new(
             &context,
             &completed,
             None,
-            Some(&lease),
+            Some(&claim),
             primary,
         )
         .map(|_| unreachable!("automatic provisioning rollback always fails the operation"));
     }
 
-    let details_json = checkout_details(&normalized_plan, &lease, pool.id);
+    let details_json = acquire_details(&normalized_plan, &claim, pool.id);
     if let Err(error) = finalize_automatic_creation(
         connection,
         &context.workspace_id,
         &context.operation_id,
-        &lease,
+        &claim,
         Some(details_json),
     ) {
         let primary = WorkspaceError::Database(error);
@@ -819,17 +811,17 @@ fn provision_automatic_new(
             &context,
             &completed,
             None,
-            Some(&lease),
+            Some(&claim),
             primary,
         )
         .map(|_| unreachable!("automatic provisioning rollback always fails the operation"));
     }
 
-    Ok(AutomaticCheckoutResult {
+    Ok(AutomaticClaimResult {
         workspace_path: context.plan.workspace_path.clone(),
         pool_key: pool.id,
-        checkout_id: lease.id,
-        lease_expires_at: lease.lease_expires_at,
+        claim_id: claim.id,
+        lease_expires_at: claim.lease_expires_at,
     })
 }
 
@@ -931,7 +923,7 @@ fn initialize_creation_with_metadata(
     connection: &mut SqliteConnection,
     plan: CreationPlan,
     management: WorkspaceManagementMetadata,
-    lease: Option<&WorkspaceLease>,
+    claim: Option<&WorkspaceClaim>,
     intent_json: JsonDocument,
 ) -> Result<CreationContext, WorkspaceError> {
     if find_workspace_by_path(connection, &plan.workspace_path)
@@ -941,7 +933,7 @@ fn initialize_creation_with_metadata(
         return Err(WorkspaceError::AlreadyManaged(plan.workspace_path));
     }
 
-    let workspace_id = lease.map(|lease| lease.workspace_id).unwrap_or_default();
+    let workspace_id = claim.map(|claim| claim.workspace_id).unwrap_or_default();
     let owner_id = format!("process:{}", std::process::id());
     let operation_intent = OperationIntent::new(
         workspace_id,
@@ -1014,8 +1006,8 @@ fn initialize_creation_with_metadata(
             )?;
         }
         persist_operation_intent(connection, &operation_intent)?;
-        if let Some(lease) = lease {
-            insert_workspace_lease(connection, &crate::storage::NewWorkspaceLease::from(lease))?;
+        if let Some(claim) = claim {
+            insert_workspace_claim(connection, &crate::storage::NewWorkspaceClaim::from(claim))?;
         }
 
         append_event(
@@ -1082,13 +1074,13 @@ pub fn execute_creation(
     connection: &mut SqliteConnection,
     context: &CreationContext,
 ) -> Result<(), WorkspaceError> {
-    execute_creation_with_lease(connection, context, None)
+    execute_creation_with_claim(connection, context, None)
 }
 
-fn execute_creation_with_lease(
+fn execute_creation_with_claim(
     connection: &mut SqliteConnection,
     context: &CreationContext,
-    lease: Option<&WorkspaceLease>,
+    claim: Option<&WorkspaceClaim>,
 ) -> Result<(), WorkspaceError> {
     // Git and filesystem steps can be slow; their intent and result writes are
     // deliberately split into short transactions around each external step.
@@ -1097,7 +1089,7 @@ fn execute_creation_with_lease(
             path: context.plan.workspace_path.clone().into_path_buf(),
             source,
         };
-        return fail_creation(connection, context, &[], None, lease, primary);
+        return fail_creation(connection, context, &[], None, claim, primary);
     }
 
     let mut completed = Vec::new();
@@ -1108,7 +1100,7 @@ fn execute_creation_with_lease(
                 context,
                 &completed,
                 Some(repository),
-                lease,
+                claim,
                 primary,
             );
         }
@@ -1231,10 +1223,10 @@ fn fail_creation(
     context: &CreationContext,
     completed: &[&TrackedRepository],
     failed: Option<&TrackedRepository>,
-    lease: Option<&WorkspaceLease>,
+    claim: Option<&WorkspaceClaim>,
     primary: WorkspaceError,
 ) -> Result<(), WorkspaceError> {
-    match rollback_creation(connection, context, completed, failed, lease, &primary) {
+    match rollback_creation(connection, context, completed, failed, claim, &primary) {
         Ok(()) => Err(primary),
         Err(rollback) => Err(WorkspaceError::Rollback {
             primary: Box::new(primary),
@@ -1248,7 +1240,7 @@ fn rollback_creation(
     context: &CreationContext,
     completed: &[&TrackedRepository],
     failed: Option<&TrackedRepository>,
-    lease: Option<&WorkspaceLease>,
+    claim: Option<&WorkspaceClaim>,
     primary: &WorkspaceError,
 ) -> Result<(), WorkspaceError> {
     let error_json = error_document(primary);
@@ -1291,10 +1283,10 @@ fn rollback_creation(
         }
     }
 
-    if let Some(lease) = lease {
-        match release_workspace_lease(connection, &context.workspace_id, &lease.id) {
+    if let Some(claim) = claim {
+        match release_workspace_claim(connection, &context.workspace_id, &claim.id) {
             Ok(true) => {}
-            Ok(false) => errors.push("automatic checkout lease was not found".to_owned()),
+            Ok(false) => errors.push("automatic workspace claim was not found".to_owned()),
             Err(error) => errors.push(error.to_string()),
         }
     }
@@ -1355,12 +1347,12 @@ pub enum WorkspaceError {
     OperationActive(WorkspaceId),
     NotAutomatic(CanonicalPath),
     NotReusable(CanonicalPath),
-    LeaseActive(WorkspaceId),
-    ProvisioningHasCheckoutId(CheckoutId),
+    ClaimActive(WorkspaceId),
+    ProvisioningHasClaimId(ClaimId),
     GeneratedPathUnavailable(PathBuf),
-    RenewalRequiresCheckoutId,
-    CheckoutNotFound(CheckoutId),
-    LeaseExpired(CheckoutId),
+    RenewalRequiresClaimId,
+    ClaimNotFound(ClaimId),
+    ClaimExpired(ClaimId),
     RepositorySetMismatch(WorkspaceId),
     WorkspaceNotFound(CanonicalPath),
     Json(crate::domain::JsonDocumentError),
@@ -1403,33 +1395,30 @@ impl fmt::Display for WorkspaceError {
             Self::NotReusable(path) => {
                 write!(formatter, "automatic workspace is not reusable: {path}")
             }
-            Self::LeaseActive(workspace_id) => {
-                write!(
-                    formatter,
-                    "workspace has an active checkout lease: {workspace_id}"
-                )
+            Self::ClaimActive(workspace_id) => {
+                write!(formatter, "workspace has an active claim: {workspace_id}")
             }
-            Self::ProvisioningHasCheckoutId(checkout_id) => write!(
+            Self::ProvisioningHasClaimId(claim_id) => write!(
                 formatter,
-                "automatic provisioning cannot reuse checkout identifier: {checkout_id}"
+                "automatic provisioning cannot reuse claim identifier: {claim_id}"
             ),
             Self::GeneratedPathUnavailable(path) => write!(
                 formatter,
                 "could not allocate a generated workspace path below {}",
                 path.display()
             ),
-            Self::RenewalRequiresCheckoutId => {
-                formatter.write_str("automatic lease renewal requires a checkout identifier")
+            Self::RenewalRequiresClaimId => {
+                formatter.write_str("automatic claim renewal requires a claim identifier")
             }
-            Self::CheckoutNotFound(checkout_id) => {
-                write!(formatter, "checkout lease was not found: {checkout_id}")
+            Self::ClaimNotFound(claim_id) => {
+                write!(formatter, "workspace claim was not found: {claim_id}")
             }
-            Self::LeaseExpired(checkout_id) => {
-                write!(formatter, "checkout lease has expired: {checkout_id}")
+            Self::ClaimExpired(claim_id) => {
+                write!(formatter, "workspace claim has expired: {claim_id}")
             }
             Self::RepositorySetMismatch(workspace_id) => write!(
                 formatter,
-                "checkout repositories do not match workspace pool: {workspace_id}"
+                "repository set does not match workspace pool: {workspace_id}"
             ),
             Self::WorkspaceNotFound(path) => {
                 write!(formatter, "managed workspace was not found: {path}")
@@ -1473,12 +1462,12 @@ impl std::error::Error for WorkspaceError {
             Self::OperationActive(_) => None,
             Self::NotAutomatic(_) => None,
             Self::NotReusable(_) => None,
-            Self::LeaseActive(_) => None,
-            Self::ProvisioningHasCheckoutId(_) => None,
+            Self::ClaimActive(_) => None,
+            Self::ProvisioningHasClaimId(_) => None,
             Self::GeneratedPathUnavailable(_) => None,
-            Self::RenewalRequiresCheckoutId => None,
-            Self::CheckoutNotFound(_) => None,
-            Self::LeaseExpired(_) => None,
+            Self::RenewalRequiresClaimId => None,
+            Self::ClaimNotFound(_) => None,
+            Self::ClaimExpired(_) => None,
             Self::RepositorySetMismatch(_) => None,
             Self::WorkspaceNotFound(_) => None,
             Self::Json(error) => Some(error),
@@ -1636,7 +1625,7 @@ mod tests {
 
         let plan = prepare_automatic(&AutomaticCreateRequest {
             repositories: vec![second.clone(), first.clone()],
-            checkout_id: None,
+            claim_id: None,
         })
         .expect("automatic allocation plan should be prepared");
         let expected_root = CanonicalPath::from_absolute(
@@ -1651,7 +1640,7 @@ mod tests {
             .iter()
             .all(|repository| !repository.head.is_empty()));
         assert_eq!(
-            plan.checkout_id, None,
+            plan.claim_id, None,
             "a new allocation should not carry a renewal identifier"
         );
 
@@ -1665,7 +1654,7 @@ mod tests {
         repository(&source);
         let plan = prepare_automatic(&AutomaticCreateRequest {
             repositories: vec![source.clone()],
-            checkout_id: None,
+            claim_id: None,
         })
         .expect("automatic allocation plan should be prepared");
         let database_path = root.join("state.sqlite");
@@ -1735,17 +1724,13 @@ mod tests {
             candidate.pool_key.expect("candidate pool should exist")
         );
         assert!(
-            crate::storage::find_workspace_lease(&mut connection, &candidate.id)
+            crate::storage::find_workspace_claim(&mut connection, &candidate.id)
                 .expect("lease lookup should succeed")
                 .is_some()
         );
 
-        crate::storage::release_workspace_lease(
-            &mut connection,
-            &candidate.id,
-            &result.checkout_id,
-        )
-        .expect("allocated lease should be releasable");
+        crate::storage::release_workspace_claim(&mut connection, &candidate.id, &result.claim_id)
+            .expect("allocated lease should be releasable");
         crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
             .expect("test worktree should be removable");
         drop(connection);
@@ -1782,7 +1767,7 @@ mod tests {
                 .expect("workspace should exist");
         let mut plan = prepare_automatic(&AutomaticCreateRequest {
             repositories: vec![source],
-            checkout_id: None,
+            claim_id: None,
         })
         .expect("automatic allocation plan should be prepared");
         plan.workspace_root =
@@ -1827,7 +1812,7 @@ mod tests {
     fn checks_out_an_idle_automatic_candidate_and_records_its_lease() {
         let (root, database_path, mut connection, plan, candidate, worktree_path) =
             automatic_candidate_fixture();
-        let result = checkout_automatic_candidate(&mut connection, &plan, &candidate)
+        let result = acquire_automatic_candidate(&mut connection, &plan, &candidate)
             .expect("automatic checkout should succeed");
 
         assert_eq!(result.workspace_path, candidate.canonical_path);
@@ -1835,10 +1820,10 @@ mod tests {
             result.pool_key,
             candidate.pool_key.expect("candidate pool should exist")
         );
-        let lease = crate::storage::find_workspace_lease(&mut connection, &candidate.id)
+        let lease = crate::storage::find_workspace_claim(&mut connection, &candidate.id)
             .expect("lease lookup should succeed")
             .expect("checkout lease should exist");
-        assert_eq!(lease.id, result.checkout_id);
+        assert_eq!(lease.id, result.claim_id);
         assert_eq!(lease.lease_expires_at, result.lease_expires_at);
         assert_eq!(
             crate::storage::find_workspace(&mut connection, &candidate.id)
@@ -1848,7 +1833,7 @@ mod tests {
         );
         let checkout_event = crate::schema::lifecycle_events::table
             .filter(crate::schema::lifecycle_events::entity_id.eq(candidate.id.to_string()))
-            .filter(crate::schema::lifecycle_events::event_type.eq("workspace_checked_out"))
+            .filter(crate::schema::lifecycle_events::event_type.eq("workspace_claimed"))
             .select(crate::storage::EventRow::as_select())
             .first(&mut connection)
             .expect("checkout event should exist");
@@ -1859,12 +1844,8 @@ mod tests {
             OperationState::Succeeded
         );
 
-        crate::storage::release_workspace_lease(
-            &mut connection,
-            &candidate.id,
-            &result.checkout_id,
-        )
-        .expect("checkout lease should be releasable");
+        crate::storage::release_workspace_claim(&mut connection, &candidate.id, &result.claim_id)
+            .expect("checkout lease should be releasable");
         crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
             .expect("test worktree should be removable");
         drop(connection);
@@ -1877,7 +1858,7 @@ mod tests {
         let (root, database_path, mut connection, plan, candidate, worktree_path) =
             automatic_candidate_fixture();
         let dirty_path = worktree_path.join("local-change");
-        let error = checkout_automatic_candidate_with_post_checkout_hook(
+        let error = acquire_automatic_candidate_with_post_acquire_hook(
             &mut connection,
             &plan,
             &candidate,
@@ -1889,7 +1870,7 @@ mod tests {
 
         assert!(matches!(error, WorkspaceError::NotReusable(_)));
         assert!(
-            crate::storage::find_workspace_lease(&mut connection, &candidate.id)
+            crate::storage::find_workspace_claim(&mut connection, &candidate.id)
                 .expect("lease lookup should succeed")
                 .is_none()
         );
@@ -1907,7 +1888,7 @@ mod tests {
         );
         let checkout_event = crate::schema::lifecycle_events::table
             .filter(crate::schema::lifecycle_events::entity_id.eq(candidate.id.to_string()))
-            .filter(crate::schema::lifecycle_events::event_type.eq("workspace_checkout_failed"))
+            .filter(crate::schema::lifecycle_events::event_type.eq("workspace_acquire_failed"))
             .select(crate::storage::EventRow::as_select())
             .first(&mut connection)
             .expect("checkout failure event should exist");
@@ -1929,30 +1910,30 @@ mod tests {
     fn reclaims_an_expired_checkout_before_reusing_the_workspace() {
         let (root, database_path, mut connection, plan, candidate, worktree_path) =
             automatic_candidate_fixture();
-        let old_checkout = checkout_automatic_candidate(&mut connection, &plan, &candidate)
+        let old_checkout = acquire_automatic_candidate(&mut connection, &plan, &candidate)
             .expect("initial automatic checkout should succeed");
-        diesel::update(crate::schema::workspace_leases::table.find(old_checkout.checkout_id))
-            .set(crate::schema::workspace_leases::lease_expires_at.eq(Timestamp::now()))
+        diesel::update(crate::schema::workspace_claims::table.find(old_checkout.claim_id))
+            .set(crate::schema::workspace_claims::lease_expires_at.eq(Timestamp::now()))
             .execute(&mut connection)
             .expect("lease should be expired");
 
-        let new_checkout = checkout_automatic_candidate(&mut connection, &plan, &candidate)
+        let new_checkout = acquire_automatic_candidate(&mut connection, &plan, &candidate)
             .expect("expired checkout should be reclaimed");
-        assert_ne!(new_checkout.checkout_id, old_checkout.checkout_id);
+        assert_ne!(new_checkout.claim_id, old_checkout.claim_id);
         assert_eq!(
-            crate::storage::find_workspace_lease(&mut connection, &candidate.id)
+            crate::storage::find_workspace_claim(&mut connection, &candidate.id)
                 .expect("lease lookup should succeed")
                 .expect("new lease should exist")
                 .id,
-            new_checkout.checkout_id
+            new_checkout.claim_id
         );
         assert!(matches!(
-            crate::storage::find_workspace_lease_by_id(&mut connection, &old_checkout.checkout_id),
+            crate::storage::find_workspace_claim_by_id(&mut connection, &old_checkout.claim_id),
             Err(diesel::result::Error::NotFound)
         ));
         let expired_event = crate::schema::lifecycle_events::table
             .filter(crate::schema::lifecycle_events::entity_id.eq(candidate.id.to_string()))
-            .filter(crate::schema::lifecycle_events::event_type.eq("workspace_checkout_expired"))
+            .filter(crate::schema::lifecycle_events::event_type.eq("workspace_claim_expired"))
             .select(crate::storage::EventRow::as_select())
             .first(&mut connection)
             .expect("lease expiration event should exist");
@@ -1966,12 +1947,12 @@ mod tests {
             .details_json
             .expect("expiration details should exist")
             .to_string()
-            .contains(&old_checkout.checkout_id.to_string()));
+            .contains(&old_checkout.claim_id.to_string()));
 
-        crate::storage::release_workspace_lease(
+        crate::storage::release_workspace_claim(
             &mut connection,
             &candidate.id,
-            &new_checkout.checkout_id,
+            &new_checkout.claim_id,
         )
         .expect("new lease should be releasable");
         crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
@@ -1985,20 +1966,20 @@ mod tests {
     fn removes_an_expired_lease_without_reclaiming_a_dirty_workspace() {
         let (root, database_path, mut connection, plan, candidate, worktree_path) =
             automatic_candidate_fixture();
-        let old_checkout = checkout_automatic_candidate(&mut connection, &plan, &candidate)
+        let old_checkout = acquire_automatic_candidate(&mut connection, &plan, &candidate)
             .expect("initial automatic checkout should succeed");
-        diesel::update(crate::schema::workspace_leases::table.find(old_checkout.checkout_id))
-            .set(crate::schema::workspace_leases::lease_expires_at.eq(Timestamp::now()))
+        diesel::update(crate::schema::workspace_claims::table.find(old_checkout.claim_id))
+            .set(crate::schema::workspace_claims::lease_expires_at.eq(Timestamp::now()))
             .execute(&mut connection)
             .expect("lease should be expired");
         fs::write(worktree_path.join("local-change"), "dirty\n")
             .expect("worktree should become dirty");
 
-        let error = checkout_automatic_candidate(&mut connection, &plan, &candidate)
+        let error = acquire_automatic_candidate(&mut connection, &plan, &candidate)
             .expect_err("dirty workspace should reject expired lease reclaim");
         assert!(matches!(error, WorkspaceError::NotReusable(_)));
         assert!(
-            crate::storage::find_workspace_lease(&mut connection, &candidate.id)
+            crate::storage::find_workspace_claim(&mut connection, &candidate.id)
                 .expect("lease lookup should succeed")
                 .is_none()
         );
@@ -2015,10 +1996,10 @@ mod tests {
             .expect("workspace events should be readable");
         assert!(events
             .iter()
-            .any(|event| event.event_type == "workspace_checkout_expired"));
+            .any(|event| event.event_type == "workspace_claim_expired"));
         let failed_event = events
             .iter()
-            .find(|event| event.event_type == "workspace_checkout_failed")
+            .find(|event| event.event_type == "workspace_acquire_failed")
             .expect("checkout failure event should exist");
         assert_eq!(
             crate::storage::find_operation(&mut connection, &failed_event.operation_id)
@@ -2038,27 +2019,23 @@ mod tests {
     fn protects_an_unexpired_checkout_from_reclamation() {
         let (root, database_path, mut connection, plan, candidate, worktree_path) =
             automatic_candidate_fixture();
-        let checkout = checkout_automatic_candidate(&mut connection, &plan, &candidate)
+        let checkout = acquire_automatic_candidate(&mut connection, &plan, &candidate)
             .expect("initial automatic checkout should succeed");
 
         assert!(matches!(
-            checkout_automatic_candidate(&mut connection, &plan, &candidate),
-            Err(WorkspaceError::LeaseActive(workspace_id)) if workspace_id == candidate.id
+            acquire_automatic_candidate(&mut connection, &plan, &candidate),
+            Err(WorkspaceError::ClaimActive(workspace_id)) if workspace_id == candidate.id
         ));
         assert_eq!(
-            crate::storage::find_workspace_lease(&mut connection, &candidate.id)
+            crate::storage::find_workspace_claim(&mut connection, &candidate.id)
                 .expect("lease lookup should succeed")
                 .expect("original lease should remain active")
                 .id,
-            checkout.checkout_id
+            checkout.claim_id
         );
 
-        crate::storage::release_workspace_lease(
-            &mut connection,
-            &candidate.id,
-            &checkout.checkout_id,
-        )
-        .expect("original lease should be releasable");
+        crate::storage::release_workspace_claim(&mut connection, &candidate.id, &checkout.claim_id)
+            .expect("original lease should be releasable");
         crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
             .expect("test worktree should be removable");
         drop(connection);
@@ -2070,19 +2047,19 @@ mod tests {
     fn checks_in_a_reusable_automatic_workspace_and_updates_its_idle_timestamp() {
         let (root, database_path, mut connection, plan, candidate, worktree_path) =
             automatic_candidate_fixture();
-        let checkout = checkout_automatic_candidate(&mut connection, &plan, &candidate)
+        let checkout = acquire_automatic_candidate(&mut connection, &plan, &candidate)
             .expect("automatic checkout should succeed");
 
-        let result = checkin_automatic(
+        let result = release_automatic_workspace(
             &mut connection,
             &candidate.canonical_path,
-            checkout.checkout_id,
+            checkout.claim_id,
         )
         .expect("automatic checkin should succeed");
         assert_eq!(result.workspace_path, candidate.canonical_path);
-        assert_eq!(result.checkout_id, checkout.checkout_id);
+        assert_eq!(result.claim_id, checkout.claim_id);
         assert!(
-            crate::storage::find_workspace_lease(&mut connection, &candidate.id)
+            crate::storage::find_workspace_claim(&mut connection, &candidate.id)
                 .expect("lease lookup should succeed")
                 .is_none()
         );
@@ -2098,14 +2075,14 @@ mod tests {
         );
         let checkin_event = crate::schema::lifecycle_events::table
             .filter(crate::schema::lifecycle_events::entity_id.eq(candidate.id.to_string()))
-            .filter(crate::schema::lifecycle_events::event_type.eq("workspace_checked_in"))
+            .filter(crate::schema::lifecycle_events::event_type.eq("workspace_released"))
             .select(crate::storage::EventRow::as_select())
             .first(&mut connection)
             .expect("checkin event should exist");
         let operation =
             crate::storage::find_operation(&mut connection, &checkin_event.operation_id)
                 .expect("checkin operation should exist");
-        assert_eq!(operation.kind, "checkin");
+        assert_eq!(operation.kind, "release");
         assert_eq!(operation.state, OperationState::Succeeded);
         assert!(worktree_path.exists());
 
@@ -2120,24 +2097,24 @@ mod tests {
     fn rejects_dirty_checkin_and_retains_the_owning_lease() {
         let (root, database_path, mut connection, plan, candidate, worktree_path) =
             automatic_candidate_fixture();
-        let checkout = checkout_automatic_candidate(&mut connection, &plan, &candidate)
+        let checkout = acquire_automatic_candidate(&mut connection, &plan, &candidate)
             .expect("automatic checkout should succeed");
         fs::write(worktree_path.join("local-change"), "dirty\n")
             .expect("worktree should become dirty");
 
-        let error = checkin_automatic(
+        let error = release_automatic_workspace(
             &mut connection,
             &candidate.canonical_path,
-            checkout.checkout_id,
+            checkout.claim_id,
         )
         .expect_err("dirty checkin should be rejected");
         assert!(matches!(error, WorkspaceError::NotReusable(_)));
         assert_eq!(
-            crate::storage::find_workspace_lease(&mut connection, &candidate.id)
+            crate::storage::find_workspace_claim(&mut connection, &candidate.id)
                 .expect("lease lookup should succeed")
                 .expect("owning lease should remain active")
                 .id,
-            checkout.checkout_id
+            checkout.claim_id
         );
         assert_eq!(
             crate::storage::find_workspace(&mut connection, &candidate.id)
@@ -2147,7 +2124,7 @@ mod tests {
         );
         let rejected_event = crate::schema::lifecycle_events::table
             .filter(crate::schema::lifecycle_events::entity_id.eq(candidate.id.to_string()))
-            .filter(crate::schema::lifecycle_events::event_type.eq("workspace_checkin_rejected"))
+            .filter(crate::schema::lifecycle_events::event_type.eq("workspace_release_rejected"))
             .select(crate::storage::EventRow::as_select())
             .first(&mut connection)
             .expect("checkin rejection event should exist");
@@ -2158,12 +2135,8 @@ mod tests {
             OperationState::Failed
         );
 
-        crate::storage::release_workspace_lease(
-            &mut connection,
-            &candidate.id,
-            &checkout.checkout_id,
-        )
-        .expect("dirty lease should be releasable for test cleanup");
+        crate::storage::release_workspace_claim(&mut connection, &candidate.id, &checkout.claim_id)
+            .expect("dirty lease should be releasable for test cleanup");
         crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
             .expect("dirty test worktree should be removable");
         drop(connection);
@@ -2172,31 +2145,27 @@ mod tests {
     }
 
     #[test]
-    fn rejects_checkin_with_a_wrong_checkout_identifier() {
+    fn rejects_checkin_with_a_wrong_claim_identifier() {
         let (root, database_path, mut connection, plan, candidate, worktree_path) =
             automatic_candidate_fixture();
-        let checkout = checkout_automatic_candidate(&mut connection, &plan, &candidate)
+        let checkout = acquire_automatic_candidate(&mut connection, &plan, &candidate)
             .expect("automatic checkout should succeed");
-        let wrong_checkout_id = CheckoutId::new();
+        let wrong_claim_id = ClaimId::new();
 
         assert!(matches!(
-            checkin_automatic(&mut connection, &candidate.canonical_path, wrong_checkout_id),
-            Err(WorkspaceError::CheckoutNotFound(checkout_id)) if checkout_id == wrong_checkout_id
+            release_automatic_workspace(&mut connection, &candidate.canonical_path, wrong_claim_id),
+            Err(WorkspaceError::ClaimNotFound(claim_id)) if claim_id == wrong_claim_id
         ));
         assert_eq!(
-            crate::storage::find_workspace_lease(&mut connection, &candidate.id)
+            crate::storage::find_workspace_claim(&mut connection, &candidate.id)
                 .expect("lease lookup should succeed")
                 .expect("original lease should remain active")
                 .id,
-            checkout.checkout_id
+            checkout.claim_id
         );
 
-        crate::storage::release_workspace_lease(
-            &mut connection,
-            &candidate.id,
-            &checkout.checkout_id,
-        )
-        .expect("original lease should be releasable");
+        crate::storage::release_workspace_claim(&mut connection, &candidate.id, &checkout.claim_id)
+            .expect("original lease should be releasable");
         crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
             .expect("test worktree should be removable");
         drop(connection);
@@ -2212,7 +2181,7 @@ mod tests {
         let workspace_root = root.join("managed");
         let mut plan = prepare_automatic(&AutomaticCreateRequest {
             repositories: vec![source.clone()],
-            checkout_id: None,
+            claim_id: None,
         })
         .expect("automatic allocation plan should be prepared");
         plan.workspace_root = CanonicalPath::from_absolute(workspace_root.clone())
@@ -2266,10 +2235,10 @@ mod tests {
         assert_eq!(repositories[0].state, RepoWorktreeState::Attached);
         assert!(repositories[0].worktree_path.as_path().is_dir());
 
-        let lease = crate::storage::find_workspace_lease(&mut connection, &workspace.id)
+        let lease = crate::storage::find_workspace_claim(&mut connection, &workspace.id)
             .expect("lease lookup should succeed")
             .expect("provisioned workspace should be checked out");
-        assert_eq!(lease.id, result.checkout_id);
+        assert_eq!(lease.id, result.claim_id);
         let operation = crate::schema::operations::table
             .filter(crate::schema::operations::workspace_id.eq(workspace.id))
             .select(crate::storage::OperationRow::as_select())
@@ -2280,15 +2249,11 @@ mod tests {
             crate::storage::list_events_for_operation(&mut connection, &operation.id)
                 .expect("provisioning events should be readable")
                 .iter()
-                .any(|event| event.event_type == "workspace_checked_out")
+                .any(|event| event.event_type == "workspace_claimed")
         );
 
-        crate::storage::release_workspace_lease(
-            &mut connection,
-            &workspace.id,
-            &result.checkout_id,
-        )
-        .expect("provisioning lease should be releasable");
+        crate::storage::release_workspace_claim(&mut connection, &workspace.id, &result.claim_id)
+            .expect("provisioning lease should be releasable");
         crate::git::remove_worktree(
             &CanonicalPath::resolve(&source).expect("source repository should resolve"),
             repositories[0].worktree_path.as_path(),
@@ -2309,7 +2274,7 @@ mod tests {
         let workspace_root = root.join("managed");
         let mut plan = prepare_automatic(&AutomaticCreateRequest {
             repositories: vec![first.clone(), second.clone()],
-            checkout_id: None,
+            claim_id: None,
         })
         .expect("automatic allocation plan should be prepared");
         plan.workspace_root =
@@ -2341,7 +2306,7 @@ mod tests {
         );
         assert_eq!(workspace.state, WorkspaceState::Failed);
         assert!(
-            crate::storage::find_workspace_lease(&mut connection, &workspace.id)
+            crate::storage::find_workspace_claim(&mut connection, &workspace.id)
                 .expect("lease lookup should succeed")
                 .is_none()
         );
@@ -2379,43 +2344,38 @@ mod tests {
     fn renews_an_automatic_checkout_with_the_same_identifier() {
         let (root, database_path, mut connection, plan, candidate, worktree_path) =
             automatic_candidate_fixture();
-        let checkout = checkout_automatic_candidate(&mut connection, &plan, &candidate)
+        let checkout = acquire_automatic_candidate(&mut connection, &plan, &candidate)
             .expect("automatic checkout should succeed");
-        let original_expiry = crate::storage::find_workspace_lease(&mut connection, &candidate.id)
+        let original_expiry = crate::storage::find_workspace_claim(&mut connection, &candidate.id)
             .expect("lease lookup should succeed")
             .expect("checkout lease should exist")
             .lease_expires_at;
         let mut renewal_plan = plan.clone();
-        renewal_plan.checkout_id = Some(checkout.checkout_id);
+        renewal_plan.claim_id = Some(checkout.claim_id);
 
         let renewed = renew_automatic(&mut connection, &renewal_plan)
             .expect("automatic checkout renewal should succeed");
         assert_eq!(renewed.workspace_path, candidate.canonical_path);
         assert_eq!(renewed.pool_key, checkout.pool_key);
-        assert_eq!(renewed.checkout_id, checkout.checkout_id);
+        assert_eq!(renewed.claim_id, checkout.claim_id);
         assert!(renewed.lease_expires_at > original_expiry);
-        let lease =
-            crate::storage::find_workspace_lease_by_id(&mut connection, &checkout.checkout_id)
-                .expect("renewed lease should exist");
+        let lease = crate::storage::find_workspace_claim_by_id(&mut connection, &checkout.claim_id)
+            .expect("renewed lease should exist");
         assert_eq!(lease.lease_expires_at, renewed.lease_expires_at);
         let renewal_event = crate::schema::lifecycle_events::table
             .filter(crate::schema::lifecycle_events::entity_id.eq(candidate.id.to_string()))
-            .filter(crate::schema::lifecycle_events::event_type.eq("workspace_checkout_renewed"))
+            .filter(crate::schema::lifecycle_events::event_type.eq("workspace_claim_renewed"))
             .select(crate::storage::EventRow::as_select())
             .first(&mut connection)
             .expect("renewal event should exist");
         let operation =
             crate::storage::find_operation(&mut connection, &renewal_event.operation_id)
                 .expect("renewal operation should exist");
-        assert_eq!(operation.kind, "checkout_renew");
+        assert_eq!(operation.kind, "claim_renew");
         assert_eq!(operation.state, OperationState::Succeeded);
 
-        crate::storage::release_workspace_lease(
-            &mut connection,
-            &candidate.id,
-            &checkout.checkout_id,
-        )
-        .expect("renewed lease should be releasable");
+        crate::storage::release_workspace_claim(&mut connection, &candidate.id, &checkout.claim_id)
+            .expect("renewed lease should be releasable");
         crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
             .expect("test worktree should be removable");
         drop(connection);
@@ -2427,10 +2387,10 @@ mod tests {
     fn renews_an_automatic_checkout_after_the_configured_root_changes() {
         let (root, database_path, mut connection, plan, candidate, worktree_path) =
             automatic_candidate_fixture();
-        let checkout = checkout_automatic_candidate(&mut connection, &plan, &candidate)
+        let checkout = acquire_automatic_candidate(&mut connection, &plan, &candidate)
             .expect("automatic checkout should succeed");
         let mut renewal_plan = plan;
-        renewal_plan.checkout_id = Some(checkout.checkout_id);
+        renewal_plan.claim_id = Some(checkout.claim_id);
         renewal_plan.workspace_root = CanonicalPath::from_absolute(root.join("new-managed"))
             .expect("replacement workspace root should be absolute");
 
@@ -2439,12 +2399,8 @@ mod tests {
         assert_eq!(renewed.workspace_path, candidate.canonical_path);
         assert_eq!(renewed.pool_key, checkout.pool_key);
 
-        crate::storage::release_workspace_lease(
-            &mut connection,
-            &candidate.id,
-            &checkout.checkout_id,
-        )
-        .expect("renewed lease should be releasable");
+        crate::storage::release_workspace_claim(&mut connection, &candidate.id, &checkout.claim_id)
+            .expect("renewed lease should be releasable");
         crate::git::remove_worktree(&renewal_plan.repositories[0].source_path, &worktree_path)
             .expect("test worktree should be removable");
         drop(connection);
@@ -2456,13 +2412,13 @@ mod tests {
     fn rejects_checkout_renewal_for_a_different_repository_set() {
         let (root, database_path, mut connection, plan, candidate, worktree_path) =
             automatic_candidate_fixture();
-        let checkout = checkout_automatic_candidate(&mut connection, &plan, &candidate)
+        let checkout = acquire_automatic_candidate(&mut connection, &plan, &candidate)
             .expect("automatic checkout should succeed");
         let other_source = root.join("other-source");
         repository(&other_source);
         let mut renewal_plan = prepare_automatic(&AutomaticCreateRequest {
             repositories: vec![other_source],
-            checkout_id: Some(checkout.checkout_id),
+            claim_id: Some(checkout.claim_id),
         })
         .expect("different repository set should be inspectable");
         renewal_plan.workspace_root = plan.workspace_root.clone();
@@ -2472,19 +2428,15 @@ mod tests {
             Err(WorkspaceError::RepositorySetMismatch(workspace_id)) if workspace_id == candidate.id
         ));
         assert_eq!(
-            crate::storage::find_workspace_lease(&mut connection, &candidate.id)
+            crate::storage::find_workspace_claim(&mut connection, &candidate.id)
                 .expect("lease lookup should succeed")
                 .expect("original lease should remain active")
                 .id,
-            checkout.checkout_id
+            checkout.claim_id
         );
 
-        crate::storage::release_workspace_lease(
-            &mut connection,
-            &candidate.id,
-            &checkout.checkout_id,
-        )
-        .expect("original lease should be releasable");
+        crate::storage::release_workspace_claim(&mut connection, &candidate.id, &checkout.claim_id)
+            .expect("original lease should be releasable");
         crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
             .expect("test worktree should be removable");
         drop(connection);
@@ -2496,31 +2448,27 @@ mod tests {
     fn rejects_renewal_of_an_expired_checkout_without_releasing_it() {
         let (root, database_path, mut connection, plan, candidate, worktree_path) =
             automatic_candidate_fixture();
-        let checkout = checkout_automatic_candidate(&mut connection, &plan, &candidate)
+        let checkout = acquire_automatic_candidate(&mut connection, &plan, &candidate)
             .expect("automatic checkout should succeed");
-        diesel::update(crate::schema::workspace_leases::table.find(checkout.checkout_id))
-            .set(crate::schema::workspace_leases::lease_expires_at.eq(Timestamp::now()))
+        diesel::update(crate::schema::workspace_claims::table.find(checkout.claim_id))
+            .set(crate::schema::workspace_claims::lease_expires_at.eq(Timestamp::now()))
             .execute(&mut connection)
             .expect("lease should be expired");
         let mut renewal_plan = plan;
-        renewal_plan.checkout_id = Some(checkout.checkout_id);
+        renewal_plan.claim_id = Some(checkout.claim_id);
 
         assert!(matches!(
             renew_automatic(&mut connection, &renewal_plan),
-            Err(WorkspaceError::LeaseExpired(checkout_id)) if checkout_id == checkout.checkout_id
+            Err(WorkspaceError::ClaimExpired(claim_id)) if claim_id == checkout.claim_id
         ));
         assert!(
-            crate::storage::find_workspace_lease(&mut connection, &candidate.id)
+            crate::storage::find_workspace_claim(&mut connection, &candidate.id)
                 .expect("lease lookup should succeed")
                 .is_some()
         );
 
-        crate::storage::release_workspace_lease(
-            &mut connection,
-            &candidate.id,
-            &checkout.checkout_id,
-        )
-        .expect("expired lease should be releasable for test cleanup");
+        crate::storage::release_workspace_claim(&mut connection, &candidate.id, &checkout.claim_id)
+            .expect("expired lease should be releasable for test cleanup");
         crate::git::remove_worktree(&renewal_plan.repositories[0].source_path, &worktree_path)
             .expect("test worktree should be removable");
         drop(connection);
@@ -2679,12 +2627,12 @@ mod tests {
             WorkspaceError::OperationActive(WorkspaceId::new()),
             WorkspaceError::NotAutomatic(path.clone()),
             WorkspaceError::NotReusable(path.clone()),
-            WorkspaceError::LeaseActive(WorkspaceId::new()),
-            WorkspaceError::ProvisioningHasCheckoutId(CheckoutId::new()),
+            WorkspaceError::ClaimActive(WorkspaceId::new()),
+            WorkspaceError::ProvisioningHasClaimId(ClaimId::new()),
             WorkspaceError::GeneratedPathUnavailable(path.as_path().to_owned()),
-            WorkspaceError::RenewalRequiresCheckoutId,
-            WorkspaceError::CheckoutNotFound(CheckoutId::new()),
-            WorkspaceError::LeaseExpired(CheckoutId::new()),
+            WorkspaceError::RenewalRequiresClaimId,
+            WorkspaceError::ClaimNotFound(ClaimId::new()),
+            WorkspaceError::ClaimExpired(ClaimId::new()),
             WorkspaceError::RepositorySetMismatch(WorkspaceId::new()),
             WorkspaceError::WorkspaceNotFound(path.clone()),
             WorkspaceError::Json(JsonDocument::parse("not json").unwrap_err()),

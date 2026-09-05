@@ -47,16 +47,19 @@ generated path below its managed workspace directory:
 
 ```sh
 trees create --repo /path/to/api --repo /path/to/web
-trees create --repo /path/to/api --repo /path/to/web --checkout-id CHECKOUT_ID
-trees checkin /absolute/path/to/workspace --checkout-id CHECKOUT_ID
+trees create --repo /path/to/api --repo /path/to/web --claim-id CLAIM_ID
+trees checkin /absolute/path/to/workspace --claim-id CLAIM_ID
 ```
 
 The automatic command prints Bash assignments that can be captured by a shell:
-`WORKSPACE_PATH`, `POOL_KEY`, `CHECKOUT_ID`, and `LEASE_EXPIRES_AT`. Use
-`--json` for a single JSON object instead. Keep the checkout ID with the caller
-that owns the workspace; pass it to renew the 24-hour lease or to check in.
-Checkin retains the lease when Git reports dirty, missing, prunable, diverged,
-or failed worktrees, so the owner can repair the workspace before returning it.
+`WORKSPACE_PATH`, `POOL_KEY`, `CLAIM_ID`, and `LEASE_EXPIRES_AT`. Use `--json`
+for a single JSON object instead. Keep the claim ID with the caller that owns
+the workspace; pass it to renew the 24-hour claim or to check in. The legacy
+`--checkout-id` spelling remains accepted as an alias. Checkin retains the
+claim when Git reports dirty, missing, prunable, diverged, or failed worktrees,
+so the owner can repair the workspace before returning it. If the owner stops
+renewing and the claim expires, a later automatic allocation can recover it
+only after a clean reconciliation.
 `POOL_KEY` is the stable UUID of the repository-set pool; its BLAKE3 hash and
 canonical repository JSON are stored internally for indexed lookup and exact
 matching.
@@ -87,7 +90,7 @@ Normal GC reports automatic, not-checked-out, checked-out, age-eligible, and
 candidate counts before asking for confirmation. `--yes` skips confirmation
 while keeping normal safety checks. `--force` also skips confirmation and may
 remove dirty worktrees or unexpected content, but never bypasses manual,
-lease, operation, root-containment, or repository-identity guards.
+claim, operation, root-containment, or repository-identity guards.
 
 Launch an interactive Codex session for a managed workspace:
 
@@ -162,6 +165,6 @@ See the [contributing guide](CONTRIBUTING.md) for the development workflow and t
 ## Current Scope
 
 The current CLI provides manual and automatic workspace creation, explicit
-checkout renewal and checkin, configured automatic workspace roots, and
+claim renewal and checkin, configured automatic workspace roots, and
 time-bounded automatic GC. Branch selection, repair, and user-facing status
 or history commands are not part of the current command surface.

@@ -26,11 +26,11 @@ diesel::table! {
 }
 
 diesel::table! {
-    workspace_leases (id) {
+    workspace_claims (id) {
         id -> Text,
         workspace_id -> Text,
         owner_id -> Text,
-        checked_out_at -> Text,
+        claimed_at -> Text,
         lease_expires_at -> Text,
         last_heartbeat_at -> Text,
     }
@@ -99,7 +99,7 @@ diesel::joinable!(lifecycle_events -> operations (operation_id));
 diesel::joinable!(operations -> workspaces (workspace_id));
 diesel::joinable!(repo_worktrees -> workspaces (workspace_id));
 diesel::joinable!(repo_worktrees -> origin_repositories (origin_repository_id));
-diesel::joinable!(workspace_leases -> workspaces (workspace_id));
+diesel::joinable!(workspace_claims -> workspaces (workspace_id));
 diesel::joinable!(workspace_pool_repositories -> workspace_pools (pool_id));
 diesel::joinable!(workspace_pool_repositories -> origin_repositories (repository_id));
 diesel::joinable!(workspaces -> workspace_pools (pool_key));
@@ -109,7 +109,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     origin_repositories,
     operations,
     repo_worktrees,
-    workspace_leases,
+    workspace_claims,
     workspace_pool_repositories,
     workspace_pools,
     workspaces,

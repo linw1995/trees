@@ -5,14 +5,14 @@ use diesel::serialize::{self, IsNull, Output, ToSql};
 use diesel::sql_types::Text;
 use diesel::sqlite::Sqlite;
 
+use crate::claim::WorkspaceClaim;
 use crate::domain::{
-    CanonicalPath, CheckoutId, EventId, JsonDocument, OperationId, OperationState,
-    OriginRepositoryId, PoolId, RepoWorktreeId, RepoWorktreeState, Timestamp, WorkspaceId,
-    WorkspaceManagementMode, WorkspaceState,
+    CanonicalPath, ClaimId, EventId, JsonDocument, OperationId, OperationState, OriginRepositoryId,
+    PoolId, RepoWorktreeId, RepoWorktreeState, Timestamp, WorkspaceId, WorkspaceManagementMode,
+    WorkspaceState,
 };
-use crate::lease::WorkspaceLease;
 use crate::schema::{
-    lifecycle_events, operations, origin_repositories, repo_worktrees, workspace_leases,
+    lifecycle_events, operations, origin_repositories, repo_worktrees, workspace_claims,
     workspace_pool_repositories, workspace_pools, workspaces,
 };
 
@@ -42,7 +42,7 @@ impl_text_codec!(OriginRepositoryId);
 impl_text_codec!(RepoWorktreeId);
 impl_text_codec!(OperationId);
 impl_text_codec!(EventId);
-impl_text_codec!(CheckoutId);
+impl_text_codec!(ClaimId);
 impl_text_codec!(WorkspaceState);
 impl_text_codec!(WorkspaceManagementMode);
 impl_text_codec!(RepoWorktreeState);
@@ -149,51 +149,52 @@ pub struct NewOriginRepository {
 
 /// Stores the current usage claim for an automatic workspace.
 ///
-/// The row is created by checkout and removed by successful checkin. It is not
-/// a history record; rejected checkin leaves it in place for recovery.
+/// The row is created by acquisition and removed by successful release or
+/// expired-claim recovery. It is not a history record; rejected release leaves
+/// it in place for the current owner to repair and renew.
 #[derive(Debug, Queryable, Selectable, Identifiable)]
-#[diesel(table_name = workspace_leases)]
+#[diesel(table_name = workspace_claims)]
 #[diesel(check_for_backend(Sqlite))]
-pub struct WorkspaceLeaseRow {
-    pub id: CheckoutId,
+pub struct WorkspaceClaimRow {
+    pub id: ClaimId,
     pub workspace_id: WorkspaceId,
     pub owner_id: String,
-    pub checked_out_at: Timestamp,
+    pub claimed_at: Timestamp,
     pub lease_expires_at: Timestamp,
     pub last_heartbeat_at: Timestamp,
 }
 
 #[derive(Debug, Insertable)]
-#[diesel(table_name = workspace_leases)]
-pub struct NewWorkspaceLease {
-    pub id: CheckoutId,
+#[diesel(table_name = workspace_claims)]
+pub struct NewWorkspaceClaim {
+    pub id: ClaimId,
     pub workspace_id: WorkspaceId,
     pub owner_id: String,
-    pub checked_out_at: Timestamp,
+    pub claimed_at: Timestamp,
     pub lease_expires_at: Timestamp,
     pub last_heartbeat_at: Timestamp,
 }
 
-impl From<&WorkspaceLease> for NewWorkspaceLease {
-    fn from(value: &WorkspaceLease) -> Self {
+impl From<&WorkspaceClaim> for NewWorkspaceClaim {
+    fn from(value: &WorkspaceClaim) -> Self {
         Self {
             id: value.id,
             workspace_id: value.workspace_id,
             owner_id: value.owner_id.clone(),
-            checked_out_at: value.checked_out_at.clone(),
+            claimed_at: value.claimed_at.clone(),
             lease_expires_at: value.lease_expires_at.clone(),
             last_heartbeat_at: value.last_heartbeat_at.clone(),
         }
     }
 }
 
-impl From<WorkspaceLeaseRow> for WorkspaceLease {
-    fn from(value: WorkspaceLeaseRow) -> Self {
+impl From<WorkspaceClaimRow> for WorkspaceClaim {
+    fn from(value: WorkspaceClaimRow) -> Self {
         Self {
             id: value.id,
             workspace_id: value.workspace_id,
             owner_id: value.owner_id,
-            checked_out_at: value.checked_out_at,
+            claimed_at: value.claimed_at,
             lease_expires_at: value.lease_expires_at,
             last_heartbeat_at: value.last_heartbeat_at,
         }

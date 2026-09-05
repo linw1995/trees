@@ -8,7 +8,7 @@ use diesel_migrations::MigrationHarness;
 
 use trees::database;
 use trees::domain::{
-    CanonicalPath, EventId, JsonDocument, OperationState, Timestamp, WorkspaceId,
+    CanonicalPath, ClaimId, EventId, JsonDocument, OperationState, Timestamp, WorkspaceId,
     WorkspaceManagementMode, WorkspaceState,
 };
 use trees::storage::{
@@ -49,6 +49,74 @@ fn embedded_migrations_can_be_reverted_and_rerun() {
         .expect("migrated table should be queryable");
 
     assert_eq!(count, 0);
+    drop(connection);
+    fs::remove_file(path).expect("temporary database should be removable");
+}
+
+#[test]
+fn workspace_claim_migration_preserves_liveness_metadata() {
+    let path = database_path();
+    let mut connection = database::connect(&path).expect("database should open");
+    connection
+        .revert_last_migration(database::MIGRATIONS)
+        .expect("claim migration should revert");
+
+    let workspace_id = WorkspaceId::new();
+    let claim_id = ClaimId::new();
+    let workspace_path = CanonicalPath::resolve(".").expect("workspace path should resolve");
+    let claimed_at =
+        Timestamp::parse("2026-01-01T00:00:00Z").expect("claim timestamp should parse");
+    let lease_expires_at = Timestamp::parse("2026-01-02T00:00:00Z").expect("expiry should parse");
+    let last_heartbeat_at =
+        Timestamp::parse("2026-01-01T12:00:00Z").expect("heartbeat should parse");
+
+    diesel::sql_query(
+        "INSERT INTO workspaces (id, canonical_path, state, created_at, updated_at, \
+         last_reconciled_at, management_mode, pool_key, last_checked_in_at, reclaimed_at) \
+         VALUES (?, ?, 'ready', ?, ?, NULL, 'manual', NULL, NULL, NULL)",
+    )
+    .bind::<diesel::sql_types::Text, _>(workspace_id.to_string())
+    .bind::<diesel::sql_types::Text, _>(workspace_path.to_string())
+    .bind::<diesel::sql_types::Text, _>(claimed_at.to_string())
+    .bind::<diesel::sql_types::Text, _>(claimed_at.to_string())
+    .execute(&mut connection)
+    .expect("legacy workspace should be inserted");
+    diesel::sql_query(
+        "INSERT INTO workspace_leases \
+         (id, workspace_id, owner_id, checked_out_at, lease_expires_at, last_heartbeat_at) \
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind::<diesel::sql_types::Text, _>(claim_id.to_string())
+    .bind::<diesel::sql_types::Text, _>(workspace_id.to_string())
+    .bind::<diesel::sql_types::Text, _>("process:legacy")
+    .bind::<diesel::sql_types::Text, _>(claimed_at.to_string())
+    .bind::<diesel::sql_types::Text, _>(lease_expires_at.to_string())
+    .bind::<diesel::sql_types::Text, _>(last_heartbeat_at.to_string())
+    .execute(&mut connection)
+    .expect("legacy workspace lease should be inserted");
+
+    connection
+        .run_pending_migrations(database::MIGRATIONS)
+        .expect("claim migration should apply");
+    let migrated = trees::storage::find_workspace_claim_by_id(&mut connection, &claim_id)
+        .expect("migrated claim should be queryable");
+    assert_eq!(migrated.workspace_id, workspace_id);
+    assert_eq!(migrated.claimed_at, claimed_at);
+    assert_eq!(migrated.lease_expires_at, lease_expires_at);
+    assert_eq!(migrated.last_heartbeat_at, last_heartbeat_at);
+
+    connection
+        .revert_last_migration(database::MIGRATIONS)
+        .expect("claim migration should downgrade");
+    connection
+        .run_pending_migrations(database::MIGRATIONS)
+        .expect("claim migration should rerun");
+    let rerun = trees::storage::find_workspace_claim_by_id(&mut connection, &claim_id)
+        .expect("rerun claim should be queryable");
+    assert_eq!(rerun.claimed_at, claimed_at);
+    assert_eq!(rerun.lease_expires_at, lease_expires_at);
+    assert_eq!(rerun.last_heartbeat_at, last_heartbeat_at);
+
     drop(connection);
     fs::remove_file(path).expect("temporary database should be removable");
 }

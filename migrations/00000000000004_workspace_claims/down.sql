@@ -1,0 +1,34 @@
+PRAGMA foreign_keys = OFF;
+
+CREATE TABLE workspace_leases (
+    id TEXT NOT NULL PRIMARY KEY CHECK (length(id) = 36),
+    workspace_id TEXT NOT NULL UNIQUE REFERENCES workspaces(id),
+    owner_id TEXT NOT NULL,
+    checked_out_at TEXT NOT NULL,
+    lease_expires_at TEXT NOT NULL,
+    last_heartbeat_at TEXT NOT NULL
+);
+
+INSERT INTO workspace_leases (
+    id,
+    workspace_id,
+    owner_id,
+    checked_out_at,
+    lease_expires_at,
+    last_heartbeat_at
+)
+SELECT
+    id,
+    workspace_id,
+    owner_id,
+    claimed_at,
+    lease_expires_at,
+    last_heartbeat_at
+FROM workspace_claims;
+
+DROP TABLE workspace_claims;
+
+CREATE INDEX workspace_leases_expiry_idx
+    ON workspace_leases (lease_expires_at);
+
+PRAGMA foreign_keys = ON;

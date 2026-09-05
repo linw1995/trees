@@ -1,0 +1,2 @@
+# Replace the workspace access lease with a persistent usage claim.
+run_in_transaction = false
