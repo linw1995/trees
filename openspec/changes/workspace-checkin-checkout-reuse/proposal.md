@@ -7,15 +7,15 @@ record for the same path is rejected. Deleting and recreating the worktrees
 would make reuse destructive and would lose the stable workspace identity
 already used by Codex integration and lifecycle tracking.
 
-An explicit acquire/release protocol makes an existing workspace a reusable
-resource: an automatic request is keyed by its repository directories, one
-caller holds the selected slot at a time through a time-bounded workspace
-claim, and a workspace is returned to the pool only when its worktrees are safe
-to hand to the next caller. The claim is persistent ownership state, not a
-long-lived SQLite transaction; its expiry and heartbeat metadata provide
-automatic recovery when the owner disappears. A separate management mode
-distinguishes workspaces that Trees may automatically reclaim from workspaces
-whose retention remains a manual responsibility.
+An explicit acquire/release protocol makes an existing workspace reusable. An
+automatic request is keyed by its repository directories. A caller holds the
+selected slot through a time-bounded workspace claim. The workspace returns to
+the pool only when its worktrees are safe to hand to the next caller. The claim
+is a persistent ownership state for this workspace, not a long-lived SQLite
+transaction. Its expiry
+and heartbeat metadata provide automatic recovery when the owner disappears. A
+separate management mode distinguishes workspaces that Trees may automatically
+reclaim from workspaces whose retention remains a manual responsibility.
 
 ## What Changes
 
@@ -74,7 +74,7 @@ whose retention remains a manual responsibility.
 
 - `workspace-management`: Infer automatic/manual management from the
   repository-only versus explicit-path creation shape while preserving the
-  direct-child worktree layout.
+  direct-child worktree structure.
 - `workspace-lifecycle`: Extend lifecycle persistence and reconciliation with
   management modes, active workspace claims, operation leases, dirty/reclaimed
   states, and GC timestamps.
@@ -94,5 +94,5 @@ whose retention remains a manual responsibility.
   reconciliation workflow without introducing runtime raw SQL or a new
   database backend.
 - Adds workspace reuse integration tests and concise CLI documentation.
-- Does not change the physical direct-child worktree layout or automatically
-  alter existing worktree contents.
+- Does not change the physical direct-child worktree structure or automatically
+  change existing worktree contents.

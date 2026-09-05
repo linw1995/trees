@@ -19,7 +19,7 @@ short-transaction, and boundary-reconciliation discipline.
 
 **Goals:**
 
-- Make a previously created workspace explicitly borrowable and returnable.
+- Make a previously created workspace explicitly reusable and returnable.
 - Distinguish `automatic` workspaces, which Trees may reclaim, from `manual`
   workspaces, which are never selected by GC.
 - Enforce one active workspace claim per workspace across processes.
@@ -32,7 +32,7 @@ short-transaction, and boundary-reconciliation discipline.
 - Reclaim only idle automatic workspaces after a caller-supplied age threshold,
   while retaining database tombstones and lifecycle events.
 - Preserve the existing workspace identity, Git worktrees, lifecycle history,
-  manual create behavior, and direct-child worktree layout.
+  manual creation behavior, and direct-child worktree structure.
 
 **Non-Goals:**
 
@@ -69,7 +69,7 @@ New `trees create` calls without a positional workspace path are
 `automatic`; calls with an explicit path are `manual`. The command shape is
 the mode discriminator, so no redundant `--mode` flag is accepted. Explicit
 paths opt out of automated allocation, acquire/release, and retention. Legacy
-rows created by the old explicit-path command are backfilled as `manual`
+rows created by the old explicit-path command are filled in as `manual`
 because their intended retention policy cannot be inferred safely; a future
 explicit adopt operation can opt such a row into a pool. GC remains opt-in per
 invocation and requires an explicit age threshold.
@@ -101,7 +101,7 @@ The workspace claim table stores the current usage claim only:
 - `last_heartbeat_at`: the last successful acquisition or renewal time.
 
 The claim remains while the caller uses the workspace, but it does not hold a
-SQLite transaction or database lock. The default claim duration is 24 hours.
+database transaction or database lock. The default claim duration is 24 hours.
 The owner may renew it through a short transaction before it expires. If the
 owner disappears, a later automatic acquire may replace the claim only after
 its expiry and a fresh reconciliation proves that the workspace is reusable.
@@ -112,7 +112,8 @@ workspace and repo-worktree IDs never change when a claim is reused.
 
 Operation rows retain their own owner, expiry, and heartbeat fields. Those
 operation leases protect a mutation while Git or filesystem work runs outside
-SQLite transactions; they are the only leases renewed by the implementation.
+SQLite transactions. Workspace claims and operation leases are renewed
+independently through short transactions.
 
 ### Resolve the Managed Workspace Root
 
@@ -170,7 +171,7 @@ or claim, or fail the live reusable-worktree predicate.
 
 If multiple candidates remain, Trees selects the least-recently-used slot by
 `last_checked_in_at`, falls back to `created_at` for a never-used slot, and
-uses the workspace UUID as a deterministic tie breaker. Claim acquisition is
+uses the workspace UUID as a deterministic tiebreaker. Claim acquisition is
 the final atomic race check; if another process wins, allocation retries the
 next candidate.
 
@@ -191,22 +192,22 @@ allocation, automated claiming, and GC; manual callers continue using the
 existing workspace/Codex paths without automated claims.
 
 The automatic command prints the allocated workspace path, repository-set
-pool key, and claim identifier so an orchestrator can persist the allocation
-and pass the identifier to later checkin calls. The identifier is a
-coordination token, not a security boundary; local filesystem and database
-permissions remain authoritative.
+pool key, claim identifier, and claim expiry so an orchestrator can persist the
+allocation and pass the identifier to later renewal or checkin calls. The
+identifier is a coordination token, not a security boundary; local filesystem
+and database permissions remain authoritative.
 
 ### Require a Reusable Git Snapshot
 
 Acquire and release both reconcile the workspace against Git. A worktree is
-reusable only when all of the following are true:
+reusable only when all these conditions are true:
 
-- the source repository common directory still matches the persisted
+- The source repository common directory still matches the persisted
   repository identity;
-- the persisted worktree path exists and is still listed by the source
+- The persisted worktree path exists and is still listed by the source
   repository;
-- the worktree is not prunable and is a detached worktree;
-- its `HEAD` equals the persisted `last_head`; and
+- The worktree is not prunable and is a detached worktree;
+- Its `HEAD` equals the persisted `last_head`; and
 - `git status --porcelain=v1 --untracked-files=all` reports no staged,
   unstaged, or untracked changes. Ignored files are not treated as edits.
 
@@ -236,7 +237,7 @@ short intent/result updates, and the claim is returned to the caller only after
 creation reaches `ready`.
 
 The claim remains in the database while the caller uses the workspace, but it
-does not hold a SQLite transaction or database lock. Its 24-hour expiry is a
+does not hold a database transaction or database lock. Its 24-hour expiry is a
 recovery deadline, not a database lock timeout. The owner may renew an
 unexpired claim through a short owner-checked transaction; renewal does not
 run Git or filesystem work and does not change the workspace snapshot. If
@@ -285,17 +286,16 @@ workspace claim.
 cutoff from the current UTC time. A workspace is idle when its
 `last_checked_in_at`, or `created_at` when it has never been checked in, is
 strictly older than the cutoff. GC considers only `automatic` workspaces in
-the current resolved workspace-root namespace. An active claim or operation
-always skips the candidate; GC does not infer claim abandonment from process
-liveness and does not override an active claim.
+the current resolved workspace-root namespace. An unexpired claim or active
+operation always skips the candidate. An expired claim is reported as stale
+and left for automatic acquire to recover after reconciliation; GC does not
+override a claim or infer process liveness.
 
-Before a non-dry-run GC starts, it prints a summary containing the number of
-automatic workspaces, the number currently not checked out (no active claim),
-the number currently checked out, the number matching the
-age threshold, and the number that are safe to reclaim. It then asks for an
-interactive confirmation such as `Reclaim N workspaces? [y/N]`. `--yes`
+Before a non-dry-run GC starts, it prints a summary with the automatic,
+not-checked-out, checked-out, age-qualified, and safe-to-reclaim counts. It
+then asks for confirmation such as `Reclaim N workspaces? [y/N]`. `--yes`
 skips this confirmation but keeps the normal safety filter. `--force` implies
-`--yes` and uses the forced safety policy below. A non-interactive invocation
+`--yes` and uses the forced safety policy below. A noninteractive invocation
 without either flag fails before mutation and tells the caller to inspect with
 `--dry-run`, use `--yes`, or explicitly use `--force`. A dry run prints the
 same counts and candidate reasons without writing SQLite, Git, or the
@@ -309,16 +309,17 @@ detached, at the recorded `HEAD`, clean, present, and non-prunable; dirty,
 missing, diverged, failed, manual, claimed, young, or unexpected-content
 workspaces are skipped and preserved.
 
-`--force` bypasses the confirmation and permits cleanup of age-qualified
-automatic workspaces that are dirty, diverged, missing, prunable, or contain
-unexpected files. It may use `git worktree remove --force` and remove
+`--force` bypasses the confirmation and permits removal of automatic
+workspaces whose idle time is past the threshold, even when they are dirty,
+diverged, missing, prunable, or contain unexpected files. It may use forced
+Git worktree removal and remove
 unexpected content below the target automatic workspace root, so uncommitted
 or untracked data can be destroyed. It SHALL still refuse manual workspaces,
 active claims, active operations, young workspaces, and any path
 whose source repository identity cannot be verified. `--force` does not
 override the configured root-containment or repository-identity guards.
 
-An executing GC creates one `gc` operation per candidate. It removes each
+A GC run creates one `gc` operation per candidate. It removes each
 worktree with a non-forced `git worktree remove` in normal mode or the forced
 variant when `--force` is set, then removes the empty workspace directory (or
 the explicitly authorized unexpected content in forced mode). Only after all
@@ -346,20 +347,22 @@ between those transactions. Access and GC events use `entity_type = workspace`
 and the stable workspace ID; structured details carry claim identifiers, GC
 counts, age cutoffs, and the `forced` marker when applicable.
 
-Operation lease heartbeats are short owner-checked updates made while an
-external step runs. They protect the in-flight operation from premature
-recovery and do not extend a workspace claim. Git reads happen outside SQLite
-transactions. Before returning from automatic acquisition or release, the
-workflow performs a final reconciliation so the operation result is based on
-Git's authoritative metadata rather than a stale database snapshot. Existing
+Claim renewals are short claim-id-checked updates made before the claim
+expires; operation lease heartbeats are short owner-checked updates made while
+an external step runs. They protect their respective ownership intervals and
+do not hold SQLite transactions during Git or filesystem work. Git reads happen
+outside SQLite transactions. Before returning from automatic acquisition or
+release, the workflow performs a final reconciliation so the operation result
+is based on Git's authoritative metadata rather than a stale database
+snapshot. Existing
 `trees codex` behavior remains backward compatible and is not implicitly
 coupled to this claim in this change.
 
 ## Risks / Trade-Offs
 
-- [A caller forgets to release] → Keep the active claim and require an
-  explicit administrative recovery path; do not infer abandonment from process
-  liveness or silently hand the workspace to another caller.
+- [A caller forgets to release] → Let the claim expire, reconcile the physical
+  workspace, and replace it only when the reusable-state predicate succeeds;
+  never hand unsafe state to another caller.
 - [A caller leaves edits in a worktree] → Reject checkin, persist `dirty` or
   `degraded` state, and keep the claim so no data is discarded or shared.
 - [The workspace changes between preflight and final verification] → Keep the

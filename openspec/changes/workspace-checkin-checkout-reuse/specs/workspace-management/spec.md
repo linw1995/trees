@@ -4,13 +4,13 @@
 
 The CLI SHALL support two creation forms. Automatic creation SHALL be
 `trees create --repo <repository-path>...` without a positional workspace path.
-It SHALL resolve a UUID-backed repository-set pool by indexed hash and exact
-canonical repository JSON, reuse a safe idle automatic workspace referencing
-that pool when one exists, and otherwise generate a
-workspace path below the Trees-managed workspace root and provision a new
+It SHALL resolve a repository-set pool backed by a UUID, using an indexed hash
+and exact canonical repository JSON. It SHALL reuse a safe idle automatic
+workspace referencing that pool when one exists. Otherwise, it SHALL generate
+a workspace path below the Trees-managed workspace root and provision a new
 automatic workspace. Manual creation SHALL be `trees create
 <workspace-path> --repo <repository-path>...` and SHALL retain the existing
-direct-child worktree layout and detached initial checkout behavior. The
+  direct-child worktree structure and detached initial worktree behavior. The
 presence of a positional workspace path SHALL be the mode discriminator; no
 additional `--mode` flag is required or accepted.
 
@@ -18,16 +18,16 @@ additional `--mode` flag is required or accepted.
 
 - **WHEN** the caller runs automatic create with repository directories whose
   canonical Git common-directory identities match an idle reusable pool slot
-- **THEN** Trees returns that existing workspace path with a new checkout
+- **THEN** Trees acquires that existing workspace path with a new claim
   identifier without creating another workspace or Git worktree
 
-#### Scenario: Provision When the Pool Has No Safe Slot
+#### Scenario: Provision a New Automatic Slot
 
 - **WHEN** the caller runs automatic create and no reusable automatic workspace
   matches the exact repository set
 - **THEN** Trees generates a path under its managed workspace root, creates the
   direct-child detached worktrees, records the pool UUID, and returns the new
-  workspace already checked out
+  workspace with an active claim
 
 #### Scenario: Create a Manual Workspace
 

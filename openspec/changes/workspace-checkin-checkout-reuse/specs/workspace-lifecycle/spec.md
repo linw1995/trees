@@ -13,7 +13,7 @@ explicit relations to origin repositories, and the source path SHALL be stored
 on the origin repository record rather than copied into each pool relation or
 worktree row. The management mode and pool key SHALL be independent from
 workspace health and active workspace claims. Existing legacy explicit-path
-workspace rows SHALL be backfilled as `manual` when this schema is introduced.
+workspace rows SHALL be filled in as `manual` when this schema is introduced.
 
 #### Scenario: Track an Automatic Workspace Idle Time
 
@@ -81,9 +81,10 @@ current usage claim in a `workspace_claims` table. The table SHALL contain at
 most one row for each workspace, with a UUID v7 claim identifier, workspace
 foreign key, owner identity, claim timestamp, finite expiry, and heartbeat
 timestamp. A workspace with no active claim is unclaimed; a workspace with an
-unexpired active claim is checked out. The claim is persistent usage state
-rather than a SQLite transaction or database lock and remains until its owner
-releases it or its expiry is safely recovered. The default claim duration SHALL
+unexpired active claim is checked out. The claim records persistent usage state
+for the workspace. It is not a database transaction or a database lock and
+remains until its owner releases it or its expiry is safely recovered. The
+default claim duration SHALL
 be 24 hours. Access availability SHALL remain independent from
 `WorkspaceState` so a degraded workspace cannot become an eligible reusable
 workspace merely by having no claim.
@@ -109,7 +110,7 @@ reconciliation proves that the workspace is reusable. The replacement and its
 expired-claim event SHALL be committed in one short SQLite transaction. If the
 workspace is unsafe, the expired claim SHALL be recorded and removed, the
 workspace SHALL remain degraded, and no new claim SHALL be returned. Claim
-renewal SHALL use a short owner-checked transaction and SHALL not run Git or
+renewal SHALL use a short claim-identifier-checked transaction and SHALL not run Git or
 filesystem work inside that transaction.
 
 #### Scenario: Recover a Crashed Owner
@@ -146,7 +147,7 @@ fingerprint SHALL be idempotent.
 ### Requirement: Serialize Access Operations with Workspace Operations
 
 Acquire and release SHALL use the existing per-workspace
-operation serialization. A request SHALL NOT replace an active claim or run
+operation serialization. A request SHALL NOT replace an unexpired claim or run
 concurrently with another non-terminal workspace operation. Claim changes,
 operation transitions, and access lifecycle events SHALL use the existing
 short Diesel transaction boundaries. Git and filesystem work SHALL occur
@@ -177,7 +178,7 @@ renewal SHALL be one short metadata update and SHALL NOT span external work.
 ### Requirement: Renew Operation Leases During External Work
 
 Each non-terminal workspace operation SHALL carry an owner identity, an
-expiry, and a heartbeat timestamp. A long-running Git or filesystem step MAY
+expiration time, and a heartbeat timestamp. A long-running Git or filesystem step MAY
 renew the operation lease through an owner-checked short transaction. Operation
 lease renewal SHALL protect the in-flight mutation from premature recovery;
 it SHALL NOT create or extend a workspace claim. An expired operation MAY be

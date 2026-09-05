@@ -75,7 +75,7 @@ automated retention.
 
 - **WHEN** the lifecycle migration adds the management mode to existing Trees
   workspaces created through the legacy explicit-path form
-- **THEN** existing rows are backfilled as `manual` without changing Git
+- **THEN** existing rows are filled in as `manual` without changing Git
   state, deleting files, or creating an active claim
 
 ### Requirement: Allocate an Automatic Workspace from a Repository Pool
@@ -100,15 +100,15 @@ and claim expiry.
 - **THEN** the command claims that existing workspace, returns its path and a
   claim identifier, and does not create another workspace or worktree
 
-#### Scenario: Select the Least Recently Checked-In Slot
+#### Scenario: Select the Oldest Idle Slot
 
 - **WHEN** multiple safe automatic workspaces have the exact repository-set
   pool key
 - **THEN** allocation selects the oldest `last_checked_in_at`, falls back to
   `created_at` for never-checked-in workspaces, and uses workspace UUID order
-  as the deterministic tie breaker
+  as the deterministic tiebreaker
 
-#### Scenario: Provision When No Safe Slot Exists
+#### Scenario: Provision a New Slot
 
 - **WHEN** no idle automatic workspace matches the exact repository set
 - **THEN** Trees generates a path below its managed workspace root, creates
@@ -137,10 +137,11 @@ workspace. The claim SHALL contain a UUID v7 claim identifier, the workspace
 ID, an owner identity, a claim timestamp, a finite expiry, and a heartbeat
 timestamp. The workspace ID SHALL be unique in the active claim table. A
 workspace with no active claim is unclaimed; a workspace with an unexpired
-active claim is unavailable for another acquisition. The claim is persistent
-usage state, not a SQLite transaction or database lock, and SHALL remain until
-its owner releases it or its expiry is safely recovered. The default claim
-duration SHALL be 24 hours. The claim identifier SHALL be required to renew or
+active claim is unavailable for another acquisition. The claim records
+persistent usage state for the workspace. It is not a database transaction or a
+database lock. It SHALL remain until its owner releases it or its expiry is
+safely recovered. The default claim duration SHALL be 24 hours. The claim
+identifier SHALL be required to renew or
 release the claim and SHALL be treated as a local coordination token rather
 than a security credential.
 
@@ -162,8 +163,8 @@ than a security credential.
 
 Automatic create SHALL accept the current `--claim-id` for the matching
 repository set and renew that unexpired claim without mutating Git. Renewal
-SHALL extend the claim expiry by the configured claim duration, whose default
-SHALL be 24 hours, and SHALL use a short owner-checked SQLite transaction.
+SHALL extend the claim expiry by the fixed 24-hour claim duration and SHALL use
+a short claim-identifier-checked SQLite transaction.
 Renewal SHALL NOT hold a transaction during Git or filesystem work. An
 unexpired claim SHALL never be replaced. An expired claim MAY be reclaimed by
 automatic allocation only after fresh reconciliation proves that every managed
@@ -193,13 +194,14 @@ out but SHALL not replace it or remove its workspace.
 
 ### Requirement: Require a Reusable Worktree Snapshot
 
-A managed repo worktree SHALL be reusable only when its source repository
-identity and canonical worktree path match the persisted association, the
-worktree is present and not prunable, the worktree is detached, its `HEAD`
-matches `last_head`, and `git status --porcelain=v1 --untracked-files=all`
-reports no staged, unstaged, or untracked changes. Ignored files SHALL NOT
-make a worktree dirty. Acquire and release SHALL reconcile this predicate
-against Git's authoritative metadata before returning success.
+A managed repo worktree SHALL satisfy all these conditions to be reusable. Its
+source repository identity and canonical path SHALL match the persisted
+association. The worktree SHALL be present, not prunable, and detached. Its
+`HEAD` SHALL match `last_head`. The command `git status
+--porcelain=v1 --untracked-files=all` SHALL report no staged, unstaged, or
+untracked changes. Ignored files SHALL NOT make a worktree dirty. Acquire and
+release SHALL reconcile this predicate against Git's authoritative metadata
+before returning success.
 
 #### Scenario: Reject a Dirty Worktree
 
@@ -293,9 +295,9 @@ forced.
 - **THEN** the command displays the same counts, performs no interactive
   prompt, and reclaims only the normal clean automatic candidates
 
-#### Scenario: Require Explicit Non-Interactive Authorization
+#### Scenario: Require Authorization Without Confirmation
 
-- **WHEN** a non-interactive caller runs a non-dry-run GC without `--yes` or
+- **WHEN** a caller runs a non-dry-run GC without confirmation, `--yes`, or
   `--force`
 - **THEN** the command fails before mutation and instructs the caller to use
   `--dry-run`, `--yes`, or `--force`
