@@ -467,6 +467,8 @@ pub fn renew_automatic(
     if workspace.management_mode != WorkspaceManagementMode::Automatic {
         return Err(WorkspaceError::NotAutomatic(workspace.canonical_path));
     }
+    // Renewal follows the leased workspace's pool; the current root only
+    // scopes new allocation and must not invalidate an existing checkout.
     let pool_id = workspace
         .pool_key
         .ok_or(WorkspaceError::RepositorySetMismatch(workspace.id))?;
@@ -622,6 +624,8 @@ pub fn checkin_automatic(
         return Err(primary);
     }
 
+    // Do not release the lease until live reconciliation proves the slot is
+    // safe to reuse; a rejected checkin intentionally keeps the claim.
     let details_json = checkin_details(workspace_path, checkout_id);
     if boundary.summary.workspace_state != WorkspaceState::Ready {
         let primary = WorkspaceError::NotReusable(workspace.canonical_path.clone());

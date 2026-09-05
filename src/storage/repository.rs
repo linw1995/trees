@@ -280,6 +280,8 @@ pub fn list_automatic_workspaces(
     connection: &mut SqliteConnection,
     workspace_root: &CanonicalPath,
 ) -> QueryResult<Vec<WorkspaceRow>> {
+    // The root is pool-scoped, so GC joins the pool instead of duplicating it
+    // on every workspace row.
     workspaces::table
         .inner_join(
             workspace_pools::table.on(workspaces::pool_key.eq(workspace_pools::id.nullable())),
@@ -345,6 +347,7 @@ pub fn release_workspace_lease(
     workspace_id: &WorkspaceId,
     checkout_id: &CheckoutId,
 ) -> QueryResult<bool> {
+    // Lease absence is the idle signal; checkin history is stored separately.
     let deleted = diesel::delete(
         workspace_leases::table
             .filter(workspace_leases::workspace_id.eq(workspace_id))
@@ -443,6 +446,8 @@ pub fn record_workspace_checkin(
     checkout_id: &CheckoutId,
     details_json: Option<JsonDocument>,
 ) -> QueryResult<()> {
+    // Keep lease release, idle timestamp, operation completion, and the event
+    // append atomic so no reader observes a reusable workspace without history.
     with_short_transaction(connection, |connection| {
         let workspace = workspaces::table
             .find(workspace_id)
@@ -487,6 +492,7 @@ pub fn record_workspace_checkin_rejection(
     details_json: Option<JsonDocument>,
     error_json: JsonDocument,
 ) -> QueryResult<()> {
+    // Rejection leaves the lease intact while the owner repairs the workspace.
     with_short_transaction(connection, |connection| {
         let workspace = workspaces::table
             .find(workspace_id)

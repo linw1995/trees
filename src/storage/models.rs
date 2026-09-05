@@ -51,6 +51,7 @@ impl_text_codec!(CanonicalPath);
 impl_text_codec!(JsonDocument);
 impl_text_codec!(Timestamp);
 
+/// A workspace snapshot; automatic root scope is resolved through its pool.
 #[derive(Debug, Clone, Queryable, Selectable, Identifiable)]
 #[diesel(table_name = workspaces)]
 #[diesel(check_for_backend(Sqlite))]
@@ -93,6 +94,7 @@ pub struct NewManagedWorkspace {
     pub reclaimed_at: Option<Timestamp>,
 }
 
+/// A pool registry row for one repository set within one managed root.
 #[derive(Debug, Clone, Queryable, Selectable, Identifiable)]
 #[diesel(table_name = workspace_pools)]
 #[diesel(check_for_backend(Sqlite))]
@@ -145,6 +147,8 @@ pub struct NewOriginRepository {
     pub source_path: CanonicalPath,
 }
 
+/// Stores only the current checkout claim; completed checkins are represented
+/// by workspace timestamps and lifecycle events instead of retained lease rows.
 #[derive(Debug, Queryable, Selectable, Identifiable)]
 #[diesel(table_name = workspace_leases)]
 #[diesel(check_for_backend(Sqlite))]

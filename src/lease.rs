@@ -3,6 +3,11 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_LEASE_SECONDS: i64 = 24 * 60 * 60;
 
+/// Represents the current occupancy claim for an automatic workspace.
+///
+/// A lease is deliberately transient: successful checkin removes the row,
+/// while a rejected checkin keeps it so an unsafe workspace remains owned
+/// until it can be repaired or recovered.
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceLease {
     pub id: CheckoutId,
@@ -26,6 +31,7 @@ impl WorkspaceLease {
         }
     }
 
+    /// Extends the current claim without issuing a new checkout identifier.
     pub fn renew(&mut self) {
         let now = Timestamp::now();
         self.last_heartbeat_at = now;

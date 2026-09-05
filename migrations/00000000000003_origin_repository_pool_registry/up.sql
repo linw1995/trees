@@ -12,6 +12,7 @@ FROM repo_worktrees
 GROUP BY repository_identity;
 
 CREATE TABLE workspace_pools (
+    -- All slots in a pool share the same managed-root namespace.
     id TEXT NOT NULL PRIMARY KEY CHECK (length(id) = 36),
     workspace_root TEXT NOT NULL,
     hash_key TEXT NOT NULL,

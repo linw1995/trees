@@ -119,6 +119,10 @@ impl FromStr for WorkspaceManagementMode {
     }
 }
 
+/// Metadata stored on a workspace snapshot during creation.
+///
+/// The managed root is intentionally absent because it is shared by the pool
+/// and must not be duplicated on every workspace row.
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct WorkspaceManagementMetadata {
     pub mode: WorkspaceManagementMode,
