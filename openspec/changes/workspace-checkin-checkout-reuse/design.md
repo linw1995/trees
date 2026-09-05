@@ -71,6 +71,8 @@ The pool registry stores repository-set identity separately from workspace
 slots:
 
 - `workspace_pools.id`: the stable UUID used as `pool_key` by workspace rows;
+- `workspace_pools.workspace_root`: the absolute resolved `workspaces_dir`
+  namespace; pool uniqueness is scoped by this root and the repository JSON;
 - `workspace_pools.hash_key`: a BLAKE3 fingerprint used for indexed lookup;
 - `workspace_pools.repositories_json`: the canonical sorted JSON array used for
   exact matching after the hash lookup;
@@ -92,9 +94,6 @@ The lease table stores the current claim only:
 - `last_heartbeat_at`: the last successful acquisition or renewal time.
 - `pool_key` on an automatic workspace row: the UUID of its registry pool.
   Manual rows may leave this field null.
-- `workspace_root` on an automatic workspace row: the absolute resolved
-  `workspaces_dir` used as the pool namespace. Manual rows may leave this
-  field null.
 - `last_checked_in_at` on the workspace row: the last successful return time
   used as the idle-age anchor, falling back to `created_at` if it has never
   been checked in.
@@ -128,12 +127,12 @@ and SHALL generate each automatic workspace as
 does not encode repository paths or user input. A per-request concrete
 workspace path is not part of automatic allocation.
 
-Every persisted automatic workspace path and its persisted `workspace_root`
-pool namespace SHALL be absolute. A configured root change SHALL affect only
-future allocation; existing rows retain their absolute roots and are not
-moved or rewritten automatically. Pool matching SHALL include the resolved
-root namespace, so a workspace from a previous configured root is not silently
-selected from a new root.
+Every persisted automatic workspace path and every pool's `workspace_root`
+namespace SHALL be absolute. A configured root change SHALL affect only future
+allocation; existing pools and workspace rows retain their absolute paths and
+are not moved or rewritten automatically. Pool matching SHALL include the
+resolved root namespace, so a workspace from a previous configured root is not
+silently selected from a new root.
 
 ### Allocate Automatic Workspaces by Repository Set
 
@@ -168,10 +167,12 @@ at the filesystem level where possible and remains a failed lifecycle record
 for diagnostics; it is never returned as an allocated workspace.
 
 The optional existing checkout identifier renews the matching lease for the
-same repository-set request and returns the same workspace. `checkin`
-releases the lease. Manual provisioning requires an explicit path and bypasses
-pool allocation, automated checkout, and GC; manual callers continue using
-the existing workspace/Codex paths without automated claims.
+same repository-set request and returns the same workspace. Renewal resolves
+the pool through the leased workspace and verifies its canonical repository
+JSON, so it does not depend on the current configured root. `checkin` releases
+the lease. Manual provisioning requires an explicit path and bypasses pool
+allocation, automated checkout, and GC; manual callers continue using the
+existing workspace/Codex paths without automated claims.
 
 The automatic command prints the allocated workspace path, repository-set
 pool key, checkout identifier, and expiry so an orchestrator can persist the

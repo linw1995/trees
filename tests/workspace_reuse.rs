@@ -95,10 +95,12 @@ fn automatic_fixture() -> AutomaticFixture {
         .into_iter()
         .next()
         .expect("workspace should have a worktree");
-    let workspace_root = workspace
-        .workspace_root
-        .clone()
-        .expect("automatic workspace should have a root");
+    let pool_id = workspace
+        .pool_key
+        .expect("automatic workspace should reference a pool");
+    let workspace_root = find_workspace_pool_by_id(&mut connection, &pool_id)
+        .expect("workspace pool lookup should succeed")
+        .workspace_root;
     plan.workspace_root = workspace_root.clone();
     AutomaticFixture {
         root,
@@ -217,10 +219,14 @@ fn selects_the_oldest_checked_in_slot_for_an_exact_repository_set() {
     let first_workspace = find_workspace_by_path(&mut connection, &first.workspace_path)
         .expect("workspace lookup should succeed")
         .expect("first workspace should exist");
-    plan.workspace_root = first_workspace
-        .workspace_root
-        .clone()
-        .expect("automatic workspace should have a root");
+    plan.workspace_root = find_workspace_pool_by_id(
+        &mut connection,
+        &first_workspace
+            .pool_key
+            .expect("automatic workspace should reference a pool"),
+    )
+    .expect("workspace pool lookup should succeed")
+    .workspace_root;
     let second = provision_automatic(&mut connection, &plan).expect("second slot should provision");
     checkin_automatic(&mut connection, &second.workspace_path, second.checkout_id)
         .expect("second slot should check in");

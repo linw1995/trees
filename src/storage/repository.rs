@@ -172,9 +172,11 @@ pub fn ensure_origin_repository(
 
 pub fn find_workspace_pool(
     connection: &mut SqliteConnection,
+    workspace_root: &CanonicalPath,
     repository_set: &RepositorySetKey,
 ) -> QueryResult<Option<WorkspacePoolRow>> {
     workspace_pools::table
+        .filter(workspace_pools::workspace_root.eq(workspace_root))
         .filter(
             workspace_pools::hash_key
                 .eq(repository_set.hash_key())
@@ -211,21 +213,23 @@ pub fn insert_workspace_pool(
 
 pub fn ensure_workspace_pool(
     connection: &mut SqliteConnection,
+    workspace_root: &CanonicalPath,
     repository_set: &RepositorySetKey,
 ) -> QueryResult<WorkspacePoolRow> {
-    if let Some(pool) = find_workspace_pool(connection, repository_set)? {
+    if let Some(pool) = find_workspace_pool(connection, workspace_root, repository_set)? {
         return Ok(pool);
     }
 
     let value = NewWorkspacePool {
         id: PoolId::new(),
+        workspace_root: workspace_root.clone(),
         hash_key: repository_set.hash_key().to_owned(),
         repositories_json: repository_set.repositories_json().to_owned(),
     };
     match insert_workspace_pool(connection, &value) {
         Ok(pool) => Ok(pool),
         Err(Error::DatabaseError(DatabaseErrorKind::UniqueViolation, _)) => {
-            find_workspace_pool(connection, repository_set)?.ok_or(Error::NotFound)
+            find_workspace_pool(connection, workspace_root, repository_set)?.ok_or(Error::NotFound)
         }
         Err(error) => Err(error),
     }
@@ -261,12 +265,10 @@ pub fn list_workspace_pool_repositories(
 
 pub fn list_automatic_workspace_candidates(
     connection: &mut SqliteConnection,
-    workspace_root: &CanonicalPath,
     pool_id: &PoolId,
 ) -> QueryResult<Vec<WorkspaceRow>> {
     workspaces::table
         .filter(workspaces::management_mode.eq(WorkspaceManagementMode::Automatic))
-        .filter(workspaces::workspace_root.eq(Some(workspace_root)))
         .filter(workspaces::pool_key.eq(Some(pool_id)))
         .filter(workspaces::state.eq(WorkspaceState::Ready))
         .order(workspaces::id.asc())
@@ -279,8 +281,11 @@ pub fn list_automatic_workspaces(
     workspace_root: &CanonicalPath,
 ) -> QueryResult<Vec<WorkspaceRow>> {
     workspaces::table
+        .inner_join(
+            workspace_pools::table.on(workspaces::pool_key.eq(workspace_pools::id.nullable())),
+        )
         .filter(workspaces::management_mode.eq(WorkspaceManagementMode::Automatic))
-        .filter(workspaces::workspace_root.eq(Some(workspace_root)))
+        .filter(workspace_pools::workspace_root.eq(workspace_root))
         .order(workspaces::id.asc())
         .select(WorkspaceRow::as_select())
         .load(connection)
@@ -1633,6 +1638,8 @@ mod tests {
             &mut connection,
             &NewWorkspacePool {
                 id: PoolId::new(),
+                workspace_root: CanonicalPath::from_absolute("/managed")
+                    .expect("workspace root should be absolute"),
                 hash_key: first.hash_key().to_owned(),
                 repositories_json: first.repositories_json().to_owned(),
             },
@@ -1642,6 +1649,8 @@ mod tests {
             &mut connection,
             &NewWorkspacePool {
                 id: PoolId::new(),
+                workspace_root: CanonicalPath::from_absolute("/managed")
+                    .expect("workspace root should be absolute"),
                 hash_key: first.hash_key().to_owned(),
                 repositories_json: second.repositories_json().to_owned(),
             },
@@ -1649,10 +1658,15 @@ mod tests {
         .expect("colliding pool should be inserted");
 
         assert_eq!(
-            find_workspace_pool(&mut connection, &first)
-                .expect("first pool lookup should succeed")
-                .expect("first pool should exist")
-                .id,
+            find_workspace_pool(
+                &mut connection,
+                &CanonicalPath::from_absolute("/managed")
+                    .expect("workspace root should be absolute"),
+                &first,
+            )
+            .expect("first pool lookup should succeed")
+            .expect("first pool should exist")
+            .id,
             first_pool.id
         );
         assert_eq!(
@@ -1662,6 +1676,46 @@ mod tests {
                 .select(WorkspacePoolRow::as_select())
                 .first::<WorkspacePoolRow>(&mut connection)
                 .expect("second pool lookup should succeed")
+                .id,
+            second_pool.id
+        );
+
+        drop(connection);
+        fs::remove_file(database_path).expect("temporary database should be removable");
+    }
+
+    #[test]
+    fn pool_lookup_is_scoped_to_workspace_root() {
+        let database_path =
+            std::env::temp_dir().join(format!("trees-{}.sqlite", WorkspaceId::new()));
+        let mut connection = database::connect(&database_path).expect("database should open");
+        let repository_set =
+            RepositorySetKey::from_repositories(&[CanonicalPath::from_absolute("/repo/example")
+                .expect("repository path should be absolute")]);
+        let first_root = CanonicalPath::from_absolute("/managed/first")
+            .expect("workspace root should be absolute");
+        let second_root = CanonicalPath::from_absolute("/managed/second")
+            .expect("workspace root should be absolute");
+
+        let first_pool = ensure_workspace_pool(&mut connection, &first_root, &repository_set)
+            .expect("first workspace pool should be created");
+        let second_pool = ensure_workspace_pool(&mut connection, &second_root, &repository_set)
+            .expect("second workspace pool should be created");
+
+        assert_ne!(first_pool.id, second_pool.id);
+        assert_eq!(first_pool.workspace_root, first_root);
+        assert_eq!(second_pool.workspace_root, second_root);
+        assert_eq!(
+            find_workspace_pool(&mut connection, &first_root, &repository_set)
+                .expect("first pool lookup should succeed")
+                .expect("first pool should exist")
+                .id,
+            first_pool.id
+        );
+        assert_eq!(
+            find_workspace_pool(&mut connection, &second_root, &repository_set)
+                .expect("second pool lookup should succeed")
+                .expect("second pool should exist")
                 .id,
             second_pool.id
         );

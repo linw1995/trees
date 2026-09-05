@@ -13,16 +13,17 @@ GROUP BY repository_identity;
 
 CREATE TABLE workspace_pools (
     id TEXT NOT NULL PRIMARY KEY CHECK (length(id) = 36),
+    workspace_root TEXT NOT NULL,
     hash_key TEXT NOT NULL,
     repositories_json TEXT NOT NULL CHECK (
         json_valid(repositories_json)
         AND json_type(repositories_json) = 'array'
     ),
-    UNIQUE (repositories_json)
+    UNIQUE (workspace_root, repositories_json)
 );
 
 CREATE INDEX workspace_pools_hash_idx
-    ON workspace_pools (hash_key);
+    ON workspace_pools (workspace_root, hash_key);
 
 CREATE TABLE workspace_pool_map (
     workspace_id TEXT NOT NULL PRIMARY KEY,
@@ -32,6 +33,7 @@ CREATE TABLE workspace_pool_map (
 WITH workspace_sets AS (
     SELECT
         workspace.id AS workspace_id,
+        workspace.workspace_root,
         workspace.pool_key AS hash_key,
         (
             SELECT json_group_array(repository_identity)
@@ -48,20 +50,27 @@ WITH workspace_sets AS (
 ), pool_ids AS (
     SELECT
         MIN(workspace_id) AS pool_id,
+        workspace_root,
         repositories_json
     FROM workspace_sets
-    GROUP BY repositories_json
+    GROUP BY workspace_root, repositories_json
 )
-INSERT INTO workspace_pools (id, hash_key, repositories_json)
-SELECT pool_ids.pool_id, MIN(workspace_sets.hash_key), pool_ids.repositories_json
+INSERT INTO workspace_pools (id, workspace_root, hash_key, repositories_json)
+SELECT
+    pool_ids.pool_id,
+    pool_ids.workspace_root,
+    MIN(workspace_sets.hash_key),
+    pool_ids.repositories_json
 FROM pool_ids
 JOIN workspace_sets
-  ON workspace_sets.repositories_json = pool_ids.repositories_json
-GROUP BY pool_ids.pool_id, pool_ids.repositories_json;
+  ON workspace_sets.workspace_root = pool_ids.workspace_root
+ AND workspace_sets.repositories_json = pool_ids.repositories_json
+GROUP BY pool_ids.pool_id, pool_ids.workspace_root, pool_ids.repositories_json;
 
 WITH workspace_sets AS (
     SELECT
         workspace.id AS workspace_id,
+        workspace.workspace_root,
         workspace.pool_key AS hash_key,
         (
             SELECT json_group_array(repository_identity)
@@ -78,15 +87,17 @@ WITH workspace_sets AS (
 ), pool_ids AS (
     SELECT
         MIN(workspace_id) AS pool_id,
+        workspace_root,
         repositories_json
     FROM workspace_sets
-    GROUP BY repositories_json
+    GROUP BY workspace_root, repositories_json
 )
 INSERT INTO workspace_pool_map (workspace_id, pool_id)
 SELECT workspace_sets.workspace_id, pool_ids.pool_id
 FROM workspace_sets
 JOIN pool_ids
-  ON pool_ids.repositories_json = workspace_sets.repositories_json;
+  ON pool_ids.workspace_root = workspace_sets.workspace_root
+ AND pool_ids.repositories_json = workspace_sets.repositories_json;
 
 CREATE TABLE workspace_pool_repositories (
     pool_id TEXT NOT NULL REFERENCES workspace_pools(id),
@@ -114,12 +125,11 @@ CREATE TABLE workspaces_v3 (
     last_reconciled_at TEXT,
     management_mode TEXT NOT NULL DEFAULT 'manual' CHECK (management_mode IN ('automatic', 'manual')),
     pool_key TEXT REFERENCES workspace_pools(id),
-    workspace_root TEXT,
     last_checked_in_at TEXT,
     reclaimed_at TEXT,
     CHECK (
         management_mode = 'manual'
-        OR (pool_key IS NOT NULL AND workspace_root IS NOT NULL)
+        OR pool_key IS NOT NULL
     )
 );
 
@@ -132,7 +142,6 @@ INSERT INTO workspaces_v3 (
     last_reconciled_at,
     management_mode,
     pool_key,
-    workspace_root,
     last_checked_in_at,
     reclaimed_at
 )
@@ -145,7 +154,6 @@ SELECT
     workspace.last_reconciled_at,
     workspace.management_mode,
     map.pool_id,
-    workspace.workspace_root,
     workspace.last_checked_in_at,
     workspace.reclaimed_at
 FROM workspaces AS workspace
@@ -193,6 +201,6 @@ ALTER TABLE repo_worktrees_v3 RENAME TO repo_worktrees;
 DROP TABLE workspace_pool_map;
 
 CREATE INDEX workspaces_pool_lookup_idx
-    ON workspaces (management_mode, workspace_root, pool_key, last_checked_in_at, created_at);
+    ON workspaces (management_mode, pool_key, last_checked_in_at, created_at);
 
 PRAGMA foreign_keys = ON;

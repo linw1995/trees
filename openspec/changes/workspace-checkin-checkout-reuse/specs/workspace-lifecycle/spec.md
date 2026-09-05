@@ -3,18 +3,17 @@
 ### Requirement: Persist Workspace Management and GC Timestamps
 
 The workspace snapshot SHALL persist a management mode with the values
-`automatic` and `manual`, an optional UUID-backed repository-set pool key, an
-optional absolute workspace-root namespace, the last successful checkin time,
-and, when applicable, the reclamation time. An automatic workspace SHALL
-reference a pool registry row whose indexed hash and canonical repository JSON
-identify the sorted Git common-directory identities; a manual workspace MAY
-leave the pool key and root null. The pool registry SHALL maintain explicit
-relations to origin repositories, and the source path SHALL be stored on the
-origin repository record rather than copied into each pool relation or
-worktree row. The management mode, pool key, and workspace-root namespace SHALL
-be independent from workspace health and active checkout leases. Existing
-legacy explicit-path workspace rows SHALL be backfilled as `manual` when this
-schema is introduced.
+`automatic` and `manual`, an optional UUID-backed repository-set pool key, the
+last successful checkin time, and, when applicable, the reclamation time. An
+automatic workspace SHALL reference a pool registry row whose absolute
+workspace-root namespace, indexed hash, and canonical repository JSON identify
+the allocation scope and sorted Git common-directory identities; a manual
+workspace MAY leave the pool key null. The pool registry SHALL maintain
+explicit relations to origin repositories, and the source path SHALL be stored
+on the origin repository record rather than copied into each pool relation or
+worktree row. The management mode and pool key SHALL be independent from
+workspace health and active checkout leases. Existing legacy explicit-path
+workspace rows SHALL be backfilled as `manual` when this schema is introduced.
 
 #### Scenario: Track an Automatic Workspace Idle Time
 

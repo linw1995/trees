@@ -275,6 +275,7 @@ fn migration_three_normalizes_a_database_already_at_migration_two() {
         .expect("automatic workspace should reference a pool");
     let pool = trees::storage::find_workspace_pool_by_id(&mut connection, &pool_id)
         .expect("pool should be queryable");
+    assert_eq!(pool.workspace_root, workspace_root);
     assert_eq!(pool.repositories_json, repository_set.repositories_json());
     let origin = trees::storage::find_origin_repository_by_identity(&mut connection, &source_path)
         .expect("origin repository should be queryable")
@@ -409,7 +410,6 @@ fn legacy_workspace_rows_default_to_manual_without_pool_metadata() {
 
     assert_eq!(stored.management_mode, WorkspaceManagementMode::Manual);
     assert_eq!(stored.pool_key, None);
-    assert_eq!(stored.workspace_root, None);
     assert_eq!(stored.last_checked_in_at, None);
     assert_eq!(stored.reclaimed_at, None);
     assert!(workspace_path.as_path().exists());
@@ -428,6 +428,7 @@ fn automatic_workspace_metadata_and_timestamps_round_trip_as_absolute_values() {
     let now = Timestamp::now();
     let pool = trees::storage::ensure_workspace_pool(
         &mut connection,
+        &workspace_root,
         &trees::pool::RepositorySetKey::from_repositories(&[CanonicalPath::from_absolute(
             "/repo/api",
         )
@@ -441,7 +442,6 @@ fn automatic_workspace_metadata_and_timestamps_round_trip_as_absolute_values() {
         .set((
             trees::schema::workspaces::management_mode.eq(WorkspaceManagementMode::Automatic),
             trees::schema::workspaces::pool_key.eq(Some(pool.id)),
-            trees::schema::workspaces::workspace_root.eq(Some(workspace_root.clone())),
             trees::schema::workspaces::last_checked_in_at.eq(Some(now.clone())),
             trees::schema::workspaces::reclaimed_at.eq::<Option<Timestamp>>(None),
         ))
@@ -452,7 +452,6 @@ fn automatic_workspace_metadata_and_timestamps_round_trip_as_absolute_values() {
         .expect("workspace should be queryable");
     assert_eq!(stored.management_mode, WorkspaceManagementMode::Automatic);
     assert_eq!(stored.pool_key, Some(pool.id));
-    assert_eq!(stored.workspace_root, Some(workspace_root));
     assert_eq!(stored.last_checked_in_at, Some(now));
     assert!(stored.canonical_path.as_path().is_absolute());
 

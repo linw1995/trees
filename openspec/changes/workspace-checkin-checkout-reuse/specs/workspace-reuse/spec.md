@@ -152,6 +152,14 @@ treated as a local coordination token rather than a security credential.
   worktree associations remain unchanged while a new checkout identifier may
   be issued
 
+#### Scenario: Renew Through the Existing Pool
+
+- **WHEN** a caller renews a valid checkout with the same repository set after
+  the configured workspace root changes
+- **THEN** Trees resolves the pool through the leased workspace, validates the
+  exact repository JSON, and renews the existing lease without creating a new
+  pool or workspace
+
 ### Requirement: Require a Reusable Worktree Snapshot
 
 A managed repo worktree SHALL be reusable only when its source repository

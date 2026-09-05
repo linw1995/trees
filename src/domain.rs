@@ -123,7 +123,6 @@ impl FromStr for WorkspaceManagementMode {
 pub(crate) struct WorkspaceManagementMetadata {
     pub mode: WorkspaceManagementMode,
     pub pool_key: Option<PoolId>,
-    pub workspace_root: Option<CanonicalPath>,
 }
 
 #[derive(Debug)]

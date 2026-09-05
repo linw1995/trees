@@ -868,10 +868,14 @@ mod tests {
             .next()
             .expect("workspace should have a worktree");
         let source = worktree.source_path.clone();
-        let workspace_root = workspace
-            .workspace_root
-            .clone()
-            .expect("automatic workspace should have a root");
+        let workspace_root = crate::storage::find_workspace_pool_by_id(
+            &mut connection,
+            &workspace
+                .pool_key
+                .expect("automatic workspace should reference a pool"),
+        )
+        .expect("workspace pool lookup should succeed")
+        .workspace_root;
         (
             root,
             database_path,
@@ -906,6 +910,7 @@ mod tests {
         let pool_key = Some(
             ensure_workspace_pool(
                 &mut connection,
+                &workspace_root,
                 &RepositorySetKey::from_repositories(&[CanonicalPath::from_absolute(
                     "/repo/example",
                 )
@@ -938,7 +943,6 @@ mod tests {
                     last_reconciled_at: None,
                     management_mode: WorkspaceManagementMode::Automatic,
                     pool_key,
-                    workspace_root: Some(workspace_root.clone()),
                     last_checked_in_at: Some(idle_since),
                     reclaimed_at: None,
                 },
@@ -966,7 +970,6 @@ mod tests {
                 last_reconciled_at: None,
                 management_mode: WorkspaceManagementMode::Manual,
                 pool_key: None,
-                workspace_root: None,
                 last_checked_in_at: Some(old.clone()),
                 reclaimed_at: None,
             },

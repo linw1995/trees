@@ -17,15 +17,16 @@ use crate::reconciliation::{self, ReconciliationError};
 use crate::storage::{
     append_event, begin_operation, ensure_origin_repository, finalize_automatic_creation,
     finalize_creation as finalize_persisted_creation, find_workspace, find_workspace_by_path,
-    find_workspace_lease_by_id, find_workspace_pool, insert_managed_workspace,
-    insert_repo_worktree, insert_workspace_lease, insert_workspace_pool_repositories,
-    persist_operation_intent, persist_operation_step_intent, record_operation_transition,
-    record_repo_worktree_transition, record_workspace_checkin, record_workspace_checkin_rejection,
-    record_workspace_checkout, record_workspace_checkout_failure,
-    record_workspace_lease_expiration_failure, record_workspace_lease_reclaim,
-    record_workspace_transition, record_worktree_step_result, release_workspace_lease,
-    with_short_transaction, EventDraft, NewManagedWorkspace, NewRepoWorktree,
-    NewWorkspacePoolRepository, OperationIntent, OperationIntentError, TransitionMetadata,
+    find_workspace_lease_by_id, find_workspace_pool, find_workspace_pool_by_id,
+    insert_managed_workspace, insert_repo_worktree, insert_workspace_lease,
+    insert_workspace_pool_repositories, persist_operation_intent, persist_operation_step_intent,
+    record_operation_transition, record_repo_worktree_transition, record_workspace_checkin,
+    record_workspace_checkin_rejection, record_workspace_checkout,
+    record_workspace_checkout_failure, record_workspace_lease_expiration_failure,
+    record_workspace_lease_reclaim, record_workspace_transition, record_worktree_step_result,
+    release_workspace_lease, with_short_transaction, EventDraft, NewManagedWorkspace,
+    NewRepoWorktree, NewWorkspacePoolRepository, OperationIntent, OperationIntentError,
+    TransitionMetadata,
 };
 use crate::validation::{self, ValidationError};
 
@@ -150,17 +151,13 @@ fn list_idle_automatic_candidates(
     connection: &mut SqliteConnection,
     plan: &AutomaticAllocationPlan,
 ) -> Result<Vec<crate::storage::WorkspaceRow>, WorkspaceError> {
-    let Some(pool) =
-        find_workspace_pool(connection, &plan.repository_set).map_err(WorkspaceError::Database)?
+    let Some(pool) = find_workspace_pool(connection, &plan.workspace_root, &plan.repository_set)
+        .map_err(WorkspaceError::Database)?
     else {
         return Ok(Vec::new());
     };
-    let candidates = crate::storage::list_automatic_workspace_candidates(
-        connection,
-        &plan.workspace_root,
-        &pool.id,
-    )
-    .map_err(WorkspaceError::Database)?;
+    let candidates = crate::storage::list_automatic_workspace_candidates(connection, &pool.id)
+        .map_err(WorkspaceError::Database)?;
     let mut idle_candidates = Vec::new();
     for workspace in candidates {
         if crate::storage::find_running_operation(connection, &workspace.id)
@@ -470,10 +467,17 @@ pub fn renew_automatic(
     if workspace.management_mode != WorkspaceManagementMode::Automatic {
         return Err(WorkspaceError::NotAutomatic(workspace.canonical_path));
     }
-    let pool = find_workspace_pool(connection, &plan.repository_set)
-        .map_err(WorkspaceError::Database)?
+    let pool_id = workspace
+        .pool_key
         .ok_or(WorkspaceError::RepositorySetMismatch(workspace.id))?;
-    if workspace.pool_key != Some(pool.id) {
+    let pool = match find_workspace_pool_by_id(connection, &pool_id) {
+        Ok(pool) => pool,
+        Err(diesel::result::Error::NotFound) => {
+            return Err(WorkspaceError::RepositorySetMismatch(workspace.id));
+        }
+        Err(error) => return Err(WorkspaceError::Database(error)),
+    };
+    if pool.repositories_json != plan.repository_set.repositories_json() {
         return Err(WorkspaceError::RepositorySetMismatch(workspace.id));
     }
     if lease_row.lease_expires_at.has_expired() {
@@ -507,7 +511,7 @@ pub fn renew_automatic(
         fail_operation(connection, &operation.id, &primary);
         return Err(primary);
     }
-    if boundary.workspace.pool_key != Some(pool.id) {
+    if boundary.workspace.pool_key != Some(pool_id) {
         let primary = WorkspaceError::RepositorySetMismatch(boundary.workspace.id);
         fail_operation(connection, &operation.id, &primary);
         return Err(primary);
@@ -722,8 +726,12 @@ fn provision_automatic_new(
     normalized_plan.workspace_root =
         validation::resolve_workspace_path(plan.workspace_root.as_path())?;
 
-    let pool = crate::storage::ensure_workspace_pool(connection, &normalized_plan.repository_set)
-        .map_err(WorkspaceError::Database)?;
+    let pool = crate::storage::ensure_workspace_pool(
+        connection,
+        &normalized_plan.workspace_root,
+        &normalized_plan.repository_set,
+    )
+    .map_err(WorkspaceError::Database)?;
 
     let (workspace_id, workspace_path) =
         next_generated_workspace(connection, normalized_plan.workspace_root.as_path())?;
@@ -732,7 +740,6 @@ fn provision_automatic_new(
     let management = WorkspaceManagementMetadata {
         mode: WorkspaceManagementMode::Automatic,
         pool_key: Some(pool.id),
-        workspace_root: Some(normalized_plan.workspace_root.clone()),
     };
     let intent_json = JsonDocument::from_serializable(&serde_json::json!({
         "allocation": normalized_plan,
@@ -910,7 +917,6 @@ pub fn initialize_creation(
         WorkspaceManagementMetadata {
             mode: WorkspaceManagementMode::Manual,
             pool_key: None,
-            workspace_root: None,
         },
         None,
         intent_json,
@@ -982,7 +988,6 @@ fn initialize_creation_with_metadata(
                 last_reconciled_at: None,
                 management_mode: management.mode,
                 pool_key: management.pool_key,
-                workspace_root: management.workspace_root.clone(),
                 last_checked_in_at: None,
                 reclaimed_at: None,
             },
@@ -1658,8 +1663,12 @@ mod tests {
         let database_path = root.join("state.sqlite");
         let mut connection =
             crate::database::connect(&database_path).expect("database should open");
-        let pool = crate::storage::ensure_workspace_pool(&mut connection, &plan.repository_set)
-            .expect("workspace pool should be available");
+        let pool = crate::storage::ensure_workspace_pool(
+            &mut connection,
+            &plan.workspace_root,
+            &plan.repository_set,
+        )
+        .expect("workspace pool should be available");
         let now = Timestamp::parse("2026-01-01T00:00:00Z").unwrap();
         let older = WorkspaceId::new();
         let newer = WorkspaceId::new();
@@ -1686,7 +1695,6 @@ mod tests {
                     crate::schema::workspaces::management_mode
                         .eq(crate::domain::WorkspaceManagementMode::Automatic),
                     crate::schema::workspaces::pool_key.eq(Some(pool.id)),
-                    crate::schema::workspaces::workspace_root.eq(Some(plan.workspace_root.clone())),
                     crate::schema::workspaces::last_checked_in_at
                         .eq(Some(Timestamp::parse(checked_in_at).unwrap())),
                 ))
@@ -1771,14 +1779,17 @@ mod tests {
         .expect("automatic allocation plan should be prepared");
         plan.workspace_root =
             CanonicalPath::from_absolute(root.clone()).expect("workspace root should be absolute");
-        let pool = crate::storage::ensure_workspace_pool(&mut connection, &plan.repository_set)
-            .expect("workspace pool should be available");
+        let pool = crate::storage::ensure_workspace_pool(
+            &mut connection,
+            &plan.workspace_root,
+            &plan.repository_set,
+        )
+        .expect("workspace pool should be available");
         diesel::update(crate::schema::workspaces::table.find(workspace.id))
             .set((
                 crate::schema::workspaces::management_mode
                     .eq(crate::domain::WorkspaceManagementMode::Automatic),
                 crate::schema::workspaces::pool_key.eq(Some(pool.id)),
-                crate::schema::workspaces::workspace_root.eq(Some(plan.workspace_root.clone())),
             ))
             .execute(&mut connection)
             .expect("workspace metadata should be updated");
@@ -2232,7 +2243,14 @@ mod tests {
             WorkspaceManagementMode::Automatic
         );
         assert_eq!(workspace.pool_key, Some(result.pool_key));
-        assert_eq!(workspace.workspace_root, Some(canonical_workspace_root));
+        let pool = crate::storage::find_workspace_pool_by_id(
+            &mut connection,
+            &workspace
+                .pool_key
+                .expect("automatic workspace should have a pool"),
+        )
+        .expect("workspace pool should be queryable");
+        assert_eq!(pool.workspace_root, canonical_workspace_root);
         assert_eq!(workspace.state, WorkspaceState::Ready);
         let repositories = crate::storage::list_repo_worktrees(&mut connection, &workspace.id)
             .expect("worktree lookup should succeed");
@@ -2391,6 +2409,35 @@ mod tests {
         )
         .expect("renewed lease should be releasable");
         crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
+            .expect("test worktree should be removable");
+        drop(connection);
+        fs::remove_file(database_path).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn renews_an_automatic_checkout_after_the_configured_root_changes() {
+        let (root, database_path, mut connection, plan, candidate, worktree_path) =
+            automatic_candidate_fixture();
+        let checkout = checkout_automatic_candidate(&mut connection, &plan, &candidate)
+            .expect("automatic checkout should succeed");
+        let mut renewal_plan = plan;
+        renewal_plan.checkout_id = Some(checkout.checkout_id);
+        renewal_plan.workspace_root = CanonicalPath::from_absolute(root.join("new-managed"))
+            .expect("replacement workspace root should be absolute");
+
+        let renewed = renew_automatic(&mut connection, &renewal_plan)
+            .expect("automatic checkout renewal should not depend on the current root");
+        assert_eq!(renewed.workspace_path, candidate.canonical_path);
+        assert_eq!(renewed.pool_key, checkout.pool_key);
+
+        crate::storage::release_workspace_lease(
+            &mut connection,
+            &candidate.id,
+            &checkout.checkout_id,
+        )
+        .expect("renewed lease should be releasable");
+        crate::git::remove_worktree(&renewal_plan.repositories[0].source_path, &worktree_path)
             .expect("test worktree should be removable");
         drop(connection);
         fs::remove_file(database_path).expect("state database should be removable");

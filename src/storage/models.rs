@@ -63,7 +63,6 @@ pub struct WorkspaceRow {
     pub last_reconciled_at: Option<Timestamp>,
     pub management_mode: WorkspaceManagementMode,
     pub pool_key: Option<PoolId>,
-    pub workspace_root: Option<CanonicalPath>,
     pub last_checked_in_at: Option<Timestamp>,
     pub reclaimed_at: Option<Timestamp>,
 }
@@ -90,7 +89,6 @@ pub struct NewManagedWorkspace {
     pub last_reconciled_at: Option<Timestamp>,
     pub management_mode: WorkspaceManagementMode,
     pub pool_key: Option<PoolId>,
-    pub workspace_root: Option<CanonicalPath>,
     pub last_checked_in_at: Option<Timestamp>,
     pub reclaimed_at: Option<Timestamp>,
 }
@@ -100,6 +98,7 @@ pub struct NewManagedWorkspace {
 #[diesel(check_for_backend(Sqlite))]
 pub struct WorkspacePoolRow {
     pub id: PoolId,
+    pub workspace_root: CanonicalPath,
     pub hash_key: String,
     pub repositories_json: String,
 }
@@ -108,6 +107,7 @@ pub struct WorkspacePoolRow {
 #[diesel(table_name = workspace_pools)]
 pub struct NewWorkspacePool {
     pub id: PoolId,
+    pub workspace_root: CanonicalPath,
     pub hash_key: String,
     pub repositories_json: String,
 }

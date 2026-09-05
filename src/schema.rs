@@ -19,6 +19,7 @@ diesel::table! {
 diesel::table! {
     workspace_pools (id) {
         id -> Text,
+        workspace_root -> Text,
         hash_key -> Text,
         repositories_json -> Text,
     }
@@ -89,7 +90,6 @@ diesel::table! {
         last_reconciled_at -> Nullable<Text>,
         management_mode -> Text,
         pool_key -> Nullable<Text>,
-        workspace_root -> Nullable<Text>,
         last_checked_in_at -> Nullable<Text>,
         reclaimed_at -> Nullable<Text>,
     }

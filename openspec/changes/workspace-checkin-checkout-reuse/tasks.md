@@ -16,17 +16,17 @@
   and heartbeat timestamps; define the reusable-workspace predicate and
   explicit mode/access/health separation
 - [x] 1.5 Extend lifecycle states with `dirty` and `reclaimed`, plus
-  `last_checked_in_at`, pool-key, absolute workspace-root, and reclamation
-  timestamps; update parsing, serialization, workspace-state aggregation, and
-  affected validation paths
+  `last_checked_in_at`, pool-key, pool-scoped absolute workspace-root, and
+  reclamation timestamps; update parsing, serialization, workspace-state
+  aggregation, and affected validation paths
 
 ## 2. Persistence and Migration
 
 - [x] 2.1 Add migrations `00000000000002` and `00000000000003` for management
   mode, the UUID-backed pool registry, origin repositories and pool relations,
-  absolute workspace-root namespace, idle and reclamation timestamps, the
-  `dirty`/`reclaimed` state constraints, and the current `workspace_leases`
-  table with one active lease per workspace
+  pool-scoped absolute workspace-root namespace, idle and reclamation
+  timestamps, the `dirty`/`reclaimed` state constraints, and the current
+  `workspace_leases` table with one active lease per workspace
 - [x] 2.2 Backfill legacy explicit-path workspace records as `manual` without
   touching Git or the filesystem, and provide a reversible down migration
 - [x] 2.3 Add Diesel schema/models and repository operations for origin
