@@ -2,10 +2,10 @@ use diesel::result::QueryResult;
 use diesel::sqlite::SqliteConnection;
 use diesel::Connection;
 
-/// Runs only database work in one short transaction.
+/// Runs only database metadata work in one short transaction.
 ///
-/// External Git processes must run before or after this closure so SQLite does
-/// not keep a transaction open while waiting for a subprocess.
+/// External Git and filesystem operations must run before or after this
+/// closure so SQLite does not keep a transaction open while waiting for them.
 pub fn with_short_transaction<T, F>(
     connection: &mut SqliteConnection,
     operation: F,

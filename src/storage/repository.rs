@@ -333,6 +333,8 @@ pub fn renew_workspace_lease(
     lease_expires_at: &Timestamp,
     last_heartbeat_at: &Timestamp,
 ) -> QueryResult<bool> {
+    // This updates only lease metadata; callers must not hold the transaction
+    // open while the owning process performs external work.
     let updated = diesel::update(workspace_leases::table.find(checkout_id))
         .set((
             workspace_leases::lease_expires_at.eq(lease_expires_at),
@@ -533,6 +535,7 @@ pub fn record_workspace_lease_renewal(
     lease: &WorkspaceLease,
     details_json: Option<JsonDocument>,
 ) -> QueryResult<()> {
+    // Renewal is a short liveness update for a claim that spans external work.
     with_short_transaction(connection, |connection| {
         if !renew_workspace_lease(
             connection,
@@ -1045,21 +1048,25 @@ pub fn renew_operation_lease(
     operation_id: &OperationId,
     owner_id: &str,
 ) -> QueryResult<bool> {
-    let heartbeat_at = Timestamp::now();
-    let lease_expires_at = Timestamp::after_seconds(300);
-    let updated = diesel::update(
-        operations::table
-            .filter(operations::id.eq(operation_id))
-            .filter(operations::state.eq(OperationState::Running))
-            .filter(operations::owner_id.eq(owner_id)),
-    )
-    .set((
-        operations::last_heartbeat_at.eq(&heartbeat_at),
-        operations::lease_expires_at.eq(&lease_expires_at),
-    ))
-    .execute(connection)?;
+    // Heartbeats run while external work is in progress, so each update gets
+    // its own short transaction and never extends the surrounding operation.
+    with_short_transaction(connection, |connection| {
+        let heartbeat_at = Timestamp::now();
+        let lease_expires_at = Timestamp::after_seconds(300);
+        let updated = diesel::update(
+            operations::table
+                .filter(operations::id.eq(operation_id))
+                .filter(operations::state.eq(OperationState::Running))
+                .filter(operations::owner_id.eq(owner_id)),
+        )
+        .set((
+            operations::last_heartbeat_at.eq(&heartbeat_at),
+            operations::lease_expires_at.eq(&lease_expires_at),
+        ))
+        .execute(connection)?;
 
-    Ok(updated == 1)
+        Ok(updated == 1)
+    })
 }
 
 pub fn insert_event(connection: &mut SqliteConnection, value: &NewEvent) -> QueryResult<EventRow> {

@@ -1090,6 +1090,8 @@ fn execute_creation_with_lease(
     context: &CreationContext,
     lease: Option<&WorkspaceLease>,
 ) -> Result<(), WorkspaceError> {
+    // Git and filesystem steps can be slow; their intent and result writes are
+    // deliberately split into short transactions around each external step.
     if let Err(source) = fs::create_dir(&context.plan.workspace_path) {
         let primary = WorkspaceError::Io {
             path: context.plan.workspace_path.clone().into_path_buf(),
@@ -1190,6 +1192,8 @@ fn execute_repository_step(
         intent_json,
     )
     .map_err(WorkspaceError::Database)?;
+    // The subprocess and heartbeat callback run outside SQLite transactions;
+    // each heartbeat is an independent short operation-lease update.
     let operation_id = context.operation_id;
     let owner_id = context.owner_id.clone();
     git::add_detached_worktree_with_heartbeat(

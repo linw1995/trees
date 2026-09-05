@@ -7,7 +7,8 @@ pub const DEFAULT_LEASE_SECONDS: i64 = 24 * 60 * 60;
 ///
 /// A lease is deliberately transient: successful checkin removes the row,
 /// while a rejected checkin keeps it so an unsafe workspace remains owned
-/// until it can be repaired or recovered.
+/// until it can be repaired or recovered. The row persists across the short
+/// SQLite transactions that acquire, renew, and release the claim.
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceLease {
     pub id: CheckoutId,
@@ -32,6 +33,9 @@ impl WorkspaceLease {
     }
 
     /// Extends the current claim without issuing a new checkout identifier.
+    ///
+    /// Persistence callers should write the updated value in a short
+    /// transaction and perform external work outside that transaction.
     pub fn renew(&mut self) {
         let now = Timestamp::now();
         self.last_heartbeat_at = now;
