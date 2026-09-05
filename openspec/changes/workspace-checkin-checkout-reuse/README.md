@@ -36,3 +36,7 @@ Automatic workspace paths are generated below a configured Trees
 configured, Trees uses the platform data-directory default. The lifecycle
 database remains separate from this content directory, and persisted paths are
 absolute.
+
+Lease and operation records are updated in short SQLite transactions. Git and
+filesystem work runs outside those transactions; renewal only extends an
+active lease when the caller's work outlives the configured lease duration.
