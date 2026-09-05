@@ -29,7 +29,8 @@ retention remains a manual responsibility.
   concrete workspace path part of automatic allocation.
 - Add `trees checkin <workspace-path> --checkout-id <checkout-id>` to release
   the claim after reconciliation; reuse the automatic create form with the
-  existing checkout identifier to renew an allocation.
+  existing checkout identifier to optionally renew an allocation that outlives
+  its lease duration.
 - Add `trees gc --older-than <duration> [--dry-run] [--yes] [--force]` to
   reclaim idle automatic workspaces while never selecting manual workspaces;
   report the number not currently checked out and confirm the normal
@@ -41,6 +42,8 @@ retention remains a manual responsibility.
   with the last successful checkin time used by GC.
 - Persist at most one active checkout lease per workspace, with owner and
   expiry metadata, while keeping workspace health separate from access state.
+  Lease and operation updates SHALL use short SQLite transactions; Git and
+  filesystem work SHALL never hold those transactions open.
 - Require every managed worktree to be present, attached, detached, clean,
   and at its recorded revision before a lease can be acquired or released.
 - Reclaim expired leases only after a successful safety check; never reclaim an

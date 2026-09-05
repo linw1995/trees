@@ -137,6 +137,10 @@ owner identity, acquisition time, lease expiry, and last heartbeat time. The
 workspace ID SHALL be unique in the active lease table. The checkout
 identifier SHALL be required to renew or check in the lease and SHALL be
 treated as a local coordination token rather than a security credential.
+Lease acquisition, renewal, and release SHALL update SQLite in short
+transactions; Git and filesystem work SHALL run outside those transactions.
+Renewal SHALL be optional liveness support for work that outlives the lease
+duration, not a long-lived database lock.
 
 #### Scenario: Serialize Concurrent Checkout Calls
 

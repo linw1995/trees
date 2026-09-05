@@ -58,6 +58,12 @@ can therefore be unclaimed without being eligible for checkout, and a manual
 workspace can remain healthy without becoming a GC candidate. This keeps
 management policy, health, and access as three independent dimensions.
 
+The lease row is a persistent occupancy claim, not a long-lived SQLite lock.
+Acquisition, renewal, and release keep SQLite transactions limited to lease,
+snapshot, operation, and event changes. Git and filesystem work runs between
+those short transactions so a slow subprocess cannot block other database
+users.
+
 New `trees create` calls without a positional workspace path are
 `automatic`; calls with an explicit path are `manual`. The command shape is
 the mode discriminator, so no redundant `--mode` flag is accepted. Explicit
@@ -206,24 +212,28 @@ checkout baseline. The caller must repair or intentionally preserve such work
 outside this change; Trees never runs `reset --hard`, `clean`, or worktree
 removal as part of checkin.
 
-### Acquire and Renew a Lease Atomically
+### Acquire, Renew, and Release with Short Transactions
 
 For an existing pool candidate, Trees reconciles and verifies that the
 workspace is automatic, `ready`, has no active operation, and has no active
 unexpired checkout lease. The lease insert, allocation operation completion,
 and `workspace_checked_out` event are committed in one short SQLite
-transaction. The unique `workspace_id` constraint is the final race check, so
-concurrent allocations cannot both succeed. For a newly provisioned slot,
-the creation intent owns the generated workspace and lease while Git setup is
-running; the lease is returned to the caller only after creation reaches
-`ready`.
+transaction. The transaction ends before any later Git or filesystem work.
+The unique `workspace_id` constraint is the final race check, so concurrent
+allocations cannot both succeed. For a newly provisioned slot, the creation
+intent owns the generated workspace and lease while Git setup is running; each
+Git step is surrounded by short intent/result updates, and the lease is
+returned to the caller only after creation reaches `ready`.
 
-The default lease duration is 24 hours. Renewal requires the current
-checkout identifier, runs as a short `checkout_renew` operation, and extends
-the expiry by another 24 hours from the renewal time. Renewal does not reset
-or otherwise mutate Git. It is allowed while the workspace is degraded so
-the current owner can repair or recover its files without another caller
-claiming them; checkin remains blocked until the workspace is reusable.
+The default lease duration is 24 hours. Renewal is an optional liveness
+operation for work that outlives that duration. It requires the current
+checkout identifier, updates the active lease in a short `checkout_renew`
+transaction, and extends the expiry by another 24 hours from the renewal time.
+It does not hold a SQLite transaction while waiting for Git or filesystem work,
+and does not reset or otherwise mutate Git. It is allowed while the workspace
+is degraded so the current owner can repair or recover its files without
+another caller claiming them; checkin remains blocked until the workspace is
+reusable.
 
 If post-acquisition reconciliation finds an external change, Trees releases
 the new lease and records the failed checkout before returning an error. The
@@ -326,8 +336,8 @@ Checkout, renewal, checkin, stale-lease recovery, and GC are represented as
 normal `operations` with kinds `checkout`, `checkout_renew`, `checkin`,
 `checkout_reclaim`, and `gc`. Their intent is persisted before any lease or
 reclamation mutation, and their terminal state, state change, and lifecycle
-event are committed atomically in short Diesel transactions. Access and GC
-events use
+event are committed atomically in short Diesel transactions. External Git and
+filesystem work is performed between those transactions. Access and GC events use
 `entity_type = workspace` and the stable workspace ID; structured details
 carry lease-specific identifiers, GC counts, age cutoffs, and the `forced`
 marker when applicable.
@@ -388,7 +398,8 @@ and is not implicitly coupled to this lease in this change.
   repository-set pool, or should GC remain the only capacity control?
 - Should a future Codex wrapper own the checkout lease for the entire
   interactive process and renew it in the background, or should callers pass
-  the identifier explicitly?
+  the identifier explicitly? Either integration must keep lease updates in
+  short SQLite transactions.
 - Should a future administrative command reclassify existing workspaces
   between `automatic` and `manual`, or should that remain a migration-only
   policy?

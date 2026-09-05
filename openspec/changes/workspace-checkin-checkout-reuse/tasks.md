@@ -13,8 +13,9 @@
   normalization, generated path format, and allocation retry behavior after a
   lease race
 - [x] 1.4 Add a typed checkout lease model with owner, acquisition, expiry,
-  and heartbeat timestamps; define the reusable-workspace predicate and
-  explicit mode/access/health separation
+  and heartbeat timestamps; define renewal as optional liveness support rather
+  than a database lock, the reusable-workspace predicate, and explicit
+  mode/access/health separation
 - [x] 1.5 Extend lifecycle states with `dirty` and `reclaimed`, plus
   `last_checked_in_at`, pool-key, pool-scoped absolute workspace-root, and
   reclamation timestamps; update parsing, serialization, workspace-state
@@ -48,7 +49,8 @@
   `failed` precedence for association failures, and make workspace degradation
   and recovery idempotent
 - [x] 3.3 Reconcile active leases at checkout and checkin boundaries while
-  keeping Git commands outside database transactions; verify unchanged
+  keeping Git and filesystem commands outside short database transactions;
+  renew operation heartbeats while external steps run and verify unchanged
   observations do not append duplicate events
 - [x] 3.4 Add a non-forced worktree removal primitive and a workspace-root
   safety check that refuses to remove unexpected files or directories
@@ -64,9 +66,9 @@
 - [x] 4.3 Implement automatic provisioning below the managed workspace root
   when no safe candidate exists, including generated paths, creation intent,
   immediate lease ownership, and partial-creation rollback
-- [x] 4.4 Implement identifier-based renewal with the fixed 24-hour extension,
-  repository-set validation, lease heartbeat updates, and immutable renewal
-  events
+- [x] 4.4 Implement optional identifier-based renewal for work beyond the
+  lease duration with the fixed 24-hour extension, repository-set validation,
+  short lease updates, and immutable renewal events
 - [x] 4.5 Implement expired-lease recovery with a safe reconciliation gate and
   an atomic old-lease removal/new-lease acquisition path
 

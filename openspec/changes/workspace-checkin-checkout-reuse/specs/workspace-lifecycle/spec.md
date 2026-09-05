@@ -121,13 +121,30 @@ Checkout, renewal, checkin, and expired-lease recovery SHALL use the existing
 per-workspace operation serialization. A request SHALL NOT replace an
 unexpired lease or run concurrently with another non-terminal workspace
 operation. Lease changes, operation transitions, and access lifecycle events
-SHALL use the existing short Diesel transaction boundaries.
+SHALL use the existing short Diesel transaction boundaries. Git and filesystem
+work SHALL occur outside those transactions.
 
 #### Scenario: Reject Access During an Active Operation
 
 - **WHEN** a workspace has a non-terminal operation or an unexpired checkout
   lease owned by another checkout identifier
 - **THEN** the access request fails without changing Git or the active lease
+
+### Requirement: Keep SQLite Critical Sections Short
+
+Access and mutation workflows SHALL hold SQLite transactions only while
+persisting intent, lease, snapshot, operation, or lifecycle-event changes. They
+MUST NOT invoke Git commands or filesystem operations from inside those
+transactions. Automatic creation SHALL persist each step intent before the
+external Git operation and persist its result afterward. Lease renewal SHALL
+be one short metadata update and SHALL NOT span external work.
+
+#### Scenario: Run External Work Outside SQLite Transactions
+
+- **WHEN** automatic creation or reconciliation performs a Git or filesystem
+  operation
+- **THEN** no SQLite transaction remains open while the external operation is
+  running, and the operation can be followed by a short result transaction
 
 ### Requirement: Record Access Events with Existing Lifecycle Identity
 
