@@ -31,8 +31,6 @@ diesel::table! {
         workspace_id -> Text,
         owner_id -> Text,
         claimed_at -> Text,
-        lease_expires_at -> Text,
-        last_heartbeat_at -> Text,
     }
 }
 

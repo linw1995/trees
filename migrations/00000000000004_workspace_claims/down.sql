@@ -22,8 +22,8 @@ SELECT
     workspace_id,
     owner_id,
     claimed_at,
-    lease_expires_at,
-    last_heartbeat_at
+    '9999-12-31T23:59:59Z',
+    claimed_at
 FROM workspace_claims;
 
 DROP TABLE workspace_claims;

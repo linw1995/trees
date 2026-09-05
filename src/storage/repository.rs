@@ -327,21 +327,6 @@ pub fn find_workspace_claim_by_id(
         .first(connection)
 }
 
-pub fn renew_workspace_claim(
-    connection: &mut SqliteConnection,
-    claim_id: &ClaimId,
-    lease_expires_at: &Timestamp,
-    last_heartbeat_at: &Timestamp,
-) -> QueryResult<bool> {
-    let updated = diesel::update(workspace_claims::table.find(claim_id))
-        .set((
-            workspace_claims::lease_expires_at.eq(lease_expires_at),
-            workspace_claims::last_heartbeat_at.eq(last_heartbeat_at),
-        ))
-        .execute(connection)?;
-    Ok(updated == 1)
-}
-
 pub fn release_workspace_claim(
     connection: &mut SqliteConnection,
     workspace_id: &WorkspaceId,
@@ -429,158 +414,6 @@ pub fn record_workspace_acquire_failure(
                 details_json,
                 error_json: Some(error_json),
             },
-        )?;
-        Ok(())
-    })
-}
-
-pub fn record_workspace_claim_reclaim(
-    connection: &mut SqliteConnection,
-    operation_id: &OperationId,
-    old_claim: &WorkspaceClaimRow,
-    new_claim: &WorkspaceClaim,
-    details_json: Option<JsonDocument>,
-) -> QueryResult<()> {
-    with_short_transaction(connection, |connection| {
-        let now = Timestamp::now();
-        let removed = diesel::delete(
-            workspace_claims::table
-                .filter(workspace_claims::workspace_id.eq(old_claim.workspace_id))
-                .filter(workspace_claims::id.eq(old_claim.id))
-                .filter(workspace_claims::lease_expires_at.le(&now)),
-        )
-        .execute(connection)?;
-        if removed != 1 {
-            return Err(Error::NotFound);
-        }
-        insert_workspace_claim(connection, &NewWorkspaceClaim::from(new_claim))?;
-        let workspace = workspaces::table
-            .find(&new_claim.workspace_id)
-            .select(WorkspaceRow::as_select())
-            .first(connection)?;
-        finish_operation_in_transaction(
-            connection,
-            operation_id,
-            OperationState::Succeeded,
-            "acquire claim recovery complete",
-            None,
-            TransitionMetadata::new("operation_succeeded", "recovery")
-                .with_details(details_json.clone().unwrap_or_else(empty_json)),
-        )?;
-        append_event(
-            connection,
-            &workspace_access_event(
-                operation_id,
-                &workspace,
-                "workspace_claim_expired",
-                details_json.clone(),
-            ),
-        )?;
-        append_event(
-            connection,
-            &workspace_access_event(operation_id, &workspace, "workspace_claimed", details_json),
-        )?;
-        Ok(())
-    })
-}
-
-pub fn record_workspace_claim_expiration_failure(
-    connection: &mut SqliteConnection,
-    operation_id: &OperationId,
-    old_claim: &WorkspaceClaimRow,
-    details_json: Option<JsonDocument>,
-    error_json: JsonDocument,
-) -> QueryResult<()> {
-    with_short_transaction(connection, |connection| {
-        let now = Timestamp::now();
-        let workspace = workspaces::table
-            .find(&old_claim.workspace_id)
-            .select(WorkspaceRow::as_select())
-            .first(connection)?;
-        let removed = diesel::delete(
-            workspace_claims::table
-                .filter(workspace_claims::workspace_id.eq(old_claim.workspace_id))
-                .filter(workspace_claims::id.eq(old_claim.id))
-                .filter(workspace_claims::lease_expires_at.le(&now)),
-        )
-        .execute(connection)?;
-        if removed != 1 {
-            return Err(Error::NotFound);
-        }
-        finish_operation_in_transaction(
-            connection,
-            operation_id,
-            OperationState::Failed,
-            "acquire rejected expired claim",
-            None,
-            TransitionMetadata::new("operation_failed", "recovery")
-                .with_details(details_json.clone().unwrap_or_else(empty_json))
-                .with_error(error_json.clone()),
-        )?;
-        append_event(
-            connection,
-            &workspace_access_event(
-                operation_id,
-                &workspace,
-                "workspace_claim_expired",
-                details_json.clone(),
-            ),
-        )?;
-        append_event(
-            connection,
-            &EventDraft {
-                operation_id: *operation_id,
-                entity_type: "workspace".to_owned(),
-                entity_id: workspace.id.to_string(),
-                event_type: "workspace_acquire_failed".to_owned(),
-                source: "recovery".to_owned(),
-                occurred_at: Timestamp::now(),
-                previous_state: Some(workspace.state.to_string()),
-                current_state: Some(workspace.state.to_string()),
-                details_json,
-                error_json: Some(error_json),
-            },
-        )?;
-        Ok(())
-    })
-}
-
-pub fn record_workspace_claim_renewal(
-    connection: &mut SqliteConnection,
-    operation_id: &OperationId,
-    claim: &WorkspaceClaim,
-    details_json: Option<JsonDocument>,
-) -> QueryResult<()> {
-    with_short_transaction(connection, |connection| {
-        if !renew_workspace_claim(
-            connection,
-            &claim.id,
-            &claim.lease_expires_at,
-            &claim.last_heartbeat_at,
-        )? {
-            return Err(Error::NotFound);
-        }
-        let workspace = workspaces::table
-            .find(&claim.workspace_id)
-            .select(WorkspaceRow::as_select())
-            .first(connection)?;
-        finish_operation_in_transaction(
-            connection,
-            operation_id,
-            OperationState::Succeeded,
-            "claim renewal complete",
-            None,
-            TransitionMetadata::new("operation_succeeded", "trees")
-                .with_details(details_json.clone().unwrap_or_else(empty_json)),
-        )?;
-        append_event(
-            connection,
-            &workspace_access_event(
-                operation_id,
-                &workspace,
-                "workspace_claim_renewed",
-                details_json,
-            ),
         )?;
         Ok(())
     })
@@ -1719,7 +1552,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_claims_round_trip_renew_and_release() {
+    fn workspace_claims_round_trip_and_release() {
         let database_path =
             std::env::temp_dir().join(format!("trees-{}.sqlite", WorkspaceId::new()));
         let mut connection = database::connect(&database_path).expect("database should open");
@@ -1740,7 +1573,7 @@ mod tests {
         )
         .expect("workspace should be inserted");
 
-        let mut claim = WorkspaceClaim::new(workspace_id, "process:test");
+        let claim = WorkspaceClaim::new(workspace_id, "process:test");
         let row = insert_workspace_claim(&mut connection, &NewWorkspaceClaim::from(&claim))
             .expect("claim should be inserted");
         assert_eq!(row.id, claim.id);
@@ -1763,21 +1596,6 @@ mod tests {
                 .unwrap()
                 .workspace_id,
             workspace_id
-        );
-
-        claim.renew();
-        assert!(renew_workspace_claim(
-            &mut connection,
-            &claim.id,
-            &claim.lease_expires_at,
-            &claim.last_heartbeat_at,
-        )
-        .expect("claim should renew"));
-        assert_eq!(
-            find_workspace_claim_by_id(&mut connection, &claim.id)
-                .unwrap()
-                .lease_expires_at,
-            claim.lease_expires_at
         );
 
         let wrong_claim_id = ClaimId::new();

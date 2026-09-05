@@ -65,7 +65,6 @@ fn automatic_fixture() -> AutomaticFixture {
     let mut connection = trees::database::connect(&database_path).expect("database should open");
     let mut plan = prepare_automatic(&AutomaticCreateRequest {
         repositories: vec![source_path],
-        claim_id: None,
     })
     .expect("automatic plan should be prepared");
     plan.workspace_root = CanonicalPath::from_absolute(root.join("managed"))
@@ -204,7 +203,6 @@ fn selects_the_oldest_checked_in_slot_for_an_exact_repository_set() {
     let mut connection = trees::database::connect(&database_path).expect("database should open");
     let mut plan = prepare_automatic(&AutomaticCreateRequest {
         repositories: vec![first_source.clone(), second_source.clone()],
-        claim_id: None,
     })
     .expect("automatic plan should be prepared");
     plan.workspace_root = CanonicalPath::from_absolute(root.join("managed"))
@@ -351,7 +349,6 @@ fn keeps_manual_workspaces_out_of_automatic_allocation() {
 
     let mut plan = prepare_automatic(&AutomaticCreateRequest {
         repositories: vec![source_path.clone()],
-        claim_id: None,
     })
     .expect("automatic plan should be prepared");
     plan.workspace_root = CanonicalPath::from_absolute(root.join("managed"))

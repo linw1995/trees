@@ -149,9 +149,8 @@ pub struct NewOriginRepository {
 
 /// Stores the current usage claim for an automatic workspace.
 ///
-/// The row is created by acquisition and removed by successful release or
-/// expired-claim recovery. It is not a history record; rejected release leaves
-/// it in place for the current owner to repair and renew.
+/// The row is created by acquisition and removed by successful release. It is
+/// not a history record; rejected release leaves it in place for inspection.
 #[derive(Debug, Queryable, Selectable, Identifiable)]
 #[diesel(table_name = workspace_claims)]
 #[diesel(check_for_backend(Sqlite))]
@@ -160,8 +159,6 @@ pub struct WorkspaceClaimRow {
     pub workspace_id: WorkspaceId,
     pub owner_id: String,
     pub claimed_at: Timestamp,
-    pub lease_expires_at: Timestamp,
-    pub last_heartbeat_at: Timestamp,
 }
 
 #[derive(Debug, Insertable)]
@@ -171,8 +168,6 @@ pub struct NewWorkspaceClaim {
     pub workspace_id: WorkspaceId,
     pub owner_id: String,
     pub claimed_at: Timestamp,
-    pub lease_expires_at: Timestamp,
-    pub last_heartbeat_at: Timestamp,
 }
 
 impl From<&WorkspaceClaim> for NewWorkspaceClaim {
@@ -182,8 +177,6 @@ impl From<&WorkspaceClaim> for NewWorkspaceClaim {
             workspace_id: value.workspace_id,
             owner_id: value.owner_id.clone(),
             claimed_at: value.claimed_at.clone(),
-            lease_expires_at: value.lease_expires_at.clone(),
-            last_heartbeat_at: value.last_heartbeat_at.clone(),
         }
     }
 }
@@ -195,8 +188,6 @@ impl From<WorkspaceClaimRow> for WorkspaceClaim {
             workspace_id: value.workspace_id,
             owner_id: value.owner_id,
             claimed_at: value.claimed_at,
-            lease_expires_at: value.lease_expires_at,
-            last_heartbeat_at: value.last_heartbeat_at,
         }
     }
 }

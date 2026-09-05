@@ -31,13 +31,6 @@ pub struct CreateArgs {
     #[arg(long = "repo", required = true, value_name = "REPOSITORY_PATH")]
     pub repositories: Vec<PathBuf>,
 
-    #[arg(
-        long = "claim-id",
-        visible_alias = "checkout-id",
-        value_name = "CLAIM_ID"
-    )]
-    pub claim_id: Option<String>,
-
     #[arg(long, help = "Print the create result as JSON")]
     pub json: bool,
 }
@@ -162,7 +155,6 @@ mod tests {
             arguments.repositories,
             [PathBuf::from("/tmp/one"), PathBuf::from("/tmp/two")]
         );
-        assert_eq!(arguments.claim_id, None);
         assert!(!arguments.json);
     }
 
@@ -181,27 +173,6 @@ mod tests {
             arguments.repositories,
             [PathBuf::from("/tmp/one"), PathBuf::from("/tmp/two")]
         );
-        assert_eq!(arguments.claim_id, None);
-        assert!(!arguments.json);
-    }
-
-    #[test]
-    fn parses_automatic_create_renewal() {
-        let cli = Cli::try_parse_from([
-            "trees",
-            "create",
-            "--repo",
-            "/tmp/one",
-            "--checkout-id",
-            "checkout-id",
-        ])
-        .expect("automatic renewal command should parse");
-
-        let Command::Create(arguments) = cli.command else {
-            panic!("expected create command");
-        };
-        assert_eq!(arguments.workspace_path, None);
-        assert_eq!(arguments.claim_id.as_deref(), Some("checkout-id"));
         assert!(!arguments.json);
     }
 

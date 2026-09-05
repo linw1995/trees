@@ -21,15 +21,10 @@ fn run_create(arguments: trees::cli::CreateArgs) -> ExitCode {
     let trees::cli::CreateArgs {
         workspace_path,
         repositories,
-        claim_id,
         json,
     } = arguments;
     match workspace_path {
         Some(workspace_path) => {
-            if claim_id.is_some() {
-                eprintln!("Error: claim ID is only valid for automatic create");
-                return ExitCode::FAILURE;
-            }
             match trees::workspace::create(trees::workspace::CreateRequest {
                 workspace_path,
                 repositories,
@@ -50,29 +45,14 @@ fn run_create(arguments: trees::cli::CreateArgs) -> ExitCode {
                 }
             }
         }
-        None => run_automatic_create(repositories, claim_id, json),
+        None => run_automatic_create(repositories, json),
     }
 }
 
-fn run_automatic_create(
-    repositories: Vec<std::path::PathBuf>,
-    claim_id: Option<String>,
-    json: bool,
-) -> ExitCode {
-    let claim_id = match claim_id {
-        Some(value) => match value.parse::<trees::domain::ClaimId>() {
-            Ok(claim_id) => Some(claim_id),
-            Err(error) => {
-                eprintln!("Error: invalid claim ID: {error}");
-                return ExitCode::FAILURE;
-            }
-        },
-        None => None,
-    };
+fn run_automatic_create(repositories: Vec<std::path::PathBuf>, json: bool) -> ExitCode {
     let plan =
         match trees::workspace::prepare_automatic(&trees::workspace::AutomaticCreateRequest {
             repositories,
-            claim_id,
         }) {
             Ok(plan) => plan,
             Err(error) => {
@@ -274,11 +254,10 @@ fn print_automatic_claim_result(result: &trees::workspace::AutomaticClaimResult)
 
 fn automatic_claim_shell_output(result: &trees::workspace::AutomaticClaimResult) -> String {
     format!(
-        "WORKSPACE_PATH={}\nPOOL_KEY={}\nCLAIM_ID={}\nLEASE_EXPIRES_AT={}",
+        "WORKSPACE_PATH={}\nPOOL_KEY={}\nCLAIM_ID={}",
         bash_quote(&result.workspace_path.to_string()),
         bash_quote(&result.pool_key.to_string()),
         bash_quote(&result.claim_id.to_string()),
-        bash_quote(&result.lease_expires_at.to_string()),
     )
 }
 
@@ -389,15 +368,12 @@ mod tests {
                 .expect("workspace path should be absolute"),
             pool_key: trees::domain::PoolId::new(),
             claim_id: trees::domain::ClaimId::new(),
-            lease_expires_at: trees::domain::Timestamp::parse("2026-09-03T00:00:00Z")
-                .expect("claim expiry should be valid"),
         };
 
         let output = automatic_claim_shell_output(&result);
 
         assert!(output.starts_with("WORKSPACE_PATH='/tmp/workspace'\nPOOL_KEY='"));
         assert!(output.contains("\nCLAIM_ID='"));
-        assert!(output.ends_with("\nLEASE_EXPIRES_AT='2026-09-03T00:00:00Z'"));
     }
 
     #[test]
@@ -407,8 +383,6 @@ mod tests {
                 .expect("workspace path should be absolute"),
             pool_key: trees::domain::PoolId::new(),
             claim_id: trees::domain::ClaimId::new(),
-            lease_expires_at: trees::domain::Timestamp::parse("2026-09-03T00:00:00Z")
-                .expect("lease expiry should be valid"),
         };
         let output = serde_json::to_string(&result).expect("claim should serialize as JSON");
         let value: serde_json::Value =
@@ -420,6 +394,5 @@ mod tests {
             .expect("pool key should be a string");
         assert!(pool_key.parse::<trees::domain::PoolId>().is_ok());
         assert!(value["claim_id"].is_string());
-        assert_eq!(value["lease_expires_at"], "2026-09-03T00:00:00Z");
     }
 }

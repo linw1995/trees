@@ -120,7 +120,6 @@ pub enum GcCandidateReason {
     Eligible,
     Young,
     CheckedOut,
-    ExpiredClaim,
     ActiveOperation,
     Unhealthy,
     UnsafeRoot,
@@ -137,7 +136,6 @@ impl fmt::Display for GcCandidateReason {
             Self::Eligible => "eligible",
             Self::Young => "young",
             Self::CheckedOut => "checked_out",
-            Self::ExpiredClaim => "expired_claim",
             Self::ActiveOperation => "active_operation",
             Self::Unhealthy => "unhealthy",
             Self::UnsafeRoot => "unsafe_root",
@@ -157,7 +155,6 @@ pub struct GcCandidate {
     pub idle_since: Timestamp,
     pub age_eligible: bool,
     pub checked_out: bool,
-    pub expired_claim: bool,
     pub active_operation: bool,
 }
 
@@ -167,8 +164,6 @@ impl GcCandidate {
             GcCandidateReason::Young
         } else if self.checked_out {
             GcCandidateReason::CheckedOut
-        } else if self.expired_claim {
-            GcCandidateReason::ExpiredClaim
         } else if self.active_operation {
             GcCandidateReason::ActiveOperation
         } else if self.workspace.state != WorkspaceState::Ready {
@@ -232,12 +227,7 @@ pub fn scan(
     let mut candidates = Vec::with_capacity(workspaces.len());
     for workspace in workspaces {
         let claim = find_workspace_claim(connection, &workspace.id).map_err(GcError::Database)?;
-        let checked_out = claim
-            .as_ref()
-            .is_some_and(|claim| !claim.lease_expires_at.has_expired());
-        let expired_claim = claim
-            .as_ref()
-            .is_some_and(|claim| claim.lease_expires_at.has_expired());
+        let checked_out = claim.is_some();
         if checked_out {
             counts.checked_out += 1;
         } else {
@@ -259,7 +249,6 @@ pub fn scan(
             idle_since,
             age_eligible,
             checked_out,
-            expired_claim,
             active_operation,
         };
         if candidate.reason() == GcCandidateReason::Eligible {
@@ -328,22 +317,17 @@ pub fn execute(
 
         let workspace = find_workspace(connection, &workspace_id).map_err(GcError::Database)?;
         let claim = find_workspace_claim(connection, &workspace_id).map_err(GcError::Database)?;
-        if let Some(claim) = claim {
-            let reason = if claim.lease_expires_at.has_expired() {
-                GcCandidateReason::ExpiredClaim
-            } else {
-                GcCandidateReason::CheckedOut
-            };
+        if claim.is_some() {
             finish_gc_skip(
                 connection,
                 &operation.id,
                 &workspace_id,
                 details_json,
-                reason,
+                GcCandidateReason::CheckedOut,
             )?;
             report.skipped.push(GcSkipped {
                 workspace_path: workspace.canonical_path,
-                reason,
+                reason: GcCandidateReason::CheckedOut,
             });
             continue;
         }
@@ -431,9 +415,6 @@ fn execution_skip_reason(candidate: &GcCandidate, force: bool) -> Option<GcCandi
     }
     if candidate.checked_out {
         return Some(GcCandidateReason::CheckedOut);
-    }
-    if candidate.expired_claim {
-        return Some(GcCandidateReason::ExpiredClaim);
     }
     if candidate.active_operation {
         return Some(GcCandidateReason::ActiveOperation);
@@ -840,7 +821,6 @@ mod tests {
         let mut connection = database::connect(&database_path).expect("database should open");
         let mut plan = prepare_automatic(&AutomaticCreateRequest {
             repositories: vec![source_path],
-            claim_id: None,
         })
         .expect("automatic allocation plan should be prepared");
         plan.workspace_root = CanonicalPath::from_absolute(root.join("managed"))
@@ -924,13 +904,12 @@ mod tests {
             (WorkspaceState::Ready, old.clone(), None),
             (WorkspaceState::Ready, young, None),
             (WorkspaceState::Ready, old.clone(), Some("active")),
-            (WorkspaceState::Ready, old.clone(), Some("expired")),
             (WorkspaceState::Degraded, old.clone(), None),
         ];
         let mut workspace_ids = Vec::new();
-        for (state, idle_since, lease_kind) in entries {
+        for (state, idle_since, claim_kind) in entries {
             let id = WorkspaceId::new();
-            workspace_ids.push((id, lease_kind));
+            workspace_ids.push((id, claim_kind));
             let workspace_path = CanonicalPath::from_absolute(root.join(id.to_string()))
                 .expect("workspace path should be absolute");
             insert_managed_workspace(
@@ -949,13 +928,10 @@ mod tests {
                 },
             )
             .expect("workspace should be inserted");
-            if let Some(lease_kind) = lease_kind {
-                let mut lease = WorkspaceClaim::new(id, lease_kind);
-                if lease_kind == "expired" {
-                    lease.lease_expires_at = old.clone();
-                }
-                insert_workspace_claim(&mut connection, &NewWorkspaceClaim::from(&lease))
-                    .expect("lease should be inserted");
+            if let Some(claim_kind) = claim_kind {
+                let claim = WorkspaceClaim::new(id, claim_kind);
+                insert_workspace_claim(&mut connection, &NewWorkspaceClaim::from(&claim))
+                    .expect("claim should be inserted");
             }
         }
         let manual_id = WorkspaceId::new();
@@ -983,16 +959,12 @@ mod tests {
             "30d".parse().expect("duration should parse"),
         )
         .expect("GC scan should succeed");
-        assert_eq!(result.counts.automatic, 5);
-        assert_eq!(result.counts.not_checked_out, 4);
+        assert_eq!(result.counts.automatic, 4);
+        assert_eq!(result.counts.not_checked_out, 3);
         assert_eq!(result.counts.checked_out, 1);
-        assert_eq!(result.counts.age_eligible, 4);
+        assert_eq!(result.counts.age_eligible, 3);
         assert_eq!(result.counts.safe_to_reclaim, 1);
-        assert!(result
-            .candidates
-            .iter()
-            .any(|candidate| candidate.reason() == GcCandidateReason::ExpiredClaim));
-        assert_eq!(workspace_ids.len(), 5);
+        assert_eq!(workspace_ids.len(), 4);
 
         drop(connection);
         fs::remove_file(database_path).expect("state database should be removable");

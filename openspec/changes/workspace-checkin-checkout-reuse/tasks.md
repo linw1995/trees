@@ -12,9 +12,9 @@
   configurable platform-specific `workspaces_dir`, absolute root
   normalization, generated path format, and allocation retry behavior after a
   claim race
-- [x] 1.4 Define a typed workspace claim with owner, acquisition timestamp,
-  expiry, and heartbeat; define renewal and expired-claim recovery while
-  keeping explicit mode/access/health separation
+- [x] 1.4 Define a typed workspace claim with owner and acquisition timestamp;
+  keep expiry, heartbeat, and renewal on operation leases only, and define
+  explicit mode/access/health separation
 - [x] 1.5 Extend lifecycle states with `dirty` and `reclaimed`, plus
   `last_checked_in_at`, pool-key, pool-scoped absolute workspace-root, and
   reclamation timestamps; update claim parsing, serialization, workspace-state
@@ -24,8 +24,8 @@
 
 - [x] 2.1 Add follow-up migration `00000000000004` that converts the existing
   `workspace_leases` table into `workspace_claims`, preserves active workspace
-  IDs, owners, acquisition timestamps, expiry, and heartbeat metadata, and
-  keeps one active claim per workspace
+  IDs, owners, and acquisition timestamps, removes workspace lease expiry and
+  heartbeat columns, and keeps one active claim per workspace
 - [x] 2.2 Backfill legacy explicit-path workspace records as `manual` without
   touching Git or the filesystem, and provide a reversible down migration for
   workspace claims
@@ -49,9 +49,8 @@
   and recovery idempotent
 - [x] 3.3 Reconcile active claims at acquire and release boundaries while
   keeping Git and filesystem commands outside short database transactions;
-  support claim renewal before expiry, renew operation heartbeats while
-  external steps run, and verify unchanged observations do not append duplicate
-  events
+  renew operation heartbeats while external steps run, and verify unchanged
+  observations do not append duplicate events
 - [x] 3.4 Add a non-forced worktree removal primitive and a workspace-root
   safety check that refuses to remove unexpected files or directories
 
@@ -60,9 +59,9 @@
 - [x] 4.1 Implement automatic repository-set allocation that searches exact
   pool-key matches, filters reusable idle candidates, selects least-recently
   checked-in workspaces, and retries after an acquisition race
-- [x] 4.2 Persist allocation intent and acquire or recover the workspace claim
-  atomically, then run final reconciliation and release the claim with a
-  failure event if the post-check fails
+- [x] 4.2 Persist allocation intent and acquire the workspace claim atomically,
+  then run final reconciliation and release the claim with a failure event if
+  the post-check fails
 - [x] 4.3 Implement automatic provisioning below the managed workspace root
   when no safe candidate exists, including generated paths, creation intent,
   immediate claim ownership, and partial-creation rollback
@@ -75,11 +74,10 @@
 
 - [x] 5.1 Implement token-protected checkin that retains the claim on dirty,
   missing, prunable, diverged, or failed worktrees and releases it only after
-  a successful reusable-state check; reject expired claims until automatic
-  recovery has reconciled the workspace
+  a successful reusable-state check
 - [x] 5.2 Wire Clap parsing and `main` dispatch for automatic create, claim
-  renewal/release, and checkin; print stable shell variables for workspace, pool
-  key, claim ID, and claim expiry while keeping human-readable errors
+  release, and checkin; print stable shell variables for workspace, pool key,
+  and claim ID while keeping human-readable errors
 - [x] 5.3 Add `trees config set workspaces-dir <path>` and configuration
   loading, resolving configured paths to absolute values before persistence;
   keep database state and workspace content directories separate
@@ -107,7 +105,7 @@
   UUID/timestamp serialization, reusable predicates, operation lease expiry,
   and dirty-state reconciliation
 - [x] 6.2 Add integration tests for pool allocation, root resolution, generated
-  paths, concurrency, claim recovery, rejected dirty checkin, and mode
+  paths, concurrency, operation recovery, rejected dirty checkin, and mode
   isolation. Cover dry-run GC, thresholds, safe and forced reclamation,
   confirmation, partial failures, external worktree removal, and Git identity
   preservation.
