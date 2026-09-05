@@ -147,8 +147,10 @@ pub struct NewOriginRepository {
     pub source_path: CanonicalPath,
 }
 
-/// Stores only the current checkout claim; completed checkins are represented
-/// by workspace timestamps and lifecycle events instead of retained lease rows.
+/// Stores the current usage claim for an automatic workspace.
+///
+/// The row is created by checkout and removed by successful checkin. It is not
+/// a history record; rejected checkin leaves it in place for recovery.
 #[derive(Debug, Queryable, Selectable, Identifiable)]
 #[diesel(table_name = workspace_leases)]
 #[diesel(check_for_backend(Sqlite))]
