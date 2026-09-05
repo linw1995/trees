@@ -9,10 +9,11 @@ already used by Codex integration and lifecycle tracking.
 
 An explicit acquire/release protocol makes an existing workspace a reusable
 resource: an automatic request is keyed by its repository directories, one
-caller holds the selected slot at a time through a durable workspace claim, and
-a workspace is returned to the pool only when its worktrees are safe to hand
-to the next caller. The claim is persistent ownership state, not a long-lived
-SQLite transaction or a renewable workspace lease. A separate management mode
+caller holds the selected slot at a time through a time-bounded workspace
+claim, and a workspace is returned to the pool only when its worktrees are safe
+to hand to the next caller. The claim is persistent ownership state, not a
+long-lived SQLite transaction; its expiry and heartbeat metadata provide
+automatic recovery when the owner disappears. A separate management mode
 distinguishes workspaces that Trees may automatically reclaim from workspaces
 whose retention remains a manual responsibility.
 
@@ -31,6 +32,8 @@ whose retention remains a manual responsibility.
 - Add `trees checkin <workspace-path> --claim-id <claim-id>` to release the
   claim after reconciliation. Existing `--checkout-id` spellings may remain as
   compatibility aliases while the claim terminology is introduced.
+- Accept `trees create --repo ... --claim-id <claim-id>` to renew an
+  unexpired claim for the same repository set without mutating Git.
 - Add `trees gc --older-than <duration> [--dry-run] [--yes] [--force]` to
   reclaim idle automatic workspaces while never selecting manual workspaces;
   report the number not currently checked out and confirm the normal
@@ -40,16 +43,18 @@ whose retention remains a manual responsibility.
 - Persist an `automatic` or `manual` workspace management mode inferred from
   the automatic repository-only or manual path-based command shape, together
   with the last successful checkin time used by GC.
-- Persist at most one active workspace claim per workspace, with an owner and
-  claim timestamp, while keeping workspace health separate from access state.
-  Claim and operation updates SHALL use short SQLite transactions; Git and
-  filesystem work SHALL never hold those transactions open.
+- Persist at most one active workspace claim per workspace, with an owner,
+  claim timestamp, expiry, and heartbeat, while keeping workspace health
+  separate from access state. Claim and operation updates SHALL use short
+  SQLite transactions; Git and filesystem work SHALL never hold those
+  transactions open.
 - Require every managed worktree to be present, attached, detached, clean,
   and at its recorded revision before a claim can be acquired or released.
-- Do not infer abandoned claims from process liveness or expire them
-  automatically in this change. Physical worktree removal is restricted to an
-  explicit GC operation, with `--force` as the explicit opt-in for unsafe
-  automatic-slot cleanup; active claims remain protected.
+- Recover abandoned claims only after their expiry and a fresh reusable-state
+  reconciliation. Never override an unexpired claim. Physical worktree removal
+  is restricted to an explicit GC operation, with `--force` as the explicit
+  opt-in for unsafe automatic-slot cleanup; active unexpired claims remain
+  protected.
 - Record acquire, release, rejection, and operation recovery actions in the
   existing operation and immutable lifecycle event model; operation heartbeats
   update the running operation without appending an event for every heartbeat.
@@ -79,9 +84,9 @@ whose retention remains a manual responsibility.
 - Extends the Clap command surface and dispatch in `src/cli.rs` and
   `src/main.rs`.
 - Adds a follow-up lifecycle migration that converts the existing workspace
-  lease table into active workspace claims and removes workspace expiry and
-  heartbeat columns; existing migrations already provide management mode, pool
-  metadata, GC timestamps, and reclaimed states.
+  lease table into active workspace claims while preserving expiry and
+  heartbeat metadata; existing migrations already provide management mode,
+  pool metadata, GC timestamps, and reclaimed states.
 - Extends the path/configuration layers with a configurable platform-specific
   automatic workspace root, absolute persisted paths, and generated workspace
   paths.

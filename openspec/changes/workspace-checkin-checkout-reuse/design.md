@@ -97,8 +97,16 @@ The workspace claim table stores the current usage claim only:
 - `workspace_id`: the unique workspace foreign key;
 - `owner_id`: a local invocation identity for diagnostics;
 - `claimed_at`: the acquisition time.
+- `lease_expires_at`: the finite recovery deadline;
+- `last_heartbeat_at`: the last successful acquisition or renewal time.
 
-Claims have no expiry, heartbeat, or renewal protocol. Completed claims are
+The claim remains while the caller uses the workspace, but it does not hold a
+SQLite transaction or database lock. The default claim duration is 24 hours.
+The owner may renew it through a short transaction before it expires. If the
+owner disappears, a later automatic acquire may replace the claim only after
+its expiry and a fresh reconciliation proves that the workspace is reusable.
+An expired claim on an unsafe workspace is removed and recorded, but the
+workspace remains degraded and no new caller receives it. Completed claims are
 represented by immutable lifecycle events rather than retained rows. The
 workspace and repo-worktree IDs never change when a claim is reused.
 
@@ -144,14 +152,14 @@ The command contract separates automatic allocation from manual provisioning:
 
 ```text
 trees create --repo <repository-path>...
+trees create --repo <repository-path>... --claim-id <claim-id>
 trees create <workspace-path> --repo <repository-path>...
 trees checkin <workspace-path> --claim-id <claim-id>
 ```
 
 The existing `--checkout-id` spelling may remain as a compatibility alias while
-the claim terminology is introduced, but it applies only to checkin. Automatic
-create does not accept an identifier for renewing or extending a workspace
-claim.
+the claim terminology is introduced. Automatic create accepts `--claim-id`
+when renewing an existing claim for the same repository set.
 
 The automatic form does not accept a concrete workspace path. It canonicalizes
 and inspects every repository, derives a BLAKE3 hash and canonical JSON array
@@ -174,9 +182,11 @@ as part of the creation intent. A failed provisioning attempt is rolled back at
 the filesystem level where possible and remains a failed lifecycle record for
 diagnostics; it is never returned as an allocated workspace.
 
-The automatic result returns the claim identifier for later checkin. Checkin
-releases the claim only after reconciliation confirms that the workspace is
-safe to reuse. Manual provisioning requires an explicit path and bypasses pool
+The automatic result returns the claim identifier and expiry for later renewal
+or checkin. Automatic create with the same claim identifier renews the active
+claim for the matching repository set without mutating Git. Checkin releases
+the claim only after reconciliation confirms that the workspace is safe to
+reuse. Manual provisioning requires an explicit path and bypasses pool
 allocation, automated claiming, and GC; manual callers continue using the
 existing workspace/Codex paths without automated claims.
 
@@ -212,7 +222,7 @@ checkout baseline. The caller must repair or intentionally preserve such work
 outside this change; Trees never runs `reset --hard`, `clean`, or worktree
 removal as part of checkin.
 
-### Acquire and Release Workspace Claims
+### Acquire, Renew, and Release Workspace Claims
 
 For an existing pool candidate, Trees reconciles and verifies that the
 workspace is automatic, `ready`, has no active operation, and has no active
@@ -226,11 +236,14 @@ short intent/result updates, and the claim is returned to the caller only after
 creation reaches `ready`.
 
 The claim remains in the database while the caller uses the workspace, but it
-does not hold a SQLite transaction or database lock. A claim has no expiry,
-heartbeat, or renewal protocol. If post-acquisition reconciliation finds an
-external change, Trees releases the new claim and records the failed
-acquisition before returning an error. The caller never receives a successful
-acquisition result for a workspace that fails the final safety check.
+does not hold a SQLite transaction or database lock. Its 24-hour expiry is a
+recovery deadline, not a database lock timeout. The owner may renew an
+unexpired claim through a short owner-checked transaction; renewal does not
+run Git or filesystem work and does not change the workspace snapshot. If
+post-acquisition reconciliation finds an external change, Trees releases the
+new claim and records the failed acquisition before returning an error. The
+caller never receives a successful acquisition result for a workspace that
+fails the final safety check.
 
 ### Release Without Destructive Cleanup
 
@@ -249,14 +262,22 @@ workspace without exposing it to the next caller. A repeated checkin can
 succeed after the owner has repaired the state externally and reconciliation
 sees the original baseline again.
 
-### Recover Expired Operation Leases
+### Recover Expired Claims and Operation Leases
 
-Workspace claims do not expire and are never replaced by automatic allocation.
-Only operation leases have expiry and heartbeat metadata. When an operation
-lease expires, a later invocation may claim the operation through an atomic
-owner/expiry check, observe the external Git and filesystem state, and either
-finish or roll back the incomplete operation. Operation lease recovery does
-not create, release, or extend a workspace claim.
+An unexpired workspace claim is never overridden, even if its owner process is
+not observable. When automatic acquire sees an expired claim, it first
+reconciles the workspace. If the workspace is reusable, one short transaction
+records the expired claim, removes it, creates a new claim, and records the new
+acquisition. If the workspace is not reusable, the expired claim is removed
+and recorded, the workspace remains degraded, and no caller receives the path.
+This is the automatic failure-recovery path; GC never overrides a claim.
+
+Operation leases independently protect a mutation while Git or filesystem
+work runs outside SQLite transactions. When an operation lease expires, a
+later invocation may claim the operation through an atomic owner/expiry check,
+observe external state, and either finish or roll back the incomplete
+operation. Operation lease recovery does not create, release, or extend a
+workspace claim.
 
 ### Reclaim Only Idle Automatic Workspaces
 
@@ -368,8 +389,8 @@ coupled to this claim in this change.
 1. Keep migrations `00000000000002` and `00000000000003` for the existing
    management, pool, origin, and workspace reuse data. Add follow-up migration
    `00000000000004` to convert `workspace_leases` into `workspace_claims`,
-   preserving active workspace IDs, owners, and acquisition timestamps while
-   dropping workspace lease expiry and heartbeat columns. Existing
+   preserving active workspace IDs, owners, acquisition timestamps, expiry,
+   and heartbeat metadata. Existing
    explicit-path workspace rows remain `manual` with no active claim; the
    migrations do not touch Git or delete files.
 2. Extend the repository and domain layers without changing existing

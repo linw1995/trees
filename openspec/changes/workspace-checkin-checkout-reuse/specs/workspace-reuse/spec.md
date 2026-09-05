@@ -87,8 +87,10 @@ indexed hash and exact canonical JSON set of Git common-directory identities,
 and search for an idle automatic workspace referencing that pool. It SHALL
 reconcile candidates before selection, acquire a workspace claim for a
 reusable candidate, and provision a new automatic workspace below the
-Trees-managed workspace root when no safe candidate exists. The successful
-result SHALL include the allocated workspace path and claim identifier.
+Trees-managed workspace root when no safe candidate exists. An expired claim
+MAY be replaced only after reconciliation proves the workspace reusable. The
+successful result SHALL include the allocated workspace path, claim identifier,
+and claim expiry.
 
 #### Scenario: Allocate a Reusable Pool Slot
 
@@ -132,15 +134,15 @@ result SHALL include the allocated workspace path and claim identifier.
 
 The system SHALL persist at most one active workspace claim for each
 workspace. The claim SHALL contain a UUID v7 claim identifier, the workspace
-ID, an owner identity, and a claim timestamp. The workspace ID SHALL be unique
-in the active claim table. A workspace with no active claim is unclaimed; a
-workspace with an active claim is unavailable for another acquisition. The
-claim is persistent usage state, not a SQLite transaction or database lock,
-and SHALL remain until its owner releases it. It SHALL NOT have an expiry,
-heartbeat, or renewal protocol. The claim identifier SHALL be required to
+ID, an owner identity, a claim timestamp, a finite expiry, and a heartbeat
+timestamp. The workspace ID SHALL be unique in the active claim table. A
+workspace with no active claim is unclaimed; a workspace with an unexpired
+active claim is unavailable for another acquisition. The claim is persistent
+usage state, not a SQLite transaction or database lock, and SHALL remain until
+its owner releases it or its expiry is safely recovered. The default claim
+duration SHALL be 24 hours. The claim identifier SHALL be required to renew or
 release the claim and SHALL be treated as a local coordination token rather
-than a security credential. This capability SHALL NOT infer an abandoned claim
-from process liveness or automatically replace it.
+than a security credential.
 
 #### Scenario: Serialize Concurrent Acquisitions
 
@@ -155,6 +157,39 @@ from process liveness or automatically replace it.
 - **THEN** its workspace ID, repo-worktree IDs, canonical paths, and Git
   worktree associations remain unchanged while a new claim identifier may be
   issued
+
+### Requirement: Renew and Recover Workspace Claims
+
+Automatic create SHALL accept the current `--claim-id` for the matching
+repository set and renew that unexpired claim without mutating Git. Renewal
+SHALL extend the claim expiry by the configured claim duration, whose default
+SHALL be 24 hours, and SHALL use a short owner-checked SQLite transaction.
+Renewal SHALL NOT hold a transaction during Git or filesystem work. An
+unexpired claim SHALL never be replaced. An expired claim MAY be reclaimed by
+automatic allocation only after fresh reconciliation proves that every managed
+worktree is reusable. GC SHALL report an expired claim as not currently checked
+out but SHALL not replace it or remove its workspace.
+
+#### Scenario: Renew an Owned Claim
+
+- **WHEN** the supplied claim identifier matches an unexpired claim for the
+  matching repository set
+- **THEN** automatic create succeeds with the same identifier and a later
+  expiry, without creating another claim or changing any worktree
+
+#### Scenario: Reclaim a Safe Expired Claim
+
+- **WHEN** an active claim is expired and automatic allocation reconciles a
+  reusable workspace
+- **THEN** one short transaction records the expired claim, removes it, creates
+  a new claim, and records the new acquisition
+
+#### Scenario: Refuse an Unsafe Expired Claim
+
+- **WHEN** an expired claim exists but reconciliation finds dirty, missing,
+  prunable, diverged, or failed worktrees
+- **THEN** the expired claim is recorded and removed, the workspace remains
+  degraded and unavailable for acquisition, and no new claim is returned
 
 ### Requirement: Require a Reusable Worktree Snapshot
 
@@ -226,13 +261,16 @@ request confirmation before mutation unless `--yes` or `--force` is supplied.
 filter. A dry run SHALL perform read-only inspection and SHALL NOT modify Git,
 SQLite, or the filesystem.
 
-Without `--force`, GC SHALL select only workspaces with no active operation or
-claim, `ready` health, clean reusable worktrees, and no unexpected root
-content. `--force` SHALL imply `--yes` and permit cleanup of age-qualified
+Without `--force`, GC SHALL select only workspaces with no active operation,
+no claim, `ready` health, clean reusable worktrees, and no unexpected root
+content. An expired claim is included in the not-checked-out count but SHALL
+be reported as `expired_claim` and left for automatic claim recovery.
+`--force` SHALL imply `--yes` and permit cleanup of age-qualified
 automatic workspaces with dirty, diverged, missing, prunable, or unexpected
 content. `--force` SHALL still refuse manual workspaces, young workspaces,
-active claims, active operations, and paths whose source repository
-identity cannot be verified. Forced cleanup SHALL record that it was forced.
+unexpired claims, expired claims, active operations, and paths whose source
+repository identity cannot be verified. Forced cleanup SHALL record that it was
+forced.
 
 #### Scenario: Preview GC Candidates Safely
 

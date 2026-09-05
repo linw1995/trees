@@ -79,11 +79,12 @@ SHALL not be eligible for acquisition or ordinary workspace launch.
 In addition to the workspace health snapshot, the system SHALL persist the
 current usage claim in a `workspace_claims` table. The table SHALL contain at
 most one row for each workspace, with a UUID v7 claim identifier, workspace
-foreign key, owner identity, and claim timestamp. A workspace with no active
-claim is unclaimed; a workspace with an active claim is checked out. The claim
-is persistent usage state rather than a SQLite transaction or database lock and
-remains until its owner releases it. It SHALL NOT have an expiry, heartbeat, or
-renewal protocol. Access availability SHALL remain independent from
+foreign key, owner identity, claim timestamp, finite expiry, and heartbeat
+timestamp. A workspace with no active claim is unclaimed; a workspace with an
+unexpired active claim is checked out. The claim is persistent usage state
+rather than a SQLite transaction or database lock and remains until its owner
+releases it or its expiry is safely recovered. The default claim duration SHALL
+be 24 hours. Access availability SHALL remain independent from
 `WorkspaceState` so a degraded workspace cannot become an eligible reusable
 workspace merely by having no claim.
 
@@ -99,6 +100,31 @@ workspace merely by having no claim.
 - **THEN** the active claim row is removed atomically with the terminal
   operation and release event, while workspace and repo-worktree identities
   remain intact
+
+### Requirement: Recover Expired Workspace Claims
+
+Automatic allocation SHALL never replace an unexpired workspace claim. When a
+claim expires, a later automatic allocation MAY replace it only after a fresh
+reconciliation proves that the workspace is reusable. The replacement and its
+expired-claim event SHALL be committed in one short SQLite transaction. If the
+workspace is unsafe, the expired claim SHALL be recorded and removed, the
+workspace SHALL remain degraded, and no new claim SHALL be returned. Claim
+renewal SHALL use a short owner-checked transaction and SHALL not run Git or
+filesystem work inside that transaction.
+
+#### Scenario: Recover a Crashed Owner
+
+- **WHEN** a process stops renewing a claim and a later automatic allocation
+  observes that the claim has expired
+- **THEN** the allocator reconciles the workspace before replacing the claim,
+  and a reusable workspace is assigned at most once
+
+#### Scenario: Keep Unsafe State Unavailable
+
+- **WHEN** an expired claim protects a workspace with dirty, missing,
+  prunable, diverged, or failed worktrees
+- **THEN** the claim is removed only as part of recorded recovery, the workspace
+  remains degraded, and automatic allocation does not return it
 
 ### Requirement: Observe Dirty Worktrees in Lifecycle State
 
