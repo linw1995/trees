@@ -7,30 +7,30 @@ record for the same path is rejected. Deleting and recreating the worktrees
 would make reuse destructive and would lose the stable workspace identity
 already used by Codex integration and lifecycle tracking.
 
-An explicit checkin/checkout protocol makes an existing workspace a reusable
+An explicit acquire/release protocol makes an existing workspace a reusable
 resource: an automatic request is keyed by its repository directories, one
-caller holds the selected slot at a time, the caller receives a durable lease
-identifier, and a workspace is returned to the pool only when its worktrees
-are safe to hand to the next caller. A separate management mode distinguishes
-workspaces that Trees may automatically reclaim from workspaces whose
-retention remains a manual responsibility.
+caller holds the selected slot at a time through a durable workspace claim, and
+a workspace is returned to the pool only when its worktrees are safe to hand
+to the next caller. The claim is persistent ownership state, not a long-lived
+SQLite transaction or a renewable workspace lease. A separate management mode
+distinguishes workspaces that Trees may automatically reclaim from workspaces
+whose retention remains a manual responsibility.
 
 ## What Changes
 
 - Change automatic `trees create` to accept repository directories without a
   concrete workspace path, match the exact repository set to an idle pool
-  slot, and return a checkout identifier for the selected workspace.
+  slot, and return a claim identifier for the selected workspace.
 - Provision a new automatic workspace under the Trees-managed workspace root
-  when no safe matching slot is available, then return it already checked out.
+  when no safe matching slot is available, then return it already claimed.
 - Resolve a configurable managed `workspaces_dir` from a persistent Trees
   configuration, normalize it to an absolute path, and use the platform data
   directory only as the default while keeping SQLite state separate.
 - Add configuration read/write support for `workspaces_dir` without making a
   concrete workspace path part of automatic allocation.
-- Add `trees checkin <workspace-path> --checkout-id <checkout-id>` to release
-  the claim after reconciliation; reuse the automatic create form with the
-  existing checkout identifier to optionally renew an allocation that outlives
-  its lease duration.
+- Add `trees checkin <workspace-path> --claim-id <claim-id>` to release the
+  claim after reconciliation. Existing `--checkout-id` spellings may remain as
+  compatibility aliases while the claim terminology is introduced.
 - Add `trees gc --older-than <duration> [--dry-run] [--yes] [--force]` to
   reclaim idle automatic workspaces while never selecting manual workspaces;
   report the number not currently checked out and confirm the normal
@@ -40,18 +40,19 @@ retention remains a manual responsibility.
 - Persist an `automatic` or `manual` workspace management mode inferred from
   the automatic repository-only or manual path-based command shape, together
   with the last successful checkin time used by GC.
-- Persist at most one active checkout lease per workspace, with owner and
-  expiry metadata, while keeping workspace health separate from access state.
-  Lease and operation updates SHALL use short SQLite transactions; Git and
+- Persist at most one active workspace claim per workspace, with an owner and
+  claim timestamp, while keeping workspace health separate from access state.
+  Claim and operation updates SHALL use short SQLite transactions; Git and
   filesystem work SHALL never hold those transactions open.
 - Require every managed worktree to be present, attached, detached, clean,
-  and at its recorded revision before a lease can be acquired or released.
-- Reclaim expired leases only after a successful safety check; never reclaim an
-  unexpired lease and never reset or clean Git worktrees implicitly. Physical
-  worktree removal is restricted to an explicit GC operation, with `--force`
-  as the explicit opt-in for unsafe automatic-slot cleanup.
-- Record checkout, renewal, checkin, rejection, and stale-lease recovery in
-  the existing operation and immutable lifecycle event model.
+  and at its recorded revision before a claim can be acquired or released.
+- Do not infer abandoned claims from process liveness or expire them
+  automatically in this change. Physical worktree removal is restricted to an
+  explicit GC operation, with `--force` as the explicit opt-in for unsafe
+  automatic-slot cleanup; active claims remain protected.
+- Record acquire, release, rejection, and operation recovery actions in the
+  existing operation and immutable lifecycle event model; operation heartbeats
+  update the running operation without appending an event for every heartbeat.
 - Preserve explicit-path creation for manual workspaces without adding a
   redundant mode flag, while keeping repair and manual-workspace overrides
   outside this change. GC retains lifecycle tombstones instead of deleting
@@ -61,8 +62,8 @@ retention remains a manual responsibility.
 
 ### New Capabilities
 
-- `workspace-reuse`: Borrow and return an existing managed workspace through
-  explicit checkout leases.
+- `workspace-reuse`: Acquire and release an existing managed workspace through
+  explicit workspace claims.
 
 ### Modified Capabilities
 
@@ -70,16 +71,17 @@ retention remains a manual responsibility.
   repository-only versus explicit-path creation shape while preserving the
   direct-child worktree layout.
 - `workspace-lifecycle`: Extend lifecycle persistence and reconciliation with
-  management modes, active checkout leases, dirty/reclaimed states, and GC
-  timestamps.
+  management modes, active workspace claims, operation leases, dirty/reclaimed
+  states, and GC timestamps.
 
 ## Impact
 
 - Extends the Clap command surface and dispatch in `src/cli.rs` and
   `src/main.rs`.
-- Adds a lifecycle migration for management mode, active checkout leases, GC
-  timestamps, and reclaimed states; Git observation also detects dirty
-  worktrees.
+- Adds a follow-up lifecycle migration that converts the existing workspace
+  lease table into active workspace claims and removes workspace expiry and
+  heartbeat columns; existing migrations already provide management mode, pool
+  metadata, GC timestamps, and reclaimed states.
 - Extends the path/configuration layers with a configurable platform-specific
   automatic workspace root, absolute persisted paths, and generated workspace
   paths.

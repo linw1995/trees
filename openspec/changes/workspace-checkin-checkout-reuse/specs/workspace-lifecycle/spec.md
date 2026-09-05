@@ -12,14 +12,14 @@ workspace MAY leave the pool key null. The pool registry SHALL maintain
 explicit relations to origin repositories, and the source path SHALL be stored
 on the origin repository record rather than copied into each pool relation or
 worktree row. The management mode and pool key SHALL be independent from
-workspace health and active checkout leases. Existing legacy explicit-path
+workspace health and active workspace claims. Existing legacy explicit-path
 workspace rows SHALL be backfilled as `manual` when this schema is introduced.
 
 #### Scenario: Track an Automatic Workspace Idle Time
 
 - **WHEN** an automatic workspace is successfully checked in
 - **THEN** its last successful checkin timestamp is updated atomically with
-  the lease release and checkin lifecycle event
+  the claim release and checkin lifecycle event
 
 #### Scenario: Preserve Manual Retention Policy
 
@@ -31,7 +31,7 @@ workspace rows SHALL be backfilled as `manual` when this schema is introduced.
 
 - **WHEN** the migration adds management mode and pool metadata to an existing
   legacy explicit-path workspace
-- **THEN** it records `manual` without changing Git state or creating a lease;
+- **THEN** it records `manual` without changing Git state or creating a claim;
   the row is not eligible for automatic pool allocation or GC
 
 ### Requirement: Normalize Origin Repository Relationships
@@ -57,7 +57,7 @@ Workspace lifecycle state SHALL include `reclaimed` in addition to
 SHALL include `dirty` and `reclaimed` in addition to `pending`, `attached`,
 `missing`, `diverged`, and `failed`. A reclaimed workspace and its reclaimed
 repo-worktree associations SHALL remain as immutable-history tombstones and
-SHALL not be eligible for checkout or ordinary workspace launch.
+SHALL not be eligible for acquisition or ordinary workspace launch.
 
 #### Scenario: Persist Successful Reclamation
 
@@ -74,28 +74,30 @@ SHALL not be eligible for checkout or ordinary workspace launch.
   failure details are persisted, and the failed GC operation remains
   auditable
 
-### Requirement: Persist Active Workspace Checkout Leases
+### Requirement: Persist Active Workspace Claims
 
 In addition to the workspace health snapshot, the system SHALL persist the
-current checkout claim in a `workspace_leases` table. The table SHALL contain
-one row at most for each workspace, with a UUID v7 checkout identifier,
-workspace foreign key, owner identity, checkout time, lease expiry, and last
-heartbeat time. A workspace with no active lease is unclaimed; a workspace
-with an active lease is checked out. Access availability SHALL remain
-independent from `WorkspaceState` so a degraded workspace cannot become an
-eligible reusable workspace merely by having no lease.
+current usage claim in a `workspace_claims` table. The table SHALL contain at
+most one row for each workspace, with a UUID v7 claim identifier, workspace
+foreign key, owner identity, and claim timestamp. A workspace with no active
+claim is unclaimed; a workspace with an active claim is checked out. The claim
+is persistent usage state rather than a SQLite transaction or database lock and
+remains until its owner releases it. It SHALL NOT have an expiry, heartbeat, or
+renewal protocol. Access availability SHALL remain independent from
+`WorkspaceState` so a degraded workspace cannot become an eligible reusable
+workspace merely by having no claim.
 
-#### Scenario: Create an Active Lease
+#### Scenario: Create an Active Claim
 
-- **WHEN** a reusable workspace is successfully checked out
-- **THEN** SQLite contains exactly one active lease for its workspace ID and
-  the lease records the returned checkout identifier and expiry
+- **WHEN** a reusable workspace is successfully acquired
+- **THEN** SQLite contains exactly one active claim for its workspace ID and
+  the claim records the returned claim identifier
 
-#### Scenario: Release an Active Lease
+#### Scenario: Release an Active Claim
 
-- **WHEN** its owning checkout identifier successfully checks in a workspace
-- **THEN** the active lease row is removed atomically with the terminal
-  operation and checkin event, while workspace and repo-worktree identities
+- **WHEN** its owning claim identifier successfully releases a workspace
+- **THEN** the active claim row is removed atomically with the terminal
+  operation and release event, while workspace and repo-worktree identities
   remain intact
 
 ### Requirement: Observe Dirty Worktrees in Lifecycle State
@@ -117,27 +119,27 @@ fingerprint SHALL be idempotent.
 
 ### Requirement: Serialize Access Operations with Workspace Operations
 
-Checkout, renewal, checkin, and expired-lease recovery SHALL use the existing
-per-workspace operation serialization. A request SHALL NOT replace an
-unexpired lease or run concurrently with another non-terminal workspace
-operation. Lease changes, operation transitions, and access lifecycle events
-SHALL use the existing short Diesel transaction boundaries. Git and filesystem
-work SHALL occur outside those transactions.
+Acquire and release SHALL use the existing per-workspace
+operation serialization. A request SHALL NOT replace an active claim or run
+concurrently with another non-terminal workspace operation. Claim changes,
+operation transitions, and access lifecycle events SHALL use the existing
+short Diesel transaction boundaries. Git and filesystem work SHALL occur
+outside those transactions.
 
 #### Scenario: Reject Access During an Active Operation
 
-- **WHEN** a workspace has a non-terminal operation or an unexpired checkout
-  lease owned by another checkout identifier
-- **THEN** the access request fails without changing Git or the active lease
+- **WHEN** a workspace has a non-terminal operation or an active claim owned by
+  another claim identifier
+- **THEN** the access request fails without changing Git or the active claim
 
 ### Requirement: Keep SQLite Critical Sections Short
 
 Access and mutation workflows SHALL hold SQLite transactions only while
-persisting intent, lease, snapshot, operation, or lifecycle-event changes. They
+persisting intent, claim, snapshot, operation, or lifecycle-event changes. They
 MUST NOT invoke Git commands or filesystem operations from inside those
 transactions. Automatic creation SHALL persist each step intent before the
-external Git operation and persist its result afterward. Lease renewal SHALL
-be one short metadata update and SHALL NOT span external work.
+external Git operation and persist its result afterward. Operation lease
+renewal SHALL be one short metadata update and SHALL NOT span external work.
 
 #### Scenario: Run External Work Outside SQLite Transactions
 
@@ -146,13 +148,30 @@ be one short metadata update and SHALL NOT span external work.
 - **THEN** no SQLite transaction remains open while the external operation is
   running, and the operation can be followed by a short result transaction
 
+### Requirement: Renew Operation Leases During External Work
+
+Each non-terminal workspace operation SHALL carry an owner identity, an
+expiry, and a heartbeat timestamp. A long-running Git or filesystem step MAY
+renew the operation lease through an owner-checked short transaction. Operation
+lease renewal SHALL protect the in-flight mutation from premature recovery;
+it SHALL NOT create or extend a workspace claim. An expired operation MAY be
+recovered only after an atomic owner/expiry check and a fresh external-state
+observation.
+
+#### Scenario: Keep a Long External Step Owned
+
+- **WHEN** an external Git operation outlives the current operation lease
+- **THEN** the owning process can renew the operation lease with a short
+  heartbeat transaction, and another process cannot recover that operation
+  while the owner check still succeeds
+
 ### Requirement: Record Access Events with Existing Lifecycle Identity
 
 Access events SHALL use `entity_type = workspace` and the stable workspace ID;
 they SHALL NOT introduce a second mutable identity for a reused workspace.
-Event details SHALL include lease-specific identifiers, operation context, GC
-age/candidate counts, and a `forced` marker when applicable. Event history
-SHALL remain append-only under the existing immutable event constraints.
+Event details SHALL include claim identifiers, operation context, GC age/candidate
+counts, and a `forced` marker when applicable. Event history SHALL remain
+append-only under the existing immutable event constraints.
 
 #### Scenario: Preserve Access History Across Reuse
 

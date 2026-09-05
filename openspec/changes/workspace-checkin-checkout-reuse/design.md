@@ -22,12 +22,12 @@ short-transaction, and boundary-reconciliation discipline.
 - Make a previously created workspace explicitly borrowable and returnable.
 - Distinguish `automatic` workspaces, which Trees may reclaim, from `manual`
   workspaces, which are never selected by GC.
-- Enforce one active checkout lease per workspace across processes.
+- Enforce one active workspace claim per workspace across processes.
 - Keep workspace health (`ready`, `degraded`, and so on) separate from access
   availability.
 - Allow reuse only for a clean, attached, detached worktree set at the
   recorded revisions.
-- Recover abandoned leases without giving a new caller dirty or diverged
+- Recover abandoned operations without giving a new caller dirty or diverged
   files.
 - Reclaim only idle automatic workspaces after a caller-supplied age threshold,
   while retaining database tombstones and lifecycle events.
@@ -41,10 +41,10 @@ short-transaction, and boundary-reconciliation discipline.
 - Reclassifying an existing workspace through a separate administrative mode
   command; new workspaces declare their management mode at creation time.
 - Resetting, cleaning, deleting, branching, rebasing, or refreshing a
-  worktree during checkout or checkin.
+  worktree during acquisition or release.
 - Adding a repair command, a status/history command, or a resident watcher.
-- Making the existing Codex launcher implicitly acquire or release a lease;
-  consumer integration can use the lease APIs in a follow-up change.
+- Making the existing Codex launcher implicitly acquire or release a claim;
+  consumer integration can use the claim APIs in a follow-up change.
 
 ## Decisions
 
@@ -52,22 +52,23 @@ short-transaction, and boundary-reconciliation discipline.
 
 The workspace row stores a `management_mode` of `automatic` or `manual`, while
 `WorkspaceState` continues to represent physical and Git health. Access
-availability is derived from an active row in a new `workspace_leases` table:
+availability is derived from an active row in a new `workspace_claims` table:
 no row means unclaimed, and one row means checked out. A degraded workspace
-can therefore be unclaimed without being eligible for checkout, and a manual
-workspace can remain healthy without becoming a GC candidate. This keeps
-management policy, health, and access as three independent dimensions.
+can therefore be unclaimed without being eligible for acquisition, and a
+manual workspace can remain healthy without becoming a GC candidate. This
+keeps management policy, health, and access as three independent dimensions.
 
-The lease row is a persistent occupancy claim, not a long-lived SQLite lock.
-Acquisition, renewal, and release keep SQLite transactions limited to lease,
-snapshot, operation, and event changes. Git and filesystem work runs between
-those short transactions so a slow subprocess cannot block other database
-users.
+The claim row is persistent usage state, not a long-lived SQLite lock. Claim
+acquisition and release keep SQLite transactions limited to claim, snapshot,
+operation, and event changes. Git and filesystem work runs between those short
+transactions so a slow subprocess cannot block other database users. Operation
+leases are a separate, expiring coordination mechanism for in-flight work and
+may be renewed by their owner while external steps run.
 
 New `trees create` calls without a positional workspace path are
 `automatic`; calls with an explicit path are `manual`. The command shape is
 the mode discriminator, so no redundant `--mode` flag is accepted. Explicit
-paths opt out of automated allocation, checkout/checkin, and retention. Legacy
+paths opt out of automated allocation, acquire/release, and retention. Legacy
 rows created by the old explicit-path command are backfilled as `manual`
 because their intended retention policy cannot be inferred safely; a future
 explicit adopt operation can opt such a row into a pool. GC remains opt-in per
@@ -90,23 +91,20 @@ slots:
 The hash is intentionally not unique. A hash collision creates separate pool
 rows and the canonical JSON comparison selects the correct one.
 
-The lease table stores the current claim only:
+The workspace claim table stores the current usage claim only:
 
-- `id`: the UUID v7 checkout identifier;
+- `id`: the UUID v7 claim identifier;
 - `workspace_id`: the unique workspace foreign key;
 - `owner_id`: a local invocation identity for diagnostics;
-- `checked_out_at`: the acquisition time;
-- `lease_expires_at`: the finite expiry time;
-- `last_heartbeat_at`: the last successful acquisition or renewal time.
-- `pool_key` on an automatic workspace row: the UUID of its registry pool.
-  Manual rows may leave this field null.
-- `last_checked_in_at` on the workspace row: the last successful return time
-  used as the idle-age anchor, falling back to `created_at` if it has never
-  been checked in.
+- `claimed_at`: the acquisition time.
 
-Completed claims are represented by immutable lifecycle events rather than
-retained rows. The workspace and repo-worktree IDs never change when a lease
-is reused.
+Claims have no expiry, heartbeat, or renewal protocol. Completed claims are
+represented by immutable lifecycle events rather than retained rows. The
+workspace and repo-worktree IDs never change when a claim is reused.
+
+Operation rows retain their own owner, expiry, and heartbeat fields. Those
+operation leases protect a mutation while Git or filesystem work runs outside
+SQLite transactions; they are the only leases renewed by the implementation.
 
 ### Resolve the Managed Workspace Root
 
@@ -146,49 +144,51 @@ The command contract separates automatic allocation from manual provisioning:
 
 ```text
 trees create --repo <repository-path>...
-trees create --repo <repository-path>... --checkout-id <checkout-id>
 trees create <workspace-path> --repo <repository-path>...
-trees checkin <workspace-path> --checkout-id <checkout-id>
+trees checkin <workspace-path> --claim-id <claim-id>
 ```
+
+The existing `--checkout-id` spelling may remain as a compatibility alias while
+the claim terminology is introduced, but it applies only to checkin. Automatic
+create does not accept an identifier for renewing or extending a workspace
+claim.
 
 The automatic form does not accept a concrete workspace path. It canonicalizes
 and inspects every repository, derives a BLAKE3 hash and canonical JSON array
 from the sorted set of Git common-directory identities, resolves the matching
 pool registry UUID, and searches only `automatic` workspaces that reference
 that pool. It filters out rows that are not `ready`, have an active operation
-or lease, or fail the live reusable-worktree predicate.
+or claim, or fail the live reusable-worktree predicate.
 
 If multiple candidates remain, Trees selects the least-recently-used slot by
 `last_checked_in_at`, falls back to `created_at` for a never-used slot, and
-uses the workspace UUID as a deterministic tie breaker. Lease acquisition is
+uses the workspace UUID as a deterministic tie breaker. Claim acquisition is
 the final atomic race check; if another process wins, allocation retries the
 next candidate.
 
 If no safe candidate exists, Trees generates a new workspace UUID and creates
 the physical directory below the resolved `workspaces_dir`. The generated path
 is not accepted from the caller. It initializes the same direct-child detached
-worktrees as the existing create flow and acquires the caller's checkout lease
-as part of the creation intent. A failed provisioning attempt is rolled back
-at the filesystem level where possible and remains a failed lifecycle record
-for diagnostics; it is never returned as an allocated workspace.
+worktrees as the existing create flow and acquires the caller's workspace claim
+as part of the creation intent. A failed provisioning attempt is rolled back at
+the filesystem level where possible and remains a failed lifecycle record for
+diagnostics; it is never returned as an allocated workspace.
 
-The optional existing checkout identifier renews the matching lease for the
-same repository-set request and returns the same workspace. Renewal resolves
-the pool through the leased workspace and verifies its canonical repository
-JSON, so it does not depend on the current configured root. `checkin` releases
-the lease. Manual provisioning requires an explicit path and bypasses pool
-allocation, automated checkout, and GC; manual callers continue using the
+The automatic result returns the claim identifier for later checkin. Checkin
+releases the claim only after reconciliation confirms that the workspace is
+safe to reuse. Manual provisioning requires an explicit path and bypasses pool
+allocation, automated claiming, and GC; manual callers continue using the
 existing workspace/Codex paths without automated claims.
 
 The automatic command prints the allocated workspace path, repository-set
-pool key, checkout identifier, and expiry so an orchestrator can persist the
-allocation and pass the identifier to later renewal or checkin calls. The
-identifier is a coordination token, not a security boundary; local filesystem
-and database permissions remain authoritative.
+pool key, and claim identifier so an orchestrator can persist the allocation
+and pass the identifier to later checkin calls. The identifier is a
+coordination token, not a security boundary; local filesystem and database
+permissions remain authoritative.
 
 ### Require a Reusable Git Snapshot
 
-Checkout and checkin both reconcile the workspace against Git. A worktree is
+Acquire and release both reconcile the workspace against Git. A worktree is
 reusable only when all of the following are true:
 
 - the source repository common directory still matches the persisted
@@ -212,67 +212,51 @@ checkout baseline. The caller must repair or intentionally preserve such work
 outside this change; Trees never runs `reset --hard`, `clean`, or worktree
 removal as part of checkin.
 
-### Acquire, Renew, and Release with Short Transactions
+### Acquire and Release Workspace Claims
 
 For an existing pool candidate, Trees reconciles and verifies that the
 workspace is automatic, `ready`, has no active operation, and has no active
-unexpired checkout lease. The lease insert, allocation operation completion,
-and `workspace_checked_out` event are committed in one short SQLite
-transaction. The transaction ends before any later Git or filesystem work.
-The unique `workspace_id` constraint is the final race check, so concurrent
-allocations cannot both succeed. For a newly provisioned slot, the creation
-intent owns the generated workspace and lease while Git setup is running; each
-Git step is surrounded by short intent/result updates, and the lease is
-returned to the caller only after creation reaches `ready`.
+claim. The claim insert, allocation operation completion, and
+`workspace_claimed` event are committed in one short SQLite transaction. The
+transaction ends before any later Git or filesystem work. The unique
+`workspace_id` constraint is the final race check, so concurrent acquisitions
+cannot both succeed. For a newly provisioned slot, the creation intent creates
+the workspace claim while Git setup is running; each Git step is surrounded by
+short intent/result updates, and the claim is returned to the caller only after
+creation reaches `ready`.
 
-The default lease duration is 24 hours. Renewal is an optional liveness
-operation for work that outlives that duration. It requires the current
-checkout identifier, updates the active lease in a short `checkout_renew`
-transaction, and extends the expiry by another 24 hours from the renewal time.
-It does not hold a SQLite transaction while waiting for Git or filesystem work,
-and does not reset or otherwise mutate Git. It is allowed while the workspace
-is degraded so the current owner can repair or recover its files without
-another caller claiming them; checkin remains blocked until the workspace is
-reusable.
+The claim remains in the database while the caller uses the workspace, but it
+does not hold a SQLite transaction or database lock. A claim has no expiry,
+heartbeat, or renewal protocol. If post-acquisition reconciliation finds an
+external change, Trees releases the new claim and records the failed
+acquisition before returning an error. The caller never receives a successful
+acquisition result for a workspace that fails the final safety check.
 
-If post-acquisition reconciliation finds an external change, Trees releases
-the new lease and records the failed checkout before returning an error. The
-caller never receives a successful checkout result for a workspace that fails
-the final safety check.
+### Release Without Destructive Cleanup
 
-### Check In Without Destructive Cleanup
-
-Checkin requires the workspace path and the active checkout identifier. Trees
-holds the lease while it reconciles the worktrees. If the snapshot is clean
-and matches the recorded detached revisions, a short transaction deletes the
-active lease, completes the operation, and appends `workspace_checked_in`.
-The physical workspace directory, Git worktrees, files, branches, and source
+Checkin requires the workspace path and the active claim identifier. Trees
+holds the claim while it reconciles the worktrees. If the snapshot is clean and
+matches the recorded detached revisions, a short transaction deletes the
+active claim, completes the operation, and appends `workspace_released`. The
+physical workspace directory, Git worktrees, files, branches, and source
 repositories remain untouched.
 
 If reconciliation observes dirty, missing, prunable, diverged, or failed
-worktrees, checkin records `workspace_checkin_rejected`, marks the workspace
-degraded through the existing lifecycle transition, fails the checkin
-operation, and keeps the active lease. Keeping the claim lets its owner fix
-the workspace without exposing it to the next caller. A repeated checkin can
+worktrees, checkin records `workspace_release_rejected`, marks the workspace
+degraded through the existing lifecycle transition, fails the release
+operation, and keeps the active claim. Keeping the claim lets its owner fix the
+workspace without exposing it to the next caller. A repeated checkin can
 succeed after the owner has repaired the state externally and reconciliation
 sees the original baseline again.
 
-### Recover Only Expired Leases
+### Recover Expired Operation Leases
 
-An unexpired active lease is never overridden, even if its owner process is no
-longer observable. When a later checkout sees an expired lease, it first
-reconciles the workspace. If the workspace is reusable, one transaction
-records `workspace_checkout_expired`, removes the old lease, creates the new
-lease, and records `workspace_checkout_reclaimed`. If the workspace is not
-reusable, the expired lease is removed, the workspace remains degraded, and
-the checkout fails; no caller receives the path.
-
-The operation and event details include the old and new checkout identifiers,
-owner identities, expiry timestamps, and any reconciliation reason. This
-makes stale-lease recovery auditable without retaining an obsolete current
-lease row or attempting unreliable process-liveness detection. Automatic pool
-allocation is the only operation that may turn a safely expired lease into a
-new allocation; GC never overrides an unexpired lease.
+Workspace claims do not expire and are never replaced by automatic allocation.
+Only operation leases have expiry and heartbeat metadata. When an operation
+lease expires, a later invocation may claim the operation through an atomic
+owner/expiry check, observe the external Git and filesystem state, and either
+finish or roll back the incomplete operation. Operation lease recovery does
+not create, release, or extend a workspace claim.
 
 ### Reclaim Only Idle Automatic Workspaces
 
@@ -280,13 +264,13 @@ new allocation; GC never overrides an unexpired lease.
 cutoff from the current UTC time. A workspace is idle when its
 `last_checked_in_at`, or `created_at` when it has never been checked in, is
 strictly older than the cutoff. GC considers only `automatic` workspaces in
-the current resolved workspace-root namespace. An expired lease is handled by
-the safe lease-recovery rule first; an unexpired lease always skips the
-candidate.
+the current resolved workspace-root namespace. An active claim or operation
+always skips the candidate; GC does not infer claim abandonment from process
+liveness and does not override an active claim.
 
 Before a non-dry-run GC starts, it prints a summary containing the number of
-automatic workspaces, the number currently not checked out (no unexpired
-checkout lease), the number currently checked out, the number matching the
+automatic workspaces, the number currently not checked out (no active claim),
+the number currently checked out, the number matching the
 age threshold, and the number that are safe to reclaim. It then asks for an
 interactive confirmation such as `Reclaim N workspaces? [y/N]`. `--yes`
 skips this confirmation but keeps the normal safety filter. `--force` implies
@@ -301,7 +285,7 @@ managed worktree. Both modes must verify the source repository identity when
 possible, the expected direct-child path, and that the target is within the
 stored automatic workspace root. Without `--force`, the worktree must also be
 detached, at the recorded `HEAD`, clean, present, and non-prunable; dirty,
-missing, diverged, failed, manual, leased, young, or unexpected-content
+missing, diverged, failed, manual, claimed, young, or unexpected-content
 workspaces are skipped and preserved.
 
 `--force` bypasses the confirmation and permits cleanup of age-qualified
@@ -309,7 +293,7 @@ automatic workspaces that are dirty, diverged, missing, prunable, or contain
 unexpected files. It may use `git worktree remove --force` and remove
 unexpected content below the target automatic workspace root, so uncommitted
 or untracked data can be destroyed. It SHALL still refuse manual workspaces,
-unexpired checkout leases, active operations, young workspaces, and any path
+active claims, active operations, young workspaces, and any path
 whose source repository identity cannot be verified. `--force` does not
 override the configured root-containment or repository-identity guards.
 
@@ -332,30 +316,33 @@ removal steps.
 
 ### Reuse Existing Lifecycle Transactions and Events
 
-Checkout, renewal, checkin, stale-lease recovery, and GC are represented as
-normal `operations` with kinds `checkout`, `checkout_renew`, `checkin`,
-`checkout_reclaim`, and `gc`. Their intent is persisted before any lease or
-reclamation mutation, and their terminal state, state change, and lifecycle
-event are committed atomically in short Diesel transactions. External Git and
-filesystem work is performed between those transactions. Access and GC events use
-`entity_type = workspace` and the stable workspace ID; structured details
-carry lease-specific identifiers, GC counts, age cutoffs, and the `forced`
-marker when applicable.
+Acquisition, release, operation recovery, and GC are represented as normal
+`operations` with kinds `acquire`, `release`, `operation_recovery`, and `gc`.
+Their intent is persisted before any claim or reclamation mutation, and their
+terminal state, state change, and lifecycle event are committed atomically in
+short Diesel transactions. External Git and filesystem work is performed
+between those transactions. Access and GC events use `entity_type = workspace`
+and the stable workspace ID; structured details carry claim identifiers, GC
+counts, age cutoffs, and the `forced` marker when applicable.
 
-Git reads happen outside SQLite transactions. Before returning from automatic
-allocation or checkin, the workflow performs a final reconciliation so the
-operation result is based on Git's authoritative metadata rather than a stale
-database snapshot. Existing `trees codex` behavior remains backward compatible
-and is not implicitly coupled to this lease in this change.
+Operation lease heartbeats are short owner-checked updates made while an
+external step runs. They protect the in-flight operation from premature
+recovery and do not extend a workspace claim. Git reads happen outside SQLite
+transactions. Before returning from automatic acquisition or release, the
+workflow performs a final reconciliation so the operation result is based on
+Git's authoritative metadata rather than a stale database snapshot. Existing
+`trees codex` behavior remains backward compatible and is not implicitly
+coupled to this claim in this change.
 
 ## Risks / Trade-Offs
 
-- [A caller forgets to check in] → Use a finite 24-hour lease, explicit
-  renewal, and safe expiry recovery; never reclaim an unexpired claim.
+- [A caller forgets to release] → Keep the active claim and require an
+  explicit administrative recovery path; do not infer abandonment from process
+  liveness or silently hand the workspace to another caller.
 - [A caller leaves edits in a worktree] → Reject checkin, persist `dirty` or
-  `degraded` state, and keep the lease so no data is discarded or shared.
+  `degraded` state, and keep the claim so no data is discarded or shared.
 - [The workspace changes between preflight and final verification] → Keep the
-  lease held through the final reconciliation and roll back the claim when
+  claim held through the final reconciliation and roll back the claim when
   the post-check fails.
 - [A repository-set key can fail to match a reusable slot] → Derive it from
   canonical Git common-directory identities, sort and serialize it
@@ -368,38 +355,38 @@ and is not implicitly coupled to this lease in this change.
   preflight every worktree and root entry, record each step, and mark partial
   failure instead of claiming an atomic filesystem transaction.
 - [A forced run can destroy local work] → Require the explicit `--force`
-  flag, print the affected counts and warning, retain age/root/lease/identity
+  flag, print the affected counts and warning, retain age/root/claim/identity
   guards, and record `forced: true` with the removal details.
-- [The lease identifier is copied locally] → Treat it as coordination rather
+- [The claim identifier is copied locally] → Treat it as coordination rather
   than authorization and rely on the existing local SQLite/file permissions.
-- [Existing consumers do not pass a lease identifier] → Preserve their
-  current behavior for compatibility and document that lease enforcement for
-  every consumer is a follow-up integration boundary.
+- [Existing consumers do not pass a claim identifier] → Preserve their current
+  behavior for compatibility and document that claim enforcement for every
+  consumer is a follow-up integration boundary.
 
 ## Migration Plan
 
-1. Add the workspace reuse migration and a follow-up normalization migration
-   for management mode, GC timestamps, reclaimed states, the pool registry,
-   origin repositories, pool relations, `workspace_leases`, and their indexes.
-   Existing explicit-path workspace rows are backfilled as `manual` and start
-   with no active lease; the migrations do not touch Git or delete files.
+1. Keep migrations `00000000000002` and `00000000000003` for the existing
+   management, pool, origin, and workspace reuse data. Add follow-up migration
+   `00000000000004` to convert `workspace_leases` into `workspace_claims`,
+   preserving active workspace IDs, owners, and acquisition timestamps while
+   dropping workspace lease expiry and heartbeat columns. Existing
+   explicit-path workspace rows remain `manual` with no active claim; the
+   migrations do not touch Git or delete files.
 2. Extend the repository and domain layers without changing existing
    workspace or repo-worktree identifiers.
 3. Make reconciliation understand `dirty` worktrees before enabling pool
-   allocation, checkin, and GC.
+   acquisition, release, and GC.
 4. Add the CLI workflow, safe non-forced GC removal path, and integration
    tests. If the change is rolled back, active claims must be released before
-   removing the lease table; reclaimed filesystem content is not recoverable
+   removing the claim table; reclaimed filesystem content is not recoverable
    through Trees.
 
 ## Open Questions
 
 - Should a future allocator enforce a maximum number of automatic slots per
   repository-set pool, or should GC remain the only capacity control?
-- Should a future Codex wrapper own the checkout lease for the entire
-  interactive process and renew it in the background, or should callers pass
-  the identifier explicitly? Either integration must keep lease updates in
-  short SQLite transactions.
+- Should a future Codex wrapper own the workspace claim for the entire
+  interactive process, or should callers pass the identifier explicitly?
 - Should a future administrative command reclassify existing workspaces
   between `automatic` and `manual`, or should that remain a migration-only
   policy?

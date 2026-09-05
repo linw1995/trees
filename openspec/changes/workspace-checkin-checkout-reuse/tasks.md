@@ -1,42 +1,41 @@
 ## 1. Contract and Domain Model
 
-- [x] 1.1 Define automatic `trees create --repo ...` allocation, manual
-  `trees create <workspace-path> --repo ...`, lease renewal, and checkin
-  command arguments, result output, error cases, and the UUID v7 checkout
+- [ ] 1.1 Define automatic `trees create --repo ...` allocation, manual
+  `trees create <workspace-path> --repo ...`, claim release, and checkin
+  command arguments, result output, error cases, and the UUID v7 claim
   identifier
 - [x] 1.2 Define `automatic` and `manual` workspace modes inferred from
   positional-path presence, and the rule that manual workspaces bypass all
-  automated checkout/checkin and GC behavior
+  automated acquire/release and GC behavior
 - [x] 1.3 Define the UUID-backed repository-set pool registry, indexed hash and
   exact canonical JSON matching, least-recently-used candidate ordering,
   configurable platform-specific `workspaces_dir`, absolute root
   normalization, generated path format, and allocation retry behavior after a
-  lease race
-- [x] 1.4 Add a typed checkout lease model with owner, acquisition, expiry,
-  and heartbeat timestamps; define renewal as optional liveness support rather
-  than a database lock, the reusable-workspace predicate, and explicit
-  mode/access/health separation
-- [x] 1.5 Extend lifecycle states with `dirty` and `reclaimed`, plus
+  claim race
+- [ ] 1.4 Define a typed workspace claim with owner and acquisition timestamp;
+  keep expiry, heartbeat, and renewal on operation leases only, and define
+  explicit mode/access/health separation
+- [ ] 1.5 Extend lifecycle states with `dirty` and `reclaimed`, plus
   `last_checked_in_at`, pool-key, pool-scoped absolute workspace-root, and
-  reclamation timestamps; update parsing, serialization, workspace-state
+  reclamation timestamps; update claim parsing, serialization, workspace-state
   aggregation, and affected validation paths
 
 ## 2. Persistence and Migration
 
-- [x] 2.1 Add migrations `00000000000002` and `00000000000003` for management
-  mode, the UUID-backed pool registry, origin repositories and pool relations,
-  pool-scoped absolute workspace-root namespace, idle and reclamation
-  timestamps, the `dirty`/`reclaimed` state constraints, and the current
-  `workspace_leases` table with one active lease per workspace
-- [x] 2.2 Backfill legacy explicit-path workspace records as `manual` without
-  touching Git or the filesystem, and provide a reversible down migration
-- [x] 2.3 Add Diesel schema/models and repository operations for origin
-  repositories, pool relations, and acquiring, renewing, reading, and
-  releasing leases without runtime raw SQL
-- [x] 2.4 Add typed persistence helpers for checkout, checkin, GC operations,
-  access/reclamation events, old/new lease details, and atomic operation
+- [ ] 2.1 Add follow-up migration `00000000000004` that converts the existing
+  `workspace_leases` table into `workspace_claims`, preserves active workspace
+  IDs, owners, and acquisition timestamps, removes workspace lease expiry and
+  heartbeat columns, and keeps one active claim per workspace
+- [ ] 2.2 Backfill legacy explicit-path workspace records as `manual` without
+  touching Git or the filesystem, and provide a reversible down migration for
+  workspace claims
+- [ ] 2.3 Add Diesel schema/models and repository operations for origin
+  repositories, pool relations, and acquiring, reading, and releasing claims
+  without runtime raw SQL
+- [ ] 2.4 Add typed persistence helpers for acquire, release, GC operations,
+  access/reclamation events, operation lease heartbeats, and atomic operation
   completion
-- [x] 2.5 Verify lease acquisition races, wrong-token rejection, mode and
+- [ ] 2.5 Verify claim acquisition races, wrong-token rejection, mode and
   timestamp persistence, tombstone retention, JSON detail validation, and
   migration upgrade/downgrade
 
@@ -48,75 +47,74 @@
 - [x] 3.2 Map dirty observations to `dirty`, preserve `missing`/`diverged`/
   `failed` precedence for association failures, and make workspace degradation
   and recovery idempotent
-- [x] 3.3 Reconcile active leases at checkout and checkin boundaries while
+- [ ] 3.3 Reconcile active claims at acquire and release boundaries while
   keeping Git and filesystem commands outside short database transactions;
   renew operation heartbeats while external steps run and verify unchanged
   observations do not append duplicate events
 - [x] 3.4 Add a non-forced worktree removal primitive and a workspace-root
   safety check that refuses to remove unexpected files or directories
 
-## 4. Pool Allocation and Renewal Workflow
+## 4. Pool Allocation and Claim Workflow
 
-- [x] 4.1 Implement automatic repository-set allocation that searches exact
+- [ ] 4.1 Implement automatic repository-set allocation that searches exact
   pool-key matches, filters reusable idle candidates, selects least-recently
   checked-in workspaces, and retries after an acquisition race
-- [x] 4.2 Persist allocation intent and acquire the lease atomically, then run
-  final reconciliation and release the lease with a failure event if the
-  post-check fails
-- [x] 4.3 Implement automatic provisioning below the managed workspace root
+- [ ] 4.2 Persist allocation intent and acquire the workspace claim atomically,
+  then run final reconciliation and release the claim with a failure event if
+  the post-check fails
+- [ ] 4.3 Implement automatic provisioning below the managed workspace root
   when no safe candidate exists, including generated paths, creation intent,
-  immediate lease ownership, and partial-creation rollback
-- [x] 4.4 Implement optional identifier-based renewal for work beyond the
-  lease duration with the fixed 24-hour extension, repository-set validation,
-  short lease updates, and immutable renewal events
-- [x] 4.5 Implement expired-lease recovery with a safe reconciliation gate and
-  an atomic old-lease removal/new-lease acquisition path
+  immediate claim ownership, and partial-creation rollback
+- [x] 4.4 Implement operation-lease heartbeat updates during long external
+  steps with owner validation, short transactions, and recovery-safe expiry
+- [x] 4.5 Implement expired-operation recovery with a safe reconciliation gate
+  and an atomic owner/expiry transition
 
 ## 5. Checkin Workflow and GC Integration
 
-- [x] 5.1 Implement token-protected checkin that retains the lease on dirty,
+- [ ] 5.1 Implement token-protected checkin that retains the claim on dirty,
   missing, prunable, diverged, or failed worktrees and releases it only after
   a successful reusable-state check
-- [x] 5.2 Wire Clap parsing and `main` dispatch for automatic create,
-  renewal, and checkin; print stable machine-copiable workspace, pool key,
-  checkout ID, and expiry fields while keeping human-readable errors
+- [ ] 5.2 Wire Clap parsing and `main` dispatch for automatic create, claim
+  release, and checkin; print stable machine-copiable workspace, pool key, and
+  claim ID while keeping human-readable errors
 - [x] 5.3 Add `trees config set workspaces-dir <path>` and configuration
   loading, resolving configured paths to absolute values before persistence;
   keep database state and workspace content directories separate
-- [x] 5.4 Implement `trees gc --older-than <duration> [--dry-run] [--yes]
+- [ ] 5.4 Implement `trees gc --older-than <duration> [--dry-run] [--yes]
   [--force]`
   with UTC cutoff calculation, `last_checked_in_at`/`created_at` idle
   selection, automatic-mode-only candidate filtering scoped to the resolved
   workspace root, and counts for not-checked-out and checked-out workspaces
-- [x] 5.5 Execute GC as one serialized operation per candidate, safely remove
+- [ ] 5.5 Execute GC as one serialized operation per candidate, safely remove
   clean worktrees and the empty workspace root in normal mode; in `--force`
   mode allow explicitly authorized unsafe automatic-slot cleanup while
-  retaining age, root, lease, operation, and repository-identity guards
-- [x] 5.6 Add normal interactive confirmation, non-interactive refusal without
+  retaining age, root, claim, operation, and repository-identity guards
+- [ ] 5.6 Add normal interactive confirmation, non-interactive refusal without
   `--yes` or `--force`, safe `--yes` bypass, forced-run warnings, and stable
   candidate/skipped/reclaimed/failed/not-checked-out/checked-out counts; ensure
   dry-run performs no SQLite, Git, or filesystem write
-- [x] 5.7 Keep manual `trees create` and existing `trees codex` flows
+- [ ] 5.7 Keep manual `trees create` and existing `trees codex` flows
   compatible; document repository-set allocation, generated automatic paths,
-  automatic/manual mode, checkin ownership, and that only GC may remove an
+  automatic/manual mode, claim ownership, and that only GC may remove an
   idle automatic workspace
 
 ## 6. Verification and Documentation
 
-- [x] 6.1 Add unit tests for lease state transitions, expiry, token
-  authorization, UUID/timestamp serialization, reusable predicates, and
-  dirty-state reconciliation
-- [x] 6.2 Add integration tests for repeated pool allocation/checkin,
+- [ ] 6.1 Add unit tests for claim state transitions, token authorization,
+  UUID/timestamp serialization, reusable predicates, operation lease expiry,
+  and dirty-state reconciliation
+- [ ] 6.2 Add integration tests for repeated pool allocation/release,
   repository-set matching, least-recently-used selection, pool races,
   configured-root resolution, absolute path persistence, generated-path
-  provisioning, concurrent allocation, renewal, stale-lease
-  reclaim, post-allocation race detection, rejected dirty checkin,
+  provisioning, concurrent allocation, operation heartbeat and recovery,
+  post-allocation race detection, rejected dirty checkin,
   automatic/manual mode isolation, dry-run GC, threshold boundaries, safe
   reclamation, confirmation behavior, `--yes` safe bypass, force cleanup of
   dirty/diverged and extra-content workspaces, force protection boundaries,
   partial GC failure,
   external worktree removal, and preservation of all Git files and identities
-- [x] 6.3 Run `openspec validate workspace-checkin-checkout-reuse --strict`,
+- [ ] 6.3 Run `openspec validate workspace-checkin-checkout-reuse --strict`,
   the complete Rust/SQLite test suite, `prek -a`, and
   `nix flake check --no-build`; distinguish spec validation from behavioral
   verification in the final evidence

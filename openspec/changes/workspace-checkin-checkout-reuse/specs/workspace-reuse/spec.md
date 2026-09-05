@@ -46,17 +46,17 @@ The system SHALL persist a workspace management mode with the values
 a request without a positional workspace path is `automatic`, while a request
 with an explicit workspace path is `manual`. The selected mode SHALL be
 preserved in the lifecycle snapshot. Only automatic workspaces SHALL
-participate in repository-set pool allocation, checkout leasing, checkin, or
-garbage collection. Manual workspaces SHALL remain available to existing
-direct workspace consumers but SHALL never be selected or deleted by
+participate in repository-set pool allocation, workspace claim acquisition and
+release, or garbage collection. Manual workspaces SHALL remain available to
+existing direct workspace consumers but SHALL never be selected or deleted by
 automated retention.
 
 #### Scenario: Create an Automatic Workspace by Default
 
 - **WHEN** a caller uses automatic create with repository arguments and no
   positional workspace path
-- **THEN** the workspace is recorded as `automatic` and can later be checked
-  out and considered by GC after its idle threshold is reached
+- **THEN** the workspace is recorded as `automatic` and can later be acquired
+  and considered by GC after its idle threshold is reached
 
 #### Scenario: Infer Manual Mode from an Explicit Path
 
@@ -76,7 +76,7 @@ automated retention.
 - **WHEN** the lifecycle migration adds the management mode to existing Trees
   workspaces created through the legacy explicit-path form
 - **THEN** existing rows are backfilled as `manual` without changing Git
-  state, deleting files, or creating an active lease
+  state, deleting files, or creating an active claim
 
 ### Requirement: Allocate an Automatic Workspace from a Repository Pool
 
@@ -85,19 +85,18 @@ The CLI SHALL provide automatic creation as `trees create --repo
 SHALL canonicalize the repositories, resolve a UUID-backed pool using its
 indexed hash and exact canonical JSON set of Git common-directory identities,
 and search for an idle automatic workspace referencing that pool. It SHALL
-reconcile candidates before selection,
-acquire a checkout lease for a reusable candidate, and provision a new
-automatic workspace below the Trees-managed workspace root when no safe
-candidate exists. The successful result SHALL include the allocated workspace
-path and checkout identifier.
+reconcile candidates before selection, acquire a workspace claim for a
+reusable candidate, and provision a new automatic workspace below the
+Trees-managed workspace root when no safe candidate exists. The successful
+result SHALL include the allocated workspace path and claim identifier.
 
 #### Scenario: Allocate a Reusable Pool Slot
 
 - **WHEN** automatic create receives repositories matching an idle automatic
   workspace whose worktrees are clean, detached, present, non-prunable,
   identity-matched, and at their recorded revisions
-- **THEN** the command leases that existing workspace, returns its path and a
-  checkout identifier, and does not create another workspace or worktree
+- **THEN** the command claims that existing workspace, returns its path and a
+  claim identifier, and does not create another workspace or worktree
 
 #### Scenario: Select the Least Recently Checked-In Slot
 
@@ -116,53 +115,46 @@ path and checkout identifier.
 
 #### Scenario: Retry a Pool Race
 
-- **WHEN** another process acquires a candidate lease after it was observed
+- **WHEN** another process claims a candidate after it was observed
   but before the allocation transaction commits
 - **THEN** the command skips that candidate and retries the next matching
-  candidate or provisions a new slot without creating a duplicate lease
+  candidate or provisions a new slot without creating a duplicate claim
 
 #### Scenario: Reject an Unsafe Pool
 
-- **WHEN** all matching workspaces are manual, leased, active, degraded,
+- **WHEN** all matching workspaces are manual, claimed, active, degraded,
   failed, reclaimed, dirty, missing, prunable, diverged, or otherwise not
   reusable
 - **THEN** automatic create provisions a new slot without mutating or cleaning
   any existing unsafe workspace
 
-### Requirement: Persist One Active Checkout Lease
+### Requirement: Persist One Active Workspace Claim
 
-The system SHALL persist at most one active checkout lease for each workspace.
-The lease SHALL contain a UUID v7 checkout identifier, the workspace ID, an
-owner identity, acquisition time, lease expiry, and last heartbeat time. The
-workspace ID SHALL be unique in the active lease table. The checkout
-identifier SHALL be required to renew or check in the lease and SHALL be
-treated as a local coordination token rather than a security credential.
-Lease acquisition, renewal, and release SHALL update SQLite in short
-transactions; Git and filesystem work SHALL run outside those transactions.
-Renewal SHALL be optional liveness support for work that outlives the lease
-duration, not a long-lived database lock.
+The system SHALL persist at most one active workspace claim for each
+workspace. The claim SHALL contain a UUID v7 claim identifier, the workspace
+ID, an owner identity, and a claim timestamp. The workspace ID SHALL be unique
+in the active claim table. A workspace with no active claim is unclaimed; a
+workspace with an active claim is unavailable for another acquisition. The
+claim is persistent usage state, not a SQLite transaction or database lock,
+and SHALL remain until its owner releases it. It SHALL NOT have an expiry,
+heartbeat, or renewal protocol. The claim identifier SHALL be required to
+release the claim and SHALL be treated as a local coordination token rather
+than a security credential. This capability SHALL NOT infer an abandoned claim
+from process liveness or automatically replace it.
 
-#### Scenario: Serialize Concurrent Checkout Calls
+#### Scenario: Serialize Concurrent Acquisitions
 
 - **WHEN** two processes attempt automatic create for the same reusable pool
   slot
-- **THEN** at most one process receives a successful lease and the other
-  receives a busy or transaction-conflict error without a second lease row
+- **THEN** at most one process receives a successful claim and the other
+  receives a busy or transaction-conflict error without a second claim row
 
 #### Scenario: Preserve Workspace Identity Across Reuse
 
-- **WHEN** a workspace is checked in and later checked out again
+- **WHEN** a workspace is released and later acquired again
 - **THEN** its workspace ID, repo-worktree IDs, canonical paths, and Git
-  worktree associations remain unchanged while a new checkout identifier may
-  be issued
-
-#### Scenario: Renew Through the Existing Pool
-
-- **WHEN** a caller renews a valid checkout with the same repository set after
-  the configured workspace root changes
-- **THEN** Trees resolves the pool through the leased workspace, validates the
-  exact repository JSON, and renews the existing lease without creating a new
-  pool or workspace
+  worktree associations remain unchanged while a new claim identifier may be
+  issued
 
 ### Requirement: Require a Reusable Worktree Snapshot
 
@@ -171,7 +163,7 @@ identity and canonical worktree path match the persisted association, the
 worktree is present and not prunable, the worktree is detached, its `HEAD`
 matches `last_head`, and `git status --porcelain=v1 --untracked-files=all`
 reports no staged, unstaged, or untracked changes. Ignored files SHALL NOT
-make a worktree dirty. Checkout and checkin SHALL reconcile this predicate
+make a worktree dirty. Acquire and release SHALL reconcile this predicate
 against Git's authoritative metadata before returning success.
 
 #### Scenario: Reject a Dirty Worktree
@@ -185,69 +177,39 @@ against Git's authoritative metadata before returning success.
 - **WHEN** a caller commits in a managed detached worktree so its `HEAD`
   differs from the recorded `last_head`
 - **THEN** reconciliation records the worktree as `diverged`, marks the
-  workspace `degraded`, and no new checkout lease is issued
+  workspace `degraded`, and no new workspace claim is issued
 
 #### Scenario: Leave External Changes for the Current Owner
 
 - **WHEN** checkin finds a dirty, missing, prunable, diverged, or failed
   worktree
-- **THEN** checkin records a rejection, retains the current checkout lease,
+- **THEN** checkin records a rejection, retains the current workspace claim,
   and performs no reset, clean, branch change, or worktree removal
 
-### Requirement: Check In Without Destroying Git State
+### Requirement: Release Without Destroying Git State
 
-The CLI SHALL provide `trees checkin <workspace-path> --checkout-id
-<checkout-id>`. Checkin SHALL require the active lease identifier, reconcile
-the workspace while retaining the lease, and release the lease only when all
-managed worktrees satisfy the reusable snapshot requirement. A successful
-checkin SHALL leave the workspace directory, worktree files, source
-repositories, and worktree associations unchanged.
+The CLI SHALL provide `trees checkin <workspace-path> --claim-id <claim-id>`.
+Existing `--checkout-id` spellings MAY remain as compatibility aliases. Checkin
+SHALL require the active claim identifier, reconcile the workspace while
+retaining the claim, and release the claim only when all managed worktrees
+satisfy the reusable snapshot requirement. A successful checkin SHALL leave the
+workspace directory, worktree files, source repositories, and worktree
+associations unchanged.
 
-#### Scenario: Check In a Reusable Workspace
+#### Scenario: Release a Reusable Workspace
 
-- **WHEN** the supplied checkout identifier owns the active lease and all
-  managed worktrees pass the final reconciliation
-- **THEN** the active lease is removed atomically, a checkin operation and
-  immutable checkin event are recorded, and the workspace can be checked out
+- **WHEN** the supplied claim identifier owns the active claim and all managed
+  worktrees pass the final reconciliation
+- **THEN** the active claim is removed atomically, a release operation and
+  immutable release event are recorded, and the workspace can be acquired
   again
 
-#### Scenario: Reject an Unknown Checkout Identifier
+#### Scenario: Reject an Unknown Claim Identifier
 
-- **WHEN** the path has no active lease or the supplied identifier does not
-  match the active lease
-- **THEN** checkin fails without releasing another caller's lease or changing
+- **WHEN** the path has no active claim or the supplied identifier does not
+  match the active claim
+- **THEN** checkin fails without releasing another caller's claim or changing
   Git state
-
-### Requirement: Renew and Recover Checkout Leases
-
-The CLI SHALL accept the current checkout identifier on automatic `trees create
---repo <repository-path>... --checkout-id <checkout-id>` to renew the lease for
-the matching repository set. Renewal SHALL extend the
-lease by the configured checkout duration, whose default SHALL be 24 hours,
-and SHALL not mutate Git. An expired lease SHALL be reclaimable only after
-reconciliation proves the workspace reusable; an unexpired lease SHALL never
-be force-reclaimed by this capability.
-
-#### Scenario: Renew an Owned Lease
-
-- **WHEN** the supplied checkout identifier matches the active lease
-- **THEN** checkout succeeds with the same identifier and a later expiry,
-  without creating a second lease or changing any worktree
-
-#### Scenario: Reclaim a Safe Expired Lease
-
-- **WHEN** an active lease is expired and reconciliation finds a reusable
-  workspace
-- **THEN** the old lease expiry and the new checkout acquisition are recorded
-  atomically, the old lease is removed, and the caller receives a new active
-  lease
-
-#### Scenario: Refuse an Unsafe Expired Lease
-
-- **WHEN** an expired lease exists but reconciliation finds dirty, missing,
-  prunable, diverged, or failed worktrees
-- **THEN** the expired lease is recorded and removed, the workspace remains
-  degraded and unavailable for checkout, and no new lease is returned
 
 ### Requirement: Reclaim Idle Automatic Workspaces
 
@@ -265,11 +227,11 @@ filter. A dry run SHALL perform read-only inspection and SHALL NOT modify Git,
 SQLite, or the filesystem.
 
 Without `--force`, GC SHALL select only workspaces with no active operation or
-lease, `ready` health, clean reusable worktrees, and no unexpected root
+claim, `ready` health, clean reusable worktrees, and no unexpected root
 content. `--force` SHALL imply `--yes` and permit cleanup of age-qualified
 automatic workspaces with dirty, diverged, missing, prunable, or unexpected
 content. `--force` SHALL still refuse manual workspaces, young workspaces,
-unexpired leases, active operations, and paths whose source repository
+active claims, active operations, and paths whose source repository
 identity cannot be verified. Forced cleanup SHALL record that it was forced.
 
 #### Scenario: Preview GC Candidates Safely
@@ -277,7 +239,7 @@ identity cannot be verified. Forced cleanup SHALL record that it was forced.
 - **WHEN** a caller runs `trees gc --older-than 30d --dry-run`
 - **THEN** the command reports automatic, not-checked-out, checked-out,
   age-qualified, selected, and skipped counts with workspace paths and
-  reasons, without removing worktrees, directories, leases, rows, or events
+  reasons, without removing worktrees, directories, claims, rows, or events
 
 #### Scenario: Confirm a Normal GC Run
 
@@ -310,7 +272,7 @@ identity cannot be verified. Forced cleanup SHALL record that it was forced.
 #### Scenario: Reclaim an Idle Workspace
 
 - **WHEN** an automatic workspace is older than the cutoff, has no active
-  lease or operation, and final reconciliation confirms every worktree is
+  claim or operation, and final reconciliation confirms every worktree is
   clean, detached, present, non-prunable, identity-matched, and at its
   recorded revision
 - **THEN** after confirmation GC removes each worktree without a force flag,
@@ -320,7 +282,7 @@ identity cannot be verified. Forced cleanup SHALL record that it was forced.
 
 #### Scenario: Preserve an Unsafe GC Candidate
 
-- **WHEN** a candidate is dirty, diverged, missing, prunable, leased, or the
+- **WHEN** a candidate is dirty, diverged, missing, claimed, or the
   workspace root contains an unexpected entry
 - **THEN** normal GC skips or fails that candidate, reports the reason, and
   leaves every remaining file and worktree association in place
@@ -336,8 +298,8 @@ identity cannot be verified. Forced cleanup SHALL record that it was forced.
 
 #### Scenario: Keep Force Within Ownership and Identity Boundaries
 
-- **WHEN** a forced GC scan encounters a manual workspace, an unexpired lease,
-  an active operation, a young workspace, or a path whose source repository
+- **WHEN** a forced GC scan encounters a manual workspace, an active claim, an
+  active operation, a young workspace, or a path whose source repository
   identity cannot be verified
 - **THEN** it skips the workspace, reports the reason, and does not remove its
   files or worktree metadata
@@ -352,15 +314,15 @@ identity cannot be verified. Forced cleanup SHALL record that it was forced.
 
 ### Requirement: Record Workspace Access and Reclamation Lifecycle
 
-Every successful checkout, renewal, checkin, rejected checkin, expired lease
-recovery, and GC attempt that reaches a per-workspace operation SHALL be
+Every successful acquire, release, rejected release, and GC attempt that
+reaches a per-workspace operation SHALL be
 represented by an operation and an immutable lifecycle event. A `--dry-run` GC
 inspection and a read-only candidate skip SHALL NOT create operations or
 events. Access and GC events SHALL use the stable workspace entity identity
-and SHALL include management mode, checkout identifiers, owner identities,
+and SHALL include management mode, claim identifiers, owner identities,
 timestamps, age cutoff, not-checked-out/checked-out counts, and relevant
 reconciliation or failure details as canonical JSON. Forced GC events SHALL
-include `forced: true`. Lease or filesystem snapshot changes and terminal
+include `forced: true`. Claim or filesystem snapshot changes and terminal
 operation state SHALL be committed atomically with their event in a short
 SQLite transaction; physical GC removal SHALL be completed before a workspace
 is marked `reclaimed`.
@@ -369,12 +331,12 @@ is marked `reclaimed`.
 
 - **WHEN** checkin is rejected because a worktree is dirty or diverged
 - **THEN** the operation is failed, the workspace and worktree snapshot
-  reflects the observed health, the active lease remains, and the event log
-  contains the rejection reason and checkout identifier
+  reflects the observed health, the active claim remains, and the event log
+  contains the rejection reason and claim identifier
 
 #### Scenario: Audit Repeated Reconciliation
 
-- **WHEN** checkout or checkin observes no change from the stored reusable
+- **WHEN** acquire or release observes no change from the stored reusable
   snapshot
 - **THEN** no duplicate external-change event is appended, while the access
   operation still records its own successful transition
@@ -383,5 +345,5 @@ is marked `reclaimed`.
 
 - **WHEN** GC successfully removes an automatic workspace
 - **THEN** the workspace and repo-worktree rows remain as `reclaimed`
-  tombstones, prior lifecycle events remain readable, and a later checkout
+  tombstones, prior lifecycle events remain readable, and a later acquire
   cannot reuse the reclaimed record
