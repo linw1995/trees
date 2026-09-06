@@ -769,10 +769,28 @@ fn operation_id_for_lease(
     connection: &mut SqliteConnection,
     lease_id: &LeaseId,
 ) -> QueryResult<OperationId> {
-    operation_leases::table
+    let now = Timestamp::now();
+    let lease = operation_leases::table
         .find(lease_id)
-        .select(operation_leases::operation_id)
-        .first(connection)
+        .select((
+            operation_leases::operation_id,
+            operation_leases::lease_expires_at,
+        ))
+        .first::<(OperationId, Timestamp)>(connection)
+        .optional()?;
+    match lease {
+        Some((operation_id, lease_expires_at)) if lease_expires_at > now => Ok(operation_id),
+        Some((_, lease_expires_at)) => {
+            eprintln!(
+                "Warning: refusing lease-owned update for {lease_id}: lease expired at {lease_expires_at}"
+            );
+            Err(Error::NotFound)
+        }
+        None => {
+            eprintln!("Warning: refusing lease-owned update for {lease_id}: lease was not found");
+            Err(Error::NotFound)
+        }
+    }
 }
 
 pub fn persist_operation_intent(
@@ -952,6 +970,22 @@ pub fn renew_operation_lease(
     with_short_transaction(connection, |connection| {
         let lease_expires_at = Timestamp::after_seconds(300);
         let now = Timestamp::now();
+        let current_expiry = operation_leases::table
+            .find(lease_id)
+            .select(operation_leases::lease_expires_at)
+            .first::<Timestamp>(connection)
+            .optional()?;
+        if let Some(current_expiry) = current_expiry.as_ref() {
+            if current_expiry <= &now {
+                eprintln!(
+                    "Warning: operation lease {lease_id} expired at {current_expiry}; renewal skipped"
+                );
+                return Ok(false);
+            }
+        } else {
+            eprintln!("Warning: operation lease {lease_id} was not found; renewal skipped");
+            return Ok(false);
+        }
         let updated = diesel::update(
             operation_leases::table
                 .filter(operation_leases::id.eq(lease_id))
@@ -960,6 +994,11 @@ pub fn renew_operation_lease(
         .set(operation_leases::lease_expires_at.eq(&lease_expires_at))
         .execute(connection)?;
 
+        if updated != 1 {
+            eprintln!(
+                "Warning: operation lease {lease_id} changed before renewal could be committed"
+            );
+        }
         Ok(updated == 1)
     })
 }
@@ -1124,11 +1163,17 @@ fn finish_operation_in_transaction(
     metadata: TransitionMetadata,
 ) -> QueryResult<()> {
     let operation_id = operation_id_for_lease(connection, lease_id)?;
+    let now = Timestamp::now();
     let previous_state =
         operation_state(connection, &operation_id)?.unwrap_or(OperationState::Running);
-    let updated = diesel::delete(operation_leases::table.filter(operation_leases::id.eq(lease_id)))
-        .execute(connection)?;
+    let updated = diesel::delete(
+        operation_leases::table
+            .filter(operation_leases::id.eq(lease_id))
+            .filter(operation_leases::lease_expires_at.gt(&now)),
+    )
+    .execute(connection)?;
     if updated != 1 {
+        eprintln!("Warning: operation lease {lease_id} expired or changed before terminal update");
         return Err(Error::NotFound);
     }
     append_operation_event(
@@ -1150,11 +1195,18 @@ pub fn persist_operation_step_intent(
     let pending_step = pending_step.into();
     with_short_transaction(connection, |connection| {
         let operation_id = operation_id_for_lease(connection, lease_id)?;
-        let updated =
-            diesel::update(operation_leases::table.filter(operation_leases::id.eq(lease_id)))
-                .set(operation_leases::lease_expires_at.eq(Timestamp::after_seconds(300)))
-                .execute(connection)?;
+        let now = Timestamp::now();
+        let updated = diesel::update(
+            operation_leases::table
+                .filter(operation_leases::id.eq(lease_id))
+                .filter(operation_leases::lease_expires_at.gt(&now)),
+        )
+        .set(operation_leases::lease_expires_at.eq(Timestamp::after_seconds(300)))
+        .execute(connection)?;
         if updated != 1 {
+            eprintln!(
+                "Warning: operation lease {lease_id} expired or changed before step intent update"
+            );
             return Err(Error::NotFound);
         }
         let previous_state =
@@ -1189,11 +1241,18 @@ pub fn record_worktree_step_result(
         let operation_state =
             operation_state(connection, &operation_id)?.unwrap_or(OperationState::Running);
         let lease_expires_at = Timestamp::after_seconds(300);
-        let updated =
-            diesel::update(operation_leases::table.filter(operation_leases::id.eq(lease_id)))
-                .set(operation_leases::lease_expires_at.eq(&lease_expires_at))
-                .execute(connection)?;
+        let now = Timestamp::now();
+        let updated = diesel::update(
+            operation_leases::table
+                .filter(operation_leases::id.eq(lease_id))
+                .filter(operation_leases::lease_expires_at.gt(&now)),
+        )
+        .set(operation_leases::lease_expires_at.eq(&lease_expires_at))
+        .execute(connection)?;
         if updated != 1 {
+            eprintln!(
+                "Warning: operation lease {lease_id} expired or changed before step result update"
+            );
             return Err(Error::NotFound);
         }
 
@@ -2087,6 +2146,68 @@ mod tests {
     }
 
     #[test]
+    fn expired_operation_lease_rejects_step_and_terminal_updates() {
+        let database_path =
+            std::env::temp_dir().join(format!("trees-{}.sqlite", WorkspaceId::new()));
+        let mut connection = database::connect(&database_path).expect("database should open");
+        let workspace_id = WorkspaceId::new();
+        let workspace_path = CanonicalPath::resolve(".").expect("workspace path should resolve");
+        let now = Timestamp::now();
+        insert_workspace(
+            &mut connection,
+            &NewWorkspace {
+                id: workspace_id,
+                canonical_path: workspace_path,
+                state: WorkspaceState::Creating,
+                created_at: now.clone(),
+                updated_at: now,
+                last_reconciled_at: None,
+            },
+        )
+        .expect("workspace should be inserted");
+        let intent = OperationIntent::new(
+            workspace_id,
+            "create",
+            Timestamp::after_seconds(300),
+            "attach",
+            JsonDocument::parse(r#"{"target":"repo"}"#).unwrap(),
+        );
+        let operation = persist_operation_intent(&mut connection, &intent)
+            .expect("operation should be inserted");
+        diesel::update(operation_leases::table.find(intent.lease_id))
+            .set(operation_leases::lease_expires_at.eq(Timestamp::now()))
+            .execute(&mut connection)
+            .expect("operation lease should expire");
+
+        assert!(persist_operation_step_intent(
+            &mut connection,
+            &intent.lease_id,
+            "stale step",
+            JsonDocument::parse(r#"{"stale":true}"#).unwrap(),
+        )
+        .expect_err("expired lease should reject a step intent")
+        .eq(&Error::NotFound));
+        assert!(record_operation_transition(
+            &mut connection,
+            &intent.lease_id,
+            OperationState::Succeeded,
+            TransitionMetadata::new("operation_succeeded", "trees"),
+        )
+        .expect_err("expired lease should reject a terminal update")
+        .eq(&Error::NotFound));
+        assert_eq!(
+            operation_state(&mut connection, &operation.id).unwrap(),
+            Some(OperationState::Running)
+        );
+        assert!(find_operation_lease(&mut connection, &operation.id)
+            .unwrap()
+            .is_some());
+
+        drop(connection);
+        fs::remove_file(database_path).expect("temporary database should be removable");
+    }
+
+    #[test]
     fn transitions_commit_snapshots_and_events_together() {
         let database_path =
             std::env::temp_dir().join(format!("trees-{}.sqlite", WorkspaceId::new()));
@@ -2112,7 +2233,7 @@ mod tests {
             &OperationIntent::new(
                 workspace_id,
                 "create",
-                Timestamp::now(),
+                Timestamp::after_seconds(300),
                 "attach repo",
                 JsonDocument::parse(r#"{"target":"repo"}"#).unwrap(),
             ),
