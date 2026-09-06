@@ -3,17 +3,18 @@
 ### Requirement: Persist Workspace Management and GC Timestamps
 
 The workspace snapshot SHALL persist a management mode with the values
-`automatic` and `manual`, an optional UUID-backed repository-set pool ID, the
-last successful release time, and, when applicable, the reclamation time. An
-automatic workspace SHALL reference a pool registry row whose absolute
-workspace-root namespace, indexed hash, and canonical repository JSON identify
-the allocation scope and sorted Git common-directory identities; a manual
-workspace MAY leave the pool ID null. The pool registry SHALL maintain
-explicit relations to origin repositories, and the source path SHALL be stored
-on the origin repository record rather than copied into each pool relation or
-worktree row. The management mode and pool ID SHALL be independent from
-workspace health and active workspace claims. Existing legacy explicit-path
-workspace rows SHALL be filled in as `manual` when this schema is introduced.
+`automatic` and `manual`, an absolute `workspace_root` slot location, an
+optional UUID-backed repository-set pool ID, the last successful release time,
+and, when applicable, the reclamation time. An automatic workspace SHALL
+reference a pool registry row whose non-unique indexed hash and exact sorted
+`repository_ids` identify the repository set; pool identity SHALL be
+independent of `workspace_root`. A manual workspace MAY leave the pool ID
+null. The pool registry SHALL maintain explicit relations to origin
+repositories, and the source path SHALL be stored on the origin repository
+record rather than copied into each pool relation or worktree row. The
+management mode and pool ID SHALL be independent from workspace health and
+active workspace claims. Existing legacy explicit-path workspace rows SHALL be
+filled in as `manual` when this schema is introduced.
 
 #### Scenario: Track an Automatic Workspace Idle Time
 
@@ -40,9 +41,9 @@ The lifecycle database SHALL persist each origin repository once by its Git
 common-directory identity and canonical source path. A repository-set pool SHALL
 reference origin repositories through an explicit relation, and each managed
 repo-worktree SHALL reference its origin repository rather than duplicating the
-identity and source path. The canonical repository JSON and indexed hash SHALL
-remain available on the pool registry for exact pool matching and collision
-verification.
+identity and source path. The canonical sorted origin repository ID set and
+indexed hash SHALL remain available on the pool registry for exact pool
+matching and collision verification.
 
 #### Scenario: Reuse an Origin Repository Record
 

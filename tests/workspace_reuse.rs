@@ -54,7 +54,6 @@ struct AutomaticFixture {
     workspace: trees::storage::WorkspaceRow,
     source: CanonicalPath,
     worktree_path: PathBuf,
-    workspace_root: CanonicalPath,
 }
 
 fn automatic_fixture() -> AutomaticFixture {
@@ -90,13 +89,6 @@ fn automatic_fixture() -> AutomaticFixture {
         .into_iter()
         .next()
         .expect("workspace should have a worktree");
-    let pool_id = workspace
-        .pool_id
-        .expect("automatic workspace should reference a pool");
-    let workspace_root = find_workspace_pool_by_id(&mut connection, &pool_id)
-        .expect("workspace pool lookup should succeed")
-        .workspace_root;
-    plan.workspace_root = workspace_root.clone();
     AutomaticFixture {
         root,
         database_path,
@@ -105,7 +97,6 @@ fn automatic_fixture() -> AutomaticFixture {
         workspace,
         source: worktree.source_path,
         worktree_path: worktree.worktree_path.into_path_buf(),
-        workspace_root,
     }
 }
 
@@ -157,6 +148,41 @@ fn reuses_the_same_automatic_slot_across_acquire_release_cycles() {
 }
 
 #[test]
+fn reuses_an_idle_slot_after_the_configured_root_changes() {
+    let mut fixture = automatic_fixture();
+    let original_path = fixture.workspace.canonical_path.clone();
+    let original_root = fixture
+        .workspace
+        .workspace_root
+        .clone()
+        .expect("automatic workspace should have a root");
+    fixture.plan.workspace_root = CanonicalPath::from_absolute(fixture.root.join("other-managed"))
+        .expect("new workspace root should be absolute");
+
+    let allocation = allocate_automatic_workspace(&mut fixture.connection, &fixture.plan)
+        .expect("allocation should reuse the existing slot");
+    assert_eq!(allocation.workspace_path, original_path);
+    assert_eq!(
+        allocation.pool_id,
+        fixture.workspace.pool_id.expect("pool should exist")
+    );
+    assert_eq!(
+        find_workspace(&mut fixture.connection, &fixture.workspace.id)
+            .expect("workspace lookup should succeed")
+            .workspace_root,
+        Some(original_root)
+    );
+
+    release_automatic_workspace(
+        &mut fixture.connection,
+        &allocation.workspace_path,
+        allocation.claim_id,
+    )
+    .expect("workspace should be released");
+    cleanup_fixture(fixture);
+}
+
+#[test]
 fn persists_origin_repositories_once_and_links_them_to_pool() {
     let mut fixture = automatic_fixture();
     let pool_id = fixture
@@ -165,12 +191,6 @@ fn persists_origin_repositories_once_and_links_them_to_pool() {
         .expect("automatic workspace should reference a pool");
     let pool = find_workspace_pool_by_id(&mut fixture.connection, &pool_id)
         .expect("workspace pool lookup should succeed");
-    assert_eq!(pool.hash_key, fixture.plan.repository_set.hash_key());
-    assert_eq!(
-        pool.repositories_json,
-        fixture.plan.repository_set.repositories_json()
-    );
-
     let origin = find_origin_repository_by_identity(
         &mut fixture.connection,
         &fixture.plan.repositories[0].repository_identity,
@@ -178,6 +198,9 @@ fn persists_origin_repositories_once_and_links_them_to_pool() {
     .expect("origin repository lookup should succeed")
     .expect("origin repository should exist");
     assert_eq!(origin.source_path, fixture.plan.repositories[0].source_path);
+    let repository_set = trees::pool::RepositorySetKey::from_repository_ids(&[origin.id]);
+    assert_eq!(pool.hash_key, repository_set.hash_key());
+    assert_eq!(pool.repository_ids, repository_set.repository_ids());
 
     let links = list_workspace_pool_repositories(&mut fixture.connection, &pool_id)
         .expect("pool repository links should be readable");
@@ -210,17 +233,6 @@ fn selects_the_oldest_released_slot_for_an_exact_repository_set() {
     let first = provision_automatic(&mut connection, &plan).expect("first slot should provision");
     release_automatic_workspace(&mut connection, &first.workspace_path, first.claim_id)
         .expect("first slot should be released");
-    let first_workspace = find_workspace_by_path(&mut connection, &first.workspace_path)
-        .expect("workspace lookup should succeed")
-        .expect("first workspace should exist");
-    plan.workspace_root = find_workspace_pool_by_id(
-        &mut connection,
-        &first_workspace
-            .pool_id
-            .expect("automatic workspace should reference a pool"),
-    )
-    .expect("workspace pool lookup should succeed")
-    .workspace_root;
     let second = provision_automatic(&mut connection, &plan).expect("second slot should provision");
     release_automatic_workspace(&mut connection, &second.workspace_path, second.claim_id)
         .expect("second slot should be released");
@@ -388,7 +400,6 @@ fn dry_run_scan_uses_a_read_only_connection_and_preserves_state() {
     let fixture = automatic_fixture();
     let workspace_id = fixture.workspace.id;
     let database_path = fixture.database_path.clone();
-    let workspace_root = fixture.workspace_root.clone();
     let mut connection = fixture.connection;
     let before_events = trees::schema::lifecycle_events::table
         .count()
@@ -403,7 +414,6 @@ fn dry_run_scan_uses_a_read_only_connection_and_preserves_state() {
         .state;
     let result = gc::scan(
         &mut read_only,
-        &workspace_root,
         "30d".parse().expect("duration should parse"),
     )
     .expect("dry-run scan should succeed");
@@ -442,7 +452,6 @@ fn force_gc_reclaims_diverged_worktrees_and_extra_content() {
     let mut connection = fixture.connection;
     let report = gc::execute(
         &mut connection,
-        &fixture.workspace_root,
         "30d".parse().expect("duration should parse"),
         true,
     )
@@ -478,7 +487,6 @@ fn force_gc_keeps_a_claimed_workspace() {
 
     let report = gc::execute(
         &mut fixture.connection,
-        &fixture.workspace_root,
         "30d".parse().expect("duration should parse"),
         true,
     )
@@ -516,7 +524,6 @@ fn records_a_partial_gc_failure_without_reporting_reclamation() {
     let mut connection = fixture.connection;
     let report = gc::execute(
         &mut connection,
-        &fixture.workspace_root,
         "30d".parse().expect("duration should parse"),
         false,
     )

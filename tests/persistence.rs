@@ -30,6 +30,7 @@ fn workspace(id: WorkspaceId, path: CanonicalPath) -> NewWorkspace {
         created_at: now.clone(),
         updated_at: now,
         last_reconciled_at: None,
+        workspace_root: None,
     }
 }
 
@@ -257,8 +258,6 @@ fn migration_three_normalizes_a_database_already_at_migration_two() {
         CanonicalPath::from_absolute(root.join("source")).expect("source path should be absolute");
     let worktree_path = CanonicalPath::from_absolute(root.join("workspace/repo"))
         .expect("worktree path should be absolute");
-    let repository_set =
-        trees::pool::RepositorySetKey::from_repositories(std::slice::from_ref(&source_path));
     let now = Timestamp::now();
 
     diesel::sql_query(
@@ -271,7 +270,7 @@ fn migration_three_normalizes_a_database_already_at_migration_two() {
     .bind::<diesel::sql_types::Text, _>(workspace_path.to_string())
     .bind::<diesel::sql_types::Text, _>(now.to_string())
     .bind::<diesel::sql_types::Text, _>(now.to_string())
-    .bind::<diesel::sql_types::Text, _>(repository_set.hash_key().to_owned())
+    .bind::<diesel::sql_types::Text, _>("legacy-hash")
     .bind::<diesel::sql_types::Text, _>(workspace_root.to_string())
     .bind::<diesel::sql_types::Text, _>(now.to_string())
     .execute(&mut connection)
@@ -306,7 +305,7 @@ fn migration_three_normalizes_a_database_already_at_migration_two() {
     .bind::<diesel::sql_types::Text, _>(second_workspace_path.to_string())
     .bind::<diesel::sql_types::Text, _>(now.to_string())
     .bind::<diesel::sql_types::Text, _>(now.to_string())
-    .bind::<diesel::sql_types::Text, _>(repository_set.repositories_json().to_owned())
+    .bind::<diesel::sql_types::Text, _>("legacy-json")
     .bind::<diesel::sql_types::Text, _>(workspace_root.to_string())
     .bind::<diesel::sql_types::Text, _>(now.to_string())
     .execute(&mut connection)
@@ -336,11 +335,12 @@ fn migration_three_normalizes_a_database_already_at_migration_two() {
         .expect("automatic workspace should reference a pool");
     let pool = trees::storage::find_workspace_pool_by_id(&mut connection, &pool_id)
         .expect("pool should be queryable");
-    assert_eq!(pool.workspace_root, workspace_root);
-    assert_eq!(pool.repositories_json, repository_set.repositories_json());
+    assert_eq!(workspace.workspace_root, Some(workspace_root.clone()));
     let origin = trees::storage::find_origin_repository_by_identity(&mut connection, &source_path)
         .expect("origin repository should be queryable")
         .expect("origin repository should exist");
+    let repository_set = trees::pool::RepositorySetKey::from_repository_ids(&[origin.id]);
+    assert_eq!(pool.repository_ids, repository_set.repository_ids());
     let links = trees::storage::list_workspace_pool_repositories(&mut connection, &pool_id)
         .expect("pool repository links should be queryable");
     assert_eq!(links.len(), 1);
@@ -489,14 +489,16 @@ fn automatic_workspace_metadata_and_timestamps_round_trip_as_absolute_values() {
     let workspace_id = WorkspaceId::new();
     let workspace_path = CanonicalPath::resolve(".").expect("workspace path should resolve");
     let workspace_root = CanonicalPath::resolve("/tmp").expect("workspace root should resolve");
+    let repository_path =
+        CanonicalPath::from_absolute("/repo/api").expect("repository path should be absolute");
+    let repository_id =
+        ensure_origin_repository(&mut connection, &repository_path, &repository_path)
+            .expect("origin repository should be available")
+            .id;
     let now = Timestamp::now();
     let pool = trees::storage::ensure_workspace_pool(
         &mut connection,
-        &workspace_root,
-        &trees::pool::RepositorySetKey::from_repositories(&[CanonicalPath::from_absolute(
-            "/repo/api",
-        )
-        .expect("repository path should be absolute")]),
+        &trees::pool::RepositorySetKey::from_repository_ids(&[repository_id]),
     )
     .expect("workspace pool should be available");
 
@@ -505,6 +507,7 @@ fn automatic_workspace_metadata_and_timestamps_round_trip_as_absolute_values() {
     diesel::update(trees::schema::workspaces::table.find(&workspace_id))
         .set((
             trees::schema::workspaces::management_mode.eq(WorkspaceManagementMode::Automatic),
+            trees::schema::workspaces::workspace_root.eq(Some(workspace_root)),
             trees::schema::workspaces::pool_id.eq(Some(pool.id)),
             trees::schema::workspaces::last_released_at.eq(Some(now.clone())),
             trees::schema::workspaces::reclaimed_at.eq::<Option<Timestamp>>(None),

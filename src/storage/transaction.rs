@@ -48,6 +48,7 @@ mod tests {
                         created_at: now.clone(),
                         updated_at: now,
                         last_reconciled_at: None,
+                        workspace_root: None,
                     },
                 )?;
                 Err(diesel::result::Error::RollbackTransaction)

@@ -18,8 +18,9 @@ with `~/.local/share/trees/workspaces` as the Linux fallback,
 `%LOCALAPPDATA%\\trees\\workspaces` on Windows. The lifecycle database SHALL
 remain in the existing platform state directory. Trees SHALL create the
 resolved directory lazily and generate each automatic workspace below it from
-the workspace UUID. Persisted workspace paths and workspace-root namespaces
-SHALL be absolute.
+the workspace UUID. Persisted workspace paths and per-slot `workspace_root`
+values SHALL be absolute. The slot root SHALL not participate in repository-set
+pool matching.
 
 #### Scenario: Generate an Automatic Workspace Path
 
@@ -82,13 +83,14 @@ automated retention.
 
 The CLI SHALL provide automatic creation as `trees create --repo
 <repository-path>...` without a positional workspace path. The command
-SHALL canonicalize the repositories, resolve a UUID-backed pool using its
-indexed hash and exact canonical JSON set of Git common-directory identities,
-and search for an idle automatic workspace referencing that pool. It SHALL
-reconcile candidates before selection, acquire a workspace claim for a
-reusable candidate, and provision a new automatic workspace below the
-Trees-managed workspace root when no safe candidate exists. The successful
-result SHALL include the allocated workspace path and claim identifier.
+SHALL canonicalize the repositories, resolve their origin repository IDs,
+derive the non-unique indexed hash and exact sorted `repository_ids` set, then
+resolve a UUID-backed pool independent of workspace root. It SHALL search for
+an idle automatic workspace referencing that pool, reconcile candidates before
+selection, acquire a workspace claim for a reusable candidate, and provision a
+new automatic workspace below the currently configured workspace root when no
+safe candidate exists. The successful result SHALL include the allocated
+workspace path and claim identifier.
 
 #### Scenario: Allocate a Reusable Pool Slot
 
@@ -216,9 +218,12 @@ associations unchanged.
 
 The CLI SHALL provide `trees gc --older-than <duration> [--dry-run] [--yes]
 [--force]`. GC SHALL calculate a UTC cutoff from the current time minus the
-supplied duration and consider only `automatic` workspaces in the current
-workspace-root namespace. The idle timestamp SHALL be the last successful
-release time, or `created_at` when the workspace has never been released.
+supplied duration and consider all `automatic` workspaces. The idle timestamp
+SHALL be the last successful release time, or `created_at` when the workspace
+has never been released.
+Each candidate SHALL use its persisted `workspace_root` for root-containment
+and unexpected-content checks; the current configuration root SHALL not filter
+reuse or GC candidates.
 GC SHALL report the total automatic workspaces, the number currently not
 claimed, the number currently claimed, the number older than the
 cutoff, and the number selected for reclamation. A normal non-dry-run SHALL

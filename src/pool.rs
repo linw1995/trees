@@ -1,22 +1,22 @@
 use serde::{Deserialize, Serialize};
 
-use crate::domain::CanonicalPath;
+use crate::domain::OriginRepositoryId;
 
 const HASH_PREFIX: &str = "blake3:";
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RepositorySetKey {
     hash_key: String,
-    repositories_json: String,
+    repository_ids: String,
 }
 
 impl RepositorySetKey {
-    pub fn from_repositories(repositories: &[CanonicalPath]) -> Self {
-        let canonical = canonical_repository_set(repositories);
+    pub fn from_repository_ids(repository_ids: &[OriginRepositoryId]) -> Self {
+        let canonical = canonical_repository_ids(repository_ids);
         let digest = blake3::hash(canonical.as_bytes());
         Self {
             hash_key: format!("{HASH_PREFIX}{}", digest.to_hex()),
-            repositories_json: canonical,
+            repository_ids: canonical,
         }
     }
 
@@ -24,18 +24,18 @@ impl RepositorySetKey {
         &self.hash_key
     }
 
-    pub fn repositories_json(&self) -> &str {
-        &self.repositories_json
+    pub fn repository_ids(&self) -> &str {
+        &self.repository_ids
     }
 }
 
-fn canonical_repository_set(repositories: &[CanonicalPath]) -> String {
-    let mut identities = repositories
+fn canonical_repository_ids(repository_ids: &[OriginRepositoryId]) -> String {
+    let mut ids = repository_ids
         .iter()
         .map(ToString::to_string)
         .collect::<Vec<_>>();
-    identities.sort();
-    serde_json::to_string(&identities).expect("repository identities should serialize as JSON")
+    ids.sort();
+    serde_json::to_string(&ids).expect("repository IDs should serialize as JSON")
 }
 
 impl std::fmt::Display for RepositorySetKey {
@@ -48,18 +48,21 @@ impl std::fmt::Display for RepositorySetKey {
 mod tests {
     use super::*;
 
-    fn path(value: &str) -> CanonicalPath {
-        CanonicalPath::from_absolute(value).expect("test path should be absolute")
-    }
-
     #[test]
     fn repository_set_key_is_sorted_and_order_independent() {
-        let first = RepositorySetKey::from_repositories(&[path("/repo/web"), path("/repo/api")]);
-        let second = RepositorySetKey::from_repositories(&[path("/repo/api"), path("/repo/web")]);
+        let web = OriginRepositoryId::new();
+        let api = OriginRepositoryId::new();
+        let first = RepositorySetKey::from_repository_ids(&[web, api]);
+        let second = RepositorySetKey::from_repository_ids(&[api, web]);
+        let mut expected = [web.to_string(), api.to_string()];
+        expected.sort();
 
         assert_eq!(first, second);
         assert!(first.hash_key().starts_with(HASH_PREFIX));
         assert_eq!(first.hash_key().len(), HASH_PREFIX.len() + 64);
-        assert_eq!(first.repositories_json(), r#"["/repo/api","/repo/web"]"#);
+        assert_eq!(
+            first.repository_ids(),
+            serde_json::to_string(&expected).unwrap()
+        );
     }
 }

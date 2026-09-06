@@ -58,8 +58,8 @@ alias. Release retains the claim when Git reports dirty, missing, prunable,
 diverged, or failed worktrees, so the claim holder can repair the workspace before
 returning it.
 `POOL_ID` is the stable UUID of the repository-set pool; its BLAKE3 hash and
-canonical repository JSON are stored internally for indexed lookup and exact
-matching.
+canonical sorted origin repository ID set are stored internally for indexed
+lookup and exact matching.
 
 The command shape selects the management mode. An explicit workspace path is
 manual and remains outside automatic allocation and GC; omitting the path is

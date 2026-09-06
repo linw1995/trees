@@ -12,19 +12,17 @@ FROM repo_worktrees
 GROUP BY repository_identity;
 
 CREATE TABLE workspace_pools (
-    -- All slots in a pool share the same managed-root namespace.
     id TEXT NOT NULL PRIMARY KEY CHECK (length(id) = 36),
-    workspace_root TEXT NOT NULL,
     hash_key TEXT NOT NULL,
-    repositories_json TEXT NOT NULL CHECK (
-        json_valid(repositories_json)
-        AND json_type(repositories_json) = 'array'
+    repository_ids TEXT NOT NULL CHECK (
+        json_valid(repository_ids)
+        AND json_type(repository_ids) = 'array'
     ),
-    UNIQUE (workspace_root, repositories_json)
+    UNIQUE (repository_ids)
 );
 
 CREATE INDEX workspace_pools_hash_idx
-    ON workspace_pools (workspace_root, hash_key);
+    ON workspace_pools (hash_key);
 
 CREATE TABLE workspace_pool_map (
     workspace_id TEXT NOT NULL PRIMARY KEY,
@@ -34,71 +32,67 @@ CREATE TABLE workspace_pool_map (
 WITH workspace_sets AS (
     SELECT
         workspace.id AS workspace_id,
-        workspace.workspace_root,
         workspace.pool_key AS hash_key,
         (
-            SELECT json_group_array(repository_identity)
+            SELECT json_group_array(repository_id)
             FROM (
-                SELECT DISTINCT repository_identity
+                SELECT DISTINCT origin.id AS repository_id
                 FROM repo_worktrees AS repository
+                JOIN origin_repositories AS origin
+                  ON origin.repository_identity = repository.repository_identity
                 WHERE repository.workspace_id = workspace.id
-                ORDER BY repository_identity
+                ORDER BY origin.id
             )
-        ) AS repositories_json
+        ) AS repository_ids
     FROM workspaces AS workspace
     WHERE workspace.management_mode = 'automatic'
       AND workspace.pool_key IS NOT NULL
 ), pool_ids AS (
     SELECT
         MIN(workspace_id) AS pool_id,
-        workspace_root,
-        repositories_json
+        repository_ids
     FROM workspace_sets
-    GROUP BY workspace_root, repositories_json
+    GROUP BY repository_ids
 )
-INSERT INTO workspace_pools (id, workspace_root, hash_key, repositories_json)
+INSERT INTO workspace_pools (id, hash_key, repository_ids)
 SELECT
     pool_ids.pool_id,
-    pool_ids.workspace_root,
     MIN(workspace_sets.hash_key),
-    pool_ids.repositories_json
+    pool_ids.repository_ids
 FROM pool_ids
 JOIN workspace_sets
-  ON workspace_sets.workspace_root = pool_ids.workspace_root
- AND workspace_sets.repositories_json = pool_ids.repositories_json
-GROUP BY pool_ids.pool_id, pool_ids.workspace_root, pool_ids.repositories_json;
+  ON workspace_sets.repository_ids = pool_ids.repository_ids
+GROUP BY pool_ids.pool_id, pool_ids.repository_ids;
 
 WITH workspace_sets AS (
     SELECT
         workspace.id AS workspace_id,
-        workspace.workspace_root,
-        workspace.pool_key AS hash_key,
         (
-            SELECT json_group_array(repository_identity)
+            SELECT json_group_array(repository_id)
             FROM (
-                SELECT DISTINCT repository_identity
+                SELECT DISTINCT origin.id AS repository_id
                 FROM repo_worktrees AS repository
+                JOIN origin_repositories AS origin
+                  ON origin.repository_identity = repository.repository_identity
                 WHERE repository.workspace_id = workspace.id
-                ORDER BY repository_identity
+                ORDER BY origin.id
             )
-        ) AS repositories_json
+        ) AS repository_ids
     FROM workspaces AS workspace
     WHERE workspace.management_mode = 'automatic'
       AND workspace.pool_key IS NOT NULL
 ), pool_ids AS (
     SELECT
         MIN(workspace_id) AS pool_id,
-        workspace_root,
-        repositories_json
+        repository_ids
     FROM workspace_sets
-    GROUP BY workspace_root, repositories_json
+    GROUP BY repository_ids
 )
 INSERT INTO workspace_pool_map (workspace_id, pool_id)
 SELECT workspace_sets.workspace_id, pool_ids.pool_id
 FROM workspace_sets
 JOIN pool_ids
-  ON pool_ids.workspace_root = workspace_sets.workspace_root
- AND pool_ids.repositories_json = workspace_sets.repositories_json;
+  ON pool_ids.repository_ids = workspace_sets.repository_ids;
 
 CREATE TABLE workspace_pool_repositories (
     pool_id TEXT NOT NULL REFERENCES workspace_pools(id),
@@ -125,6 +119,7 @@ CREATE TABLE workspaces_v3 (
     updated_at TEXT NOT NULL,
     last_reconciled_at TEXT,
     management_mode TEXT NOT NULL DEFAULT 'manual' CHECK (management_mode IN ('automatic', 'manual')),
+    workspace_root TEXT,
     pool_key TEXT REFERENCES workspace_pools(id),
     last_checked_in_at TEXT,
     reclaimed_at TEXT,
@@ -142,6 +137,7 @@ INSERT INTO workspaces_v3 (
     updated_at,
     last_reconciled_at,
     management_mode,
+    workspace_root,
     pool_key,
     last_checked_in_at,
     reclaimed_at
@@ -154,6 +150,7 @@ SELECT
     workspace.updated_at,
     workspace.last_reconciled_at,
     workspace.management_mode,
+    COALESCE(workspace.workspace_root, workspace.canonical_path),
     map.pool_id,
     workspace.last_checked_in_at,
     workspace.reclaimed_at
@@ -196,10 +193,10 @@ JOIN origin_repositories AS origin
 
 DROP TABLE repo_worktrees;
 DROP TABLE workspaces;
+DROP TABLE workspace_pool_map;
 
 ALTER TABLE workspaces_v3 RENAME TO workspaces;
 ALTER TABLE repo_worktrees_v3 RENAME TO repo_worktrees;
-DROP TABLE workspace_pool_map;
 
 CREATE INDEX workspaces_pool_lookup_idx
     ON workspaces (management_mode, pool_key, last_checked_in_at, created_at);

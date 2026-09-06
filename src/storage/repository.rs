@@ -172,17 +172,11 @@ pub fn ensure_origin_repository(
 
 pub fn find_workspace_pool(
     connection: &mut SqliteConnection,
-    workspace_root: &CanonicalPath,
     repository_set: &RepositorySetKey,
 ) -> QueryResult<Option<WorkspacePoolRow>> {
     workspace_pools::table
-        .filter(workspace_pools::workspace_root.eq(workspace_root))
-        .filter(
-            workspace_pools::hash_key
-                .eq(repository_set.hash_key())
-                .or(workspace_pools::hash_key.eq(repository_set.repositories_json())),
-        )
-        .filter(workspace_pools::repositories_json.eq(repository_set.repositories_json()))
+        .filter(workspace_pools::hash_key.eq(repository_set.hash_key()))
+        .filter(workspace_pools::repository_ids.eq(repository_set.repository_ids()))
         .select(WorkspacePoolRow::as_select())
         .first(connection)
         .optional()
@@ -213,23 +207,21 @@ pub fn insert_workspace_pool(
 
 pub fn ensure_workspace_pool(
     connection: &mut SqliteConnection,
-    workspace_root: &CanonicalPath,
     repository_set: &RepositorySetKey,
 ) -> QueryResult<WorkspacePoolRow> {
-    if let Some(pool) = find_workspace_pool(connection, workspace_root, repository_set)? {
+    if let Some(pool) = find_workspace_pool(connection, repository_set)? {
         return Ok(pool);
     }
 
     let value = NewWorkspacePool {
         id: PoolId::new(),
-        workspace_root: workspace_root.clone(),
         hash_key: repository_set.hash_key().to_owned(),
-        repositories_json: repository_set.repositories_json().to_owned(),
+        repository_ids: repository_set.repository_ids().to_owned(),
     };
     match insert_workspace_pool(connection, &value) {
         Ok(pool) => Ok(pool),
         Err(Error::DatabaseError(DatabaseErrorKind::UniqueViolation, _)) => {
-            find_workspace_pool(connection, workspace_root, repository_set)?.ok_or(Error::NotFound)
+            find_workspace_pool(connection, repository_set)?.ok_or(Error::NotFound)
         }
         Err(error) => Err(error),
     }
@@ -278,16 +270,9 @@ pub fn list_automatic_workspace_candidates(
 
 pub fn list_automatic_workspaces(
     connection: &mut SqliteConnection,
-    workspace_root: &CanonicalPath,
 ) -> QueryResult<Vec<WorkspaceRow>> {
-    // The root is pool-scoped, so GC joins the pool instead of duplicating it
-    // on every workspace row.
     workspaces::table
-        .inner_join(
-            workspace_pools::table.on(workspaces::pool_id.eq(workspace_pools::id.nullable())),
-        )
         .filter(workspaces::management_mode.eq(WorkspaceManagementMode::Automatic))
-        .filter(workspace_pools::workspace_root.eq(workspace_root))
         .order(workspaces::id.asc())
         .select(WorkspaceRow::as_select())
         .load(connection)
@@ -1349,6 +1334,7 @@ mod tests {
                 created_at: now.clone(),
                 updated_at: now.clone(),
                 last_reconciled_at: None,
+                workspace_root: None,
             },
         )
         .expect("workspace should be inserted");
@@ -1440,24 +1426,20 @@ mod tests {
     }
 
     #[test]
-    fn pool_lookup_verifies_repository_json_after_hash_filtering() {
+    fn pool_lookup_verifies_repository_ids_after_hash_filtering() {
         let database_path =
             std::env::temp_dir().join(format!("trees-{}.sqlite", WorkspaceId::new()));
         let mut connection = database::connect(&database_path).expect("database should open");
-        let first =
-            RepositorySetKey::from_repositories(&[CanonicalPath::from_absolute("/repo/first")
-                .expect("repository path should be absolute")]);
-        let second =
-            RepositorySetKey::from_repositories(&[CanonicalPath::from_absolute("/repo/second")
-                .expect("repository path should be absolute")]);
+        let first_id = OriginRepositoryId::new();
+        let second_id = OriginRepositoryId::new();
+        let first = RepositorySetKey::from_repository_ids(&[first_id]);
+        let second = RepositorySetKey::from_repository_ids(&[second_id]);
         let first_pool = insert_workspace_pool(
             &mut connection,
             &NewWorkspacePool {
                 id: PoolId::new(),
-                workspace_root: CanonicalPath::from_absolute("/managed")
-                    .expect("workspace root should be absolute"),
                 hash_key: first.hash_key().to_owned(),
-                repositories_json: first.repositories_json().to_owned(),
+                repository_ids: first.repository_ids().to_owned(),
             },
         )
         .expect("first pool should be inserted");
@@ -1465,71 +1447,55 @@ mod tests {
             &mut connection,
             &NewWorkspacePool {
                 id: PoolId::new(),
-                workspace_root: CanonicalPath::from_absolute("/managed")
-                    .expect("workspace root should be absolute"),
                 hash_key: first.hash_key().to_owned(),
-                repositories_json: second.repositories_json().to_owned(),
+                repository_ids: second.repository_ids().to_owned(),
             },
         )
         .expect("colliding pool should be inserted");
 
         assert_eq!(
-            find_workspace_pool(
-                &mut connection,
-                &CanonicalPath::from_absolute("/managed")
-                    .expect("workspace root should be absolute"),
-                &first,
-            )
-            .expect("first pool lookup should succeed")
-            .expect("first pool should exist")
-            .id,
-            first_pool.id
-        );
-        assert_eq!(
-            workspace_pools::table
-                .filter(workspace_pools::hash_key.eq(first.hash_key()))
-                .filter(workspace_pools::repositories_json.eq(second.repositories_json()))
-                .select(WorkspacePoolRow::as_select())
-                .first::<WorkspacePoolRow>(&mut connection)
-                .expect("second pool lookup should succeed")
-                .id,
-            second_pool.id
-        );
-
-        drop(connection);
-        fs::remove_file(database_path).expect("temporary database should be removable");
-    }
-
-    #[test]
-    fn pool_lookup_is_scoped_to_workspace_root() {
-        let database_path =
-            std::env::temp_dir().join(format!("trees-{}.sqlite", WorkspaceId::new()));
-        let mut connection = database::connect(&database_path).expect("database should open");
-        let repository_set =
-            RepositorySetKey::from_repositories(&[CanonicalPath::from_absolute("/repo/example")
-                .expect("repository path should be absolute")]);
-        let first_root = CanonicalPath::from_absolute("/managed/first")
-            .expect("workspace root should be absolute");
-        let second_root = CanonicalPath::from_absolute("/managed/second")
-            .expect("workspace root should be absolute");
-
-        let first_pool = ensure_workspace_pool(&mut connection, &first_root, &repository_set)
-            .expect("first workspace pool should be created");
-        let second_pool = ensure_workspace_pool(&mut connection, &second_root, &repository_set)
-            .expect("second workspace pool should be created");
-
-        assert_ne!(first_pool.id, second_pool.id);
-        assert_eq!(first_pool.workspace_root, first_root);
-        assert_eq!(second_pool.workspace_root, second_root);
-        assert_eq!(
-            find_workspace_pool(&mut connection, &first_root, &repository_set)
+            find_workspace_pool(&mut connection, &first)
                 .expect("first pool lookup should succeed")
                 .expect("first pool should exist")
                 .id,
             first_pool.id
         );
         assert_eq!(
-            find_workspace_pool(&mut connection, &second_root, &repository_set)
+            workspace_pools::table
+                .filter(workspace_pools::hash_key.eq(first.hash_key()))
+                .filter(workspace_pools::repository_ids.eq(second.repository_ids()))
+                .select(WorkspacePoolRow::as_select())
+                .first::<WorkspacePoolRow>(&mut connection)
+                .expect("second pool lookup should succeed")
+                .id,
+            second_pool.id
+        );
+        drop(connection);
+        fs::remove_file(database_path).expect("temporary database should be removable");
+    }
+
+    #[test]
+    fn pool_lookup_is_independent_of_workspace_root() {
+        let database_path =
+            std::env::temp_dir().join(format!("trees-{}.sqlite", WorkspaceId::new()));
+        let mut connection = database::connect(&database_path).expect("database should open");
+        let repository_set = RepositorySetKey::from_repository_ids(&[OriginRepositoryId::new()]);
+
+        let first_pool = ensure_workspace_pool(&mut connection, &repository_set)
+            .expect("first workspace pool should be created");
+        let second_pool = ensure_workspace_pool(&mut connection, &repository_set)
+            .expect("second workspace pool should be created");
+
+        assert_eq!(first_pool.id, second_pool.id);
+        assert_eq!(
+            find_workspace_pool(&mut connection, &repository_set)
+                .expect("first pool lookup should succeed")
+                .expect("first pool should exist")
+                .id,
+            first_pool.id
+        );
+        assert_eq!(
+            find_workspace_pool(&mut connection, &repository_set)
                 .expect("second pool lookup should succeed")
                 .expect("second pool should exist")
                 .id,
@@ -1558,6 +1524,7 @@ mod tests {
                 created_at: now.clone(),
                 updated_at: now,
                 last_reconciled_at: None,
+                workspace_root: None,
             },
         )
         .expect("workspace should be inserted");
@@ -1626,6 +1593,7 @@ mod tests {
                 created_at: now.clone(),
                 updated_at: now.clone(),
                 last_reconciled_at: None,
+                workspace_root: None,
             },
         )
         .expect("workspace should be inserted");
@@ -1723,6 +1691,7 @@ mod tests {
                 created_at: now.clone(),
                 updated_at: now.clone(),
                 last_reconciled_at: None,
+                workspace_root: None,
             },
         )
         .expect("workspace should be inserted");
@@ -1817,6 +1786,7 @@ mod tests {
                 created_at: now.clone(),
                 updated_at: now,
                 last_reconciled_at: None,
+                workspace_root: None,
             },
         )
         .expect("workspace should be inserted");
@@ -1870,6 +1840,7 @@ mod tests {
                     created_at: now.clone(),
                     updated_at: now.clone(),
                     last_reconciled_at: None,
+                    workspace_root: None,
                 },
             )
             .expect("workspace should be inserted");
@@ -1916,6 +1887,7 @@ mod tests {
                 created_at: now.clone(),
                 updated_at: now.clone(),
                 last_reconciled_at: None,
+                workspace_root: None,
             },
         )
         .expect("workspace should be inserted");
@@ -1984,6 +1956,7 @@ mod tests {
                 created_at: now.clone(),
                 updated_at: now.clone(),
                 last_reconciled_at: None,
+                workspace_root: None,
             },
         )
         .expect("workspace should be inserted");
@@ -2041,6 +2014,7 @@ mod tests {
                 created_at: now.clone(),
                 updated_at: now.clone(),
                 last_reconciled_at: None,
+                workspace_root: None,
             },
         )
         .expect("workspace should be inserted");

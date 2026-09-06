@@ -40,7 +40,7 @@ SELECT
     workspace.last_reconciled_at,
     workspace.management_mode,
     pool.hash_key,
-    pool.workspace_root,
+    workspace.workspace_root,
     workspace.last_checked_in_at,
     workspace.reclaimed_at
 FROM workspaces AS workspace

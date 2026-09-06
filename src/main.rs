@@ -141,19 +141,6 @@ fn run_config(arguments: trees::cli::ConfigArgs) -> ExitCode {
 }
 
 fn run_gc(arguments: trees::cli::GcArgs) -> ExitCode {
-    let workspace_root = match trees::paths::managed_workspace_directory() {
-        Ok(path) => match trees::domain::CanonicalPath::from_absolute(path) {
-            Ok(path) => path,
-            Err(error) => {
-                eprintln!("Error: {error}");
-                return ExitCode::FAILURE;
-            }
-        },
-        Err(error) => {
-            eprintln!("Error: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
     let mut connection = match trees::database::open_read_only() {
         Ok(connection) => connection,
         Err(error) => {
@@ -161,7 +148,7 @@ fn run_gc(arguments: trees::cli::GcArgs) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let scan = match trees::gc::scan(&mut connection, &workspace_root, arguments.older_than) {
+    let scan = match trees::gc::scan(&mut connection, arguments.older_than) {
         Ok(scan) => scan,
         Err(error) => {
             eprintln!("Error: {error}");
@@ -222,12 +209,7 @@ fn run_gc(arguments: trees::cli::GcArgs) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let report = match trees::gc::execute(
-        &mut connection,
-        &workspace_root,
-        arguments.older_than,
-        arguments.force,
-    ) {
+    let report = match trees::gc::execute(&mut connection, arguments.older_than, arguments.force) {
         Ok(report) => report,
         Err(error) => {
             eprintln!("Error: {error}");

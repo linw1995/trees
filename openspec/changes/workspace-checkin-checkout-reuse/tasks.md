@@ -7,16 +7,16 @@
 - [x] 1.2 Define `automatic` and `manual` workspace modes inferred from
   positional-path presence, and the rule that manual workspaces bypass all
   automated acquire/release and GC behavior
-- [x] 1.3 Define the UUID-backed repository-set pool registry, indexed hash and
-  exact canonical JSON matching, least-recently-used candidate ordering,
-  configurable platform-specific `workspaces_dir`, absolute root
-  normalization, generated path format, and allocation retry behavior after a
-  claim race
+- [x] 1.3 Define the UUID-backed repository-set pool registry and non-unique
+  hash index. Define exact sorted origin repository ID matching,
+  least-recently-used candidate ordering, configurable platform-specific
+  `workspaces_dir`, per-slot absolute root normalization, generated path format,
+  and allocation retry behavior after a claim race
 - [x] 1.4 Define a typed workspace claim with an acquisition timestamp; keep
   expiry and renewal on operation leases only, and define
   explicit mode/access/health separation
 - [x] 1.5 Extend lifecycle states with `dirty` and `reclaimed`, plus
-  `last_released_at`, pool ID, pool-scoped absolute workspace-root, and
+  `last_released_at`, pool ID, per-slot absolute workspace-root, and
   reclamation timestamps; update claim parsing, serialization, workspace-state
   aggregation, and affected validation paths
 
@@ -85,8 +85,8 @@
 - [x] 5.4 Implement `trees gc --older-than <duration> [--dry-run] [--yes]
   [--force]`
   with UTC cutoff calculation, `last_released_at`/`created_at` idle
-  selection, automatic-mode-only candidate filtering scoped to the resolved
-  workspace root, and counts for unclaimed and claimed workspaces
+  selection, automatic-mode-only candidate filtering using each slot's
+  persisted workspace root, and counts for unclaimed and claimed workspaces
 - [x] 5.5 Execute GC as one serialized operation per candidate, safely remove
   clean worktrees and the empty workspace root in normal mode; in `--force`
   mode allow explicitly authorized unsafe automatic-slot cleanup while

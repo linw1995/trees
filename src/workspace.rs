@@ -42,7 +42,6 @@ pub struct AutomaticCreateRequest {
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct AutomaticAllocationPlan {
     pub workspace_root: CanonicalPath,
-    pub repository_set: crate::pool::RepositorySetKey,
     pub repositories: Vec<AutomaticRepositoryPlan>,
 }
 
@@ -102,10 +101,8 @@ pub fn prepare_automatic(
 ) -> Result<AutomaticAllocationPlan, WorkspaceError> {
     let repositories = validation::validate_repositories(&request.repositories)?;
     let mut plans = Vec::with_capacity(repositories.len());
-    let mut identities = Vec::with_capacity(repositories.len());
     for source_path in repositories {
         let info = git::inspect_repository(&source_path)?;
-        identities.push(info.common_dir.clone());
         plans.push(AutomaticRepositoryPlan {
             source_path,
             repository_identity: info.common_dir,
@@ -119,9 +116,30 @@ pub fn prepare_automatic(
 
     Ok(AutomaticAllocationPlan {
         workspace_root,
-        repository_set: crate::pool::RepositorySetKey::from_repositories(&identities),
         repositories: plans,
     })
+}
+
+fn resolve_repository_set(
+    connection: &mut SqliteConnection,
+    plan: &AutomaticAllocationPlan,
+) -> Result<crate::pool::RepositorySetKey, WorkspaceError> {
+    let repository_ids = plan
+        .repositories
+        .iter()
+        .map(|repository| {
+            ensure_origin_repository(
+                connection,
+                &repository.repository_identity,
+                &repository.source_path,
+            )
+            .map(|origin| origin.id)
+            .map_err(WorkspaceError::Database)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(crate::pool::RepositorySetKey::from_repository_ids(
+        &repository_ids,
+    ))
 }
 
 pub fn allocate_automatic_workspace(
@@ -142,8 +160,9 @@ fn list_idle_automatic_candidates(
     connection: &mut SqliteConnection,
     plan: &AutomaticAllocationPlan,
 ) -> Result<Vec<crate::storage::WorkspaceRow>, WorkspaceError> {
-    let Some(pool) = find_workspace_pool(connection, &plan.workspace_root, &plan.repository_set)
-        .map_err(WorkspaceError::Database)?
+    let repository_set = resolve_repository_set(connection, plan)?;
+    let Some(pool) =
+        find_workspace_pool(connection, &repository_set).map_err(WorkspaceError::Database)?
     else {
         return Ok(Vec::new());
     };
@@ -253,7 +272,7 @@ where
     }
 
     let claim = WorkspaceClaim::new(candidate.id);
-    let details_json = acquire_details(plan, &claim, pool_id);
+    let details_json = acquire_details(&claim, pool_id, boundary.workspace.workspace_root.clone());
     let record_result = record_workspace_acquire(
         connection,
         &operation.id,
@@ -308,14 +327,13 @@ where
 }
 
 fn acquire_details(
-    plan: &AutomaticAllocationPlan,
     claim: &WorkspaceClaim,
     pool_id: PoolId,
+    workspace_root: Option<CanonicalPath>,
 ) -> JsonDocument {
     JsonDocument::from_serializable(&serde_json::json!({
         "pool_id": pool_id,
-        "hash_key": plan.repository_set.hash_key(),
-        "workspace_root": plan.workspace_root,
+        "workspace_root": workspace_root,
         "claim": claim,
     }))
     .expect("acquire details should serialize")
@@ -532,12 +550,9 @@ fn provision_automatic_new(
     normalized_plan.workspace_root =
         validation::resolve_workspace_path(plan.workspace_root.as_path())?;
 
-    let pool = crate::storage::ensure_workspace_pool(
-        connection,
-        &normalized_plan.workspace_root,
-        &normalized_plan.repository_set,
-    )
-    .map_err(WorkspaceError::Database)?;
+    let repository_set = resolve_repository_set(connection, &normalized_plan)?;
+    let pool = crate::storage::ensure_workspace_pool(connection, &repository_set)
+        .map_err(WorkspaceError::Database)?;
 
     let (workspace_id, workspace_path) =
         next_generated_workspace(connection, normalized_plan.workspace_root.as_path())?;
@@ -554,6 +569,7 @@ fn provision_automatic_new(
         connection,
         creation_plan,
         WorkspaceManagementMode::Automatic,
+        Some(normalized_plan.workspace_root.clone()),
         Some(pool.id),
         Some(&claim),
         intent_json,
@@ -603,7 +619,11 @@ fn provision_automatic_new(
         .map(|_| unreachable!("automatic provisioning rollback always fails the operation"));
     }
 
-    let details_json = acquire_details(&normalized_plan, &claim, pool.id);
+    let details_json = acquire_details(
+        &claim,
+        pool.id,
+        Some(normalized_plan.workspace_root.clone()),
+    );
     if let Err(error) = finalize_automatic_creation(
         connection,
         &context.workspace_id,
@@ -713,20 +733,29 @@ pub fn initialize_creation(
     plan: CreationPlan,
 ) -> Result<CreationContext, WorkspaceError> {
     let intent_json = JsonDocument::from_serializable(&plan).map_err(WorkspaceError::Json)?;
+    let workspace_root = workspace_parent(&plan.workspace_path)?;
     initialize_creation_with_mode(
         connection,
         plan,
         WorkspaceManagementMode::Manual,
+        Some(workspace_root),
         None,
         None,
         intent_json,
     )
 }
 
+fn workspace_parent(path: &CanonicalPath) -> Result<CanonicalPath, WorkspaceError> {
+    let parent = path.as_path().parent().unwrap_or_else(|| path.as_path());
+    CanonicalPath::from_absolute(parent)
+        .map_err(|error| WorkspaceError::Validation(ValidationError::Canonicalize(error)))
+}
+
 fn initialize_creation_with_mode(
     connection: &mut SqliteConnection,
     plan: CreationPlan,
     management_mode: WorkspaceManagementMode,
+    workspace_root: Option<CanonicalPath>,
     pool_id: Option<PoolId>,
     claim: Option<&WorkspaceClaim>,
     intent_json: JsonDocument,
@@ -788,6 +817,7 @@ fn initialize_creation_with_mode(
                 updated_at: now.clone(),
                 last_reconciled_at: None,
                 management_mode,
+                workspace_root,
                 pool_id,
                 last_released_at: None,
                 reclaimed_at: None,
@@ -1442,12 +1472,10 @@ mod tests {
         let database_path = root.join("state.sqlite");
         let mut connection =
             crate::database::connect(&database_path).expect("database should open");
-        let pool = crate::storage::ensure_workspace_pool(
-            &mut connection,
-            &plan.workspace_root,
-            &plan.repository_set,
-        )
-        .expect("workspace pool should be available");
+        let repository_set = resolve_repository_set(&mut connection, &plan)
+            .expect("repository set should be resolved");
+        let pool = crate::storage::ensure_workspace_pool(&mut connection, &repository_set)
+            .expect("workspace pool should be available");
         let now = Timestamp::parse("2026-01-01T00:00:00Z").unwrap();
         let older = WorkspaceId::new();
         let newer = WorkspaceId::new();
@@ -1466,6 +1494,7 @@ mod tests {
                     created_at: now.clone(),
                     updated_at: now.clone(),
                     last_reconciled_at: None,
+                    workspace_root: None,
                 },
             )
             .expect("candidate should be inserted");
@@ -1473,6 +1502,7 @@ mod tests {
                 .set((
                     crate::schema::workspaces::management_mode
                         .eq(crate::domain::WorkspaceManagementMode::Automatic),
+                    crate::schema::workspaces::workspace_root.eq(Some(plan.workspace_root.clone())),
                     crate::schema::workspaces::pool_id.eq(Some(pool.id)),
                     crate::schema::workspaces::last_released_at
                         .eq(Some(Timestamp::parse(released_at).unwrap())),
@@ -1553,16 +1583,15 @@ mod tests {
         .expect("automatic allocation plan should be prepared");
         plan.workspace_root =
             CanonicalPath::from_absolute(root.clone()).expect("workspace root should be absolute");
-        let pool = crate::storage::ensure_workspace_pool(
-            &mut connection,
-            &plan.workspace_root,
-            &plan.repository_set,
-        )
-        .expect("workspace pool should be available");
+        let repository_set = resolve_repository_set(&mut connection, &plan)
+            .expect("repository set should be resolved");
+        let pool = crate::storage::ensure_workspace_pool(&mut connection, &repository_set)
+            .expect("workspace pool should be available");
         diesel::update(crate::schema::workspaces::table.find(workspace.id))
             .set((
                 crate::schema::workspaces::management_mode
                     .eq(crate::domain::WorkspaceManagementMode::Automatic),
+                crate::schema::workspaces::workspace_root.eq(Some(plan.workspace_root.clone())),
                 crate::schema::workspaces::pool_id.eq(Some(pool.id)),
             ))
             .execute(&mut connection)
@@ -1890,14 +1919,7 @@ mod tests {
             WorkspaceManagementMode::Automatic
         );
         assert_eq!(workspace.pool_id, Some(result.pool_id));
-        let pool = crate::storage::find_workspace_pool_by_id(
-            &mut connection,
-            &workspace
-                .pool_id
-                .expect("automatic workspace should have a pool"),
-        )
-        .expect("workspace pool should be queryable");
-        assert_eq!(pool.workspace_root, canonical_workspace_root);
+        assert_eq!(workspace.workspace_root, Some(canonical_workspace_root));
         assert_eq!(workspace.state, WorkspaceState::Ready);
         let repositories = crate::storage::list_repo_worktrees(&mut connection, &workspace.id)
             .expect("worktree lookup should succeed");

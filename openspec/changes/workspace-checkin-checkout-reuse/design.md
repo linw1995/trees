@@ -77,19 +77,20 @@ invocation and requires an explicit age threshold.
 The pool registry stores repository-set identity separately from workspace
 slots:
 
-- `workspace_pools.id`: the stable UUID referenced as `pool_id` by workspace rows;
-- `workspace_pools.workspace_root`: the absolute resolved `workspaces_dir`
-  namespace; pool uniqueness is scoped by this root and the repository JSON;
-- `workspace_pools.hash_key`: a BLAKE3 fingerprint used for indexed lookup;
-- `workspace_pools.repositories_json`: the canonical sorted JSON array used for
-  exact matching after the hash lookup;
+- `workspace_pools.id`: the stable UUID for one logical repository set;
+- `workspace_pools.hash_key`: a non-unique BLAKE3 lookup value derived from the
+  sorted origin repository IDs; it is used only by the lookup index;
+- `workspace_pools.repository_ids`: the canonical sorted origin repository ID
+  set used for exact matching after the hash lookup;
 - `workspace_pool_repositories`: the many-to-many relation between pools and
   origin repositories;
 - `origin_repositories`: one row per Git common-directory identity, including
   the canonical source path shared by worktrees and pools.
 
 The hash is intentionally not unique. A hash collision creates separate pool
-rows and the canonical JSON comparison selects the correct one.
+rows and the exact `repository_ids` comparison selects the correct one. The
+exact repository ID set is unique for a logical pool, independent of where its
+workspace slots are stored.
 
 The workspace claim table stores the current usage claim only:
 
@@ -134,12 +135,14 @@ and SHALL generate each automatic workspace as
 does not encode repository paths or user input. A per-request concrete
 workspace path is not part of automatic allocation.
 
-Every persisted automatic workspace path and every pool's `workspace_root`
-namespace SHALL be absolute. A configured root change SHALL affect only future
-allocation; existing pools and workspace rows retain their absolute paths and
-are not moved or rewritten automatically. Pool matching SHALL include the
-resolved root namespace, so a workspace from a previous configured root is not
-silently selected from a new root.
+Every persisted automatic workspace path and every workspace's
+`workspace_root` SHALL be absolute. The root is placement metadata for a
+workspace slot, not part of repository-set identity. A configured root change
+SHALL affect only future slot creation; existing workspace rows retain their
+absolute paths and roots and are not moved or rewritten automatically. An idle
+workspace from a previous configured root remains reusable when its repository
+set matches. GC uses each workspace's persisted root and path for containment
+checks.
 
 ### Allocate Automatic Workspaces by Repository Set
 
@@ -156,11 +159,12 @@ the claim terminology is introduced. The claim identifier applies to release,
 not automatic creation.
 
 The automatic form does not accept a concrete workspace path. It canonicalizes
-and inspects every repository, derives a BLAKE3 hash and canonical JSON array
-from the sorted set of Git common-directory identities, resolves the matching
-pool registry UUID, and searches only `automatic` workspaces that reference
-that pool. It filters out rows that are not `ready`, have an active operation
-or claim, or fail the live reusable-worktree predicate.
+and inspects every repository, resolves its `origin_repositories` rows, sorts
+their IDs, derives a BLAKE3 hash and the exact `repository_ids` set, resolves
+the matching pool registry UUID independent of workspace root, and searches
+all `automatic` workspaces that reference that pool. It filters out rows that
+are not `ready`, have an active operation or claim, or fail the live
+reusable-worktree predicate.
 
 If multiple candidates remain, Trees selects the least-recently-used slot by
 `last_released_at`, falls back to `created_at` for a never-used slot, and
@@ -266,10 +270,10 @@ extend a workspace claim.
 `trees gc --older-than <duration> [--dry-run] [--yes] [--force]` calculates a
 cutoff from the current UTC time. A workspace is idle when its
 `last_released_at`, or `created_at` when it has never been released, is
-strictly older than the cutoff. GC considers only `automatic` workspaces in
-the current resolved workspace-root namespace. An active claim or operation
-always skips the candidate. GC does not infer claim abandonment from process
-liveness or override an active claim.
+strictly older than the cutoff. GC considers all `automatic` workspaces and
+uses each workspace's persisted root and path for containment checks. An
+active claim or operation always skips the candidate. GC does not infer claim
+abandonment from process liveness or override an active claim.
 
 Before a non-dry-run GC starts, it prints a summary with the automatic,
 unclaimed, claimed, age-qualified, and safe-to-reclaim counts. It

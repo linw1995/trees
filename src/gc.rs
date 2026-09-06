@@ -212,14 +212,9 @@ pub struct GcExecutionReport {
     pub failed: Vec<GcFailure>,
 }
 
-pub fn scan(
-    connection: &mut SqliteConnection,
-    workspace_root: &CanonicalPath,
-    older_than: GcDuration,
-) -> Result<GcScan, GcError> {
+pub fn scan(connection: &mut SqliteConnection, older_than: GcDuration) -> Result<GcScan, GcError> {
     let cutoff = Timestamp::before_seconds(older_than.seconds());
-    let workspaces =
-        list_automatic_workspaces(connection, workspace_root).map_err(GcError::Database)?;
+    let workspaces = list_automatic_workspaces(connection).map_err(GcError::Database)?;
     let mut counts = GcCounts {
         automatic: workspaces.len(),
         ..GcCounts::default()
@@ -265,11 +260,10 @@ pub fn scan(
 
 pub fn execute(
     connection: &mut SqliteConnection,
-    workspace_root: &CanonicalPath,
     older_than: GcDuration,
     force: bool,
 ) -> Result<GcExecutionReport, GcError> {
-    let scan = scan(connection, workspace_root, older_than)?;
+    let scan = scan(connection, older_than)?;
     let mut report = GcExecutionReport {
         scan: scan.clone(),
         reclaimed: Vec::new(),
@@ -350,7 +344,7 @@ pub fn execute(
 
         let repositories =
             list_repo_worktrees(connection, &workspace_id).map_err(GcError::Database)?;
-        let removal_plan = match prepare_removal(&workspace, &repositories, workspace_root, force) {
+        let removal_plan = match prepare_removal(&workspace, &repositories, force) {
             Ok(plan) => plan,
             Err(reason) => {
                 finish_gc_skip(
@@ -529,9 +523,11 @@ struct WorktreeRemoval {
 fn prepare_removal(
     workspace: &crate::storage::WorkspaceRow,
     repositories: &[RepoWorktreeRow],
-    workspace_root: &CanonicalPath,
     force: bool,
 ) -> Result<RemovalPlan, GcCandidateReason> {
+    let Some(workspace_root) = workspace.workspace_root.as_ref() else {
+        return Err(GcCandidateReason::UnsafeRoot);
+    };
     if workspace.canonical_path.as_path().parent() != Some(workspace_root.as_path()) {
         return Err(GcCandidateReason::UnsafeRoot);
     }
@@ -770,8 +766,8 @@ mod tests {
     use crate::domain::{WorkspaceId, WorkspaceManagementMode};
     use crate::pool::RepositorySetKey;
     use crate::storage::{
-        ensure_workspace_pool, insert_managed_workspace, insert_workspace_claim,
-        NewManagedWorkspace, NewWorkspaceClaim,
+        ensure_origin_repository, ensure_workspace_pool, insert_managed_workspace,
+        insert_workspace_claim, NewManagedWorkspace, NewWorkspaceClaim,
     };
     use crate::workspace::{
         prepare_automatic, provision_automatic, release_automatic_workspace, AutomaticCreateRequest,
@@ -812,7 +808,6 @@ mod tests {
         crate::storage::WorkspaceRow,
         CanonicalPath,
         PathBuf,
-        CanonicalPath,
     ) {
         let root = test_root();
         let source_path = root.join("source");
@@ -849,14 +844,6 @@ mod tests {
             .next()
             .expect("workspace should have a worktree");
         let source = worktree.source_path.clone();
-        let workspace_root = crate::storage::find_workspace_pool_by_id(
-            &mut connection,
-            &workspace
-                .pool_id
-                .expect("automatic workspace should reference a pool"),
-        )
-        .expect("workspace pool lookup should succeed")
-        .workspace_root;
         (
             root,
             database_path,
@@ -864,7 +851,6 @@ mod tests {
             workspace,
             source,
             worktree.worktree_path.into_path_buf(),
-            workspace_root,
         )
     }
 
@@ -879,39 +865,64 @@ mod tests {
     }
 
     #[test]
-    fn scans_idle_and_claimed_automatic_workspaces_by_root() {
+    fn scans_idle_and_claimed_automatic_workspaces() {
         let root = test_root();
         let database_path = root.join("state.sqlite");
         let workspace_root = CanonicalPath::from_absolute(root.join("managed"))
             .expect("workspace root should be absolute");
+        let alternate_workspace_root = CanonicalPath::from_absolute(root.join("other-managed"))
+            .expect("alternate workspace root should be absolute");
         fs::create_dir_all(&root).expect("GC test root should be created");
         let mut connection = database::connect(&database_path).expect("database should open");
         let old = timestamp("2020-01-01T00:00:00Z");
         let young = timestamp("2099-01-01T00:00:00Z");
+        let repository_path = CanonicalPath::from_absolute("/repo/example")
+            .expect("repository path should be absolute");
+        let repository_id =
+            ensure_origin_repository(&mut connection, &repository_path, &repository_path)
+                .expect("origin repository should be available")
+                .id;
         let pool_id = Some(
             ensure_workspace_pool(
                 &mut connection,
-                &workspace_root,
-                &RepositorySetKey::from_repositories(&[CanonicalPath::from_absolute(
-                    "/repo/example",
-                )
-                .expect("repository path should be absolute")]),
+                &RepositorySetKey::from_repository_ids(&[repository_id]),
             )
             .expect("workspace pool should be available")
             .id,
         );
         let entries = [
-            (WorkspaceState::Ready, old.clone(), None),
-            (WorkspaceState::Ready, young, None),
-            (WorkspaceState::Ready, old.clone(), Some("active")),
-            (WorkspaceState::Degraded, old.clone(), None),
+            (
+                WorkspaceState::Ready,
+                old.clone(),
+                None,
+                workspace_root.clone(),
+            ),
+            (
+                WorkspaceState::Ready,
+                young,
+                None,
+                alternate_workspace_root.clone(),
+            ),
+            (
+                WorkspaceState::Ready,
+                old.clone(),
+                Some("active"),
+                workspace_root.clone(),
+            ),
+            (
+                WorkspaceState::Degraded,
+                old.clone(),
+                None,
+                alternate_workspace_root.clone(),
+            ),
         ];
         let mut workspace_ids = Vec::new();
-        for (state, idle_since, claim_kind) in entries {
+        for (state, idle_since, claim_kind, slot_root) in entries {
             let id = WorkspaceId::new();
             workspace_ids.push((id, claim_kind));
-            let workspace_path = CanonicalPath::from_absolute(root.join(id.to_string()))
-                .expect("workspace path should be absolute");
+            let workspace_path =
+                CanonicalPath::from_absolute(slot_root.as_path().join(id.to_string()))
+                    .expect("workspace path should be absolute");
             insert_managed_workspace(
                 &mut connection,
                 &NewManagedWorkspace {
@@ -922,6 +933,7 @@ mod tests {
                     updated_at: old.clone(),
                     last_reconciled_at: None,
                     management_mode: WorkspaceManagementMode::Automatic,
+                    workspace_root: Some(slot_root),
                     pool_id,
                     last_released_at: Some(idle_since),
                     reclaimed_at: None,
@@ -946,6 +958,7 @@ mod tests {
                 updated_at: old.clone(),
                 last_reconciled_at: None,
                 management_mode: WorkspaceManagementMode::Manual,
+                workspace_root: None,
                 pool_id: None,
                 last_released_at: Some(old.clone()),
                 reclaimed_at: None,
@@ -955,7 +968,6 @@ mod tests {
 
         let result = scan(
             &mut connection,
-            &workspace_root,
             "30d".parse().expect("duration should parse"),
         )
         .expect("GC scan should succeed");
@@ -973,12 +985,11 @@ mod tests {
 
     #[test]
     fn reclaims_an_old_clean_automatic_workspace() {
-        let (root, database_path, mut connection, workspace, source, worktree, workspace_root) =
+        let (root, database_path, mut connection, workspace, source, worktree) =
             automatic_workspace_fixture();
 
         let report = execute(
             &mut connection,
-            &workspace_root,
             "30d".parse().expect("duration should parse"),
             false,
         )
@@ -1024,7 +1035,7 @@ mod tests {
 
     #[test]
     fn force_reclaims_an_old_dirty_workspace_and_extra_content() {
-        let (root, database_path, mut connection, workspace, source, worktree, workspace_root) =
+        let (root, database_path, mut connection, workspace, source, worktree) =
             automatic_workspace_fixture();
         fs::write(worktree.join("local-change"), "dirty\n").expect("worktree should become dirty");
         fs::write(workspace.canonical_path.as_path().join("extra"), "extra\n")
@@ -1032,7 +1043,6 @@ mod tests {
 
         let report = execute(
             &mut connection,
-            &workspace_root,
             "30d".parse().expect("duration should parse"),
             true,
         )
@@ -1064,13 +1074,12 @@ mod tests {
 
     #[test]
     fn normal_gc_skips_a_workspace_that_becomes_dirty_after_scan() {
-        let (root, database_path, mut connection, workspace, source, worktree, workspace_root) =
+        let (root, database_path, mut connection, workspace, source, worktree) =
             automatic_workspace_fixture();
         fs::write(worktree.join("local-change"), "dirty\n").expect("worktree should become dirty");
 
         let report = execute(
             &mut connection,
-            &workspace_root,
             "30d".parse().expect("duration should parse"),
             false,
         )

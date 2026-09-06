@@ -51,7 +51,7 @@ impl_text_codec!(CanonicalPath);
 impl_text_codec!(JsonDocument);
 impl_text_codec!(Timestamp);
 
-/// A workspace snapshot; automatic root scope is resolved through its pool.
+/// A workspace snapshot; automatic root placement is stored on the slot.
 #[derive(Debug, Clone, Queryable, Selectable, Identifiable)]
 #[diesel(table_name = workspaces)]
 #[diesel(check_for_backend(Sqlite))]
@@ -63,6 +63,7 @@ pub struct WorkspaceRow {
     pub updated_at: Timestamp,
     pub last_reconciled_at: Option<Timestamp>,
     pub management_mode: WorkspaceManagementMode,
+    pub workspace_root: Option<CanonicalPath>,
     pub pool_id: Option<PoolId>,
     pub last_released_at: Option<Timestamp>,
     pub reclaimed_at: Option<Timestamp>,
@@ -77,6 +78,7 @@ pub struct NewWorkspace {
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     pub last_reconciled_at: Option<Timestamp>,
+    pub workspace_root: Option<CanonicalPath>,
 }
 
 #[derive(Debug, Insertable)]
@@ -89,29 +91,28 @@ pub struct NewManagedWorkspace {
     pub updated_at: Timestamp,
     pub last_reconciled_at: Option<Timestamp>,
     pub management_mode: WorkspaceManagementMode,
+    pub workspace_root: Option<CanonicalPath>,
     pub pool_id: Option<PoolId>,
     pub last_released_at: Option<Timestamp>,
     pub reclaimed_at: Option<Timestamp>,
 }
 
-/// A pool registry row for one repository set within one managed root.
+/// A pool registry row for one logical repository set.
 #[derive(Debug, Clone, Queryable, Selectable, Identifiable)]
 #[diesel(table_name = workspace_pools)]
 #[diesel(check_for_backend(Sqlite))]
 pub struct WorkspacePoolRow {
     pub id: PoolId,
-    pub workspace_root: CanonicalPath,
     pub hash_key: String,
-    pub repositories_json: String,
+    pub repository_ids: String,
 }
 
 #[derive(Debug, Insertable)]
 #[diesel(table_name = workspace_pools)]
 pub struct NewWorkspacePool {
     pub id: PoolId,
-    pub workspace_root: CanonicalPath,
     pub hash_key: String,
-    pub repositories_json: String,
+    pub repository_ids: String,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable, Identifiable)]
