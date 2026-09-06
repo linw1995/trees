@@ -344,15 +344,16 @@ removal steps.
 
 ### Reuse Existing Lifecycle Transactions and Events
 
-Acquisition, release, operation recovery, and GC append immutable operation
-facts with kinds `acquire`, `release`, `operation_recovery`, and `gc`. Their
-intent is persisted before any claim or reclamation mutation. The current lease
-row, terminal lifecycle event, state change, and claim/reclamation mutation are
-committed atomically in short Diesel transactions. External Git and filesystem
-work is performed between those transactions. Access and GC events use
-`entity_type = workspace` and the stable workspace ID; structured details carry
-claim identifiers, GC counts, age cutoffs, and the `forced` marker when
-applicable.
+Acquisition, release, and GC append immutable operation facts with kinds
+`acquire`, `release`, and `gc`. Recovery reuses the expired operation fact and
+only appends recovery lifecycle events; it never mutates or creates an
+operation fact. Each intent is persisted before any claim or reclamation
+mutation. The current lease row, terminal lifecycle event, state change, and
+claim/reclamation mutation are committed atomically in short Diesel
+transactions. External Git and filesystem work is performed between those
+transactions. Access and GC events use `entity_type = workspace` and the stable
+workspace ID; structured details carry claim identifiers, GC counts, age cutoffs,
+and the `forced` marker when applicable.
 
 Operation lease renewals are short lease-token-checked updates to
 `operation_leases` made while an external step runs. They protect the in-flight
