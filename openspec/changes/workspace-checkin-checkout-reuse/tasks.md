@@ -130,3 +130,5 @@
   allocation and reconciliation coverage through normal paths.
 - [x] 7.4 Remove the legacy `--checkout-id` CLI alias after compatibility
   review.
+- [x] 7.5 Retry transient SQLite busy results within bounded metadata
+  transactions without extending a transaction across external work.

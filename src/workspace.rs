@@ -22,7 +22,7 @@ use crate::storage::{
     persist_operation_step_intent, record_operation_transition, record_repo_worktree_transition,
     record_workspace_acquire, record_workspace_acquire_failure, record_workspace_release,
     record_workspace_release_rejection, record_workspace_transition, record_worktree_step_result,
-    release_workspace_claim, with_short_transaction, EventDraft, NewManagedWorkspace,
+    release_workspace_claim, with_retrying_short_transaction, EventDraft, NewManagedWorkspace,
     NewRepoWorktree, NewWorkspacePoolRepository, OperationIntent, OperationIntentError,
     TransitionMetadata,
 };
@@ -799,7 +799,7 @@ fn initialize_creation_with_mode(
         .collect::<Result<Vec<_>, WorkspaceError>>()?;
     let now = Timestamp::now();
 
-    with_short_transaction(connection, |connection| {
+    with_retrying_short_transaction(connection, |connection| {
         insert_managed_workspace(
             connection,
             &NewManagedWorkspace {

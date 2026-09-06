@@ -21,7 +21,7 @@ use super::models::{
     OperationIntent, OperationLeaseRow, OperationRow, OriginRepositoryRow, RepoWorktreeRow,
     WorkspaceClaimRow, WorkspacePoolRepositoryRow, WorkspacePoolRow, WorkspaceRow,
 };
-use super::transaction::with_short_transaction;
+use super::transaction::{with_immediate_transaction, with_short_transaction};
 
 #[derive(Debug, Clone)]
 pub struct TransitionMetadata {
@@ -222,7 +222,7 @@ pub fn ensure_workspace_pool(
 
     // Serialize only the lookup-and-create window because repository_ids is a
     // collision-check payload rather than a database uniqueness constraint.
-    connection.immediate_transaction(|connection| {
+    with_immediate_transaction(connection, |connection| {
         if let Some(pool) = find_workspace_pool(connection, repository_set)? {
             return Ok(pool);
         }

@@ -368,6 +368,10 @@ transactions. Access and GC events use `entity_type = workspace` and the stable
 workspace ID; structured details carry claim identifiers, GC counts, age cutoffs,
 and the `forced` marker when applicable.
 
+Short metadata transactions may use bounded retries for transient SQLite
+`busy` or `locked` results. A retry remains within the metadata boundary and
+never extends a transaction across external Git or filesystem work.
+
 Operation lease renewals are short lease-token-checked updates to
 `operation_leases` made while an external step runs. They protect the in-flight
 operation and do not hold SQLite transactions during Git or filesystem work.

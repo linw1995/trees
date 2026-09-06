@@ -27,4 +27,6 @@ pub use repository::{
     release_workspace_claim, renew_operation_lease, update_workspace_observation, EventDraft,
     OperationIntentError, TransitionMetadata,
 };
-pub use transaction::with_short_transaction;
+pub use transaction::{
+    with_immediate_transaction, with_retrying_short_transaction, with_short_transaction,
+};
