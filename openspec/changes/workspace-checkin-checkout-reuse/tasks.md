@@ -128,5 +128,5 @@
   the lease-free access facade after consumer review.
 - [x] 7.3 Remove the post-acquisition allocation test seam and retain
   allocation and reconciliation coverage through normal paths.
-- [ ] 7.4 Remove the legacy `--checkout-id` CLI alias after compatibility
+- [x] 7.4 Remove the legacy `--checkout-id` CLI alias after compatibility
   review.

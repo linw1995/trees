@@ -40,12 +40,7 @@ pub struct ReleaseArgs {
     #[arg(value_name = "WORKSPACE_PATH")]
     pub workspace_path: PathBuf,
 
-    #[arg(
-        long = "claim-id",
-        alias = "checkout-id",
-        required = true,
-        value_name = "CLAIM_ID"
-    )]
+    #[arg(long = "claim-id", required = true, value_name = "CLAIM_ID")]
     pub claim_id: String,
 }
 
@@ -203,6 +198,18 @@ mod tests {
         };
         assert_eq!(arguments.workspace_path, PathBuf::from("/tmp/workspace"));
         assert_eq!(arguments.claim_id, "claim-id");
+    }
+
+    #[test]
+    fn rejects_the_legacy_checkout_id_option() {
+        assert!(Cli::try_parse_from([
+            "trees",
+            "release",
+            "/tmp/workspace",
+            "--checkout-id",
+            "claim-id",
+        ])
+        .is_err());
     }
 
     #[test]

@@ -31,8 +31,7 @@ manual responsibility.
 - Add configuration read/write support for `workspaces_dir` without making a
   concrete workspace path part of automatic allocation.
 - Add `trees release <workspace-path> --claim-id <claim-id>` to release the
-  claim after reconciliation. Existing `--checkout-id` spellings may remain as
-  compatibility aliases while the claim terminology is introduced.
+  claim after reconciliation.
 - Add `trees gc --older-than <duration> [--dry-run] [--yes] [--force]` to
   reclaim idle automatic workspaces while never selecting manual workspaces;
   report the number currently unclaimed and confirm the normal

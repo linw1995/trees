@@ -197,12 +197,12 @@ before returning success.
 ### Requirement: Release Without Destroying Git State
 
 The CLI SHALL provide `trees release <workspace-path> --claim-id <claim-id>`.
-Existing `--checkout-id` spellings MAY remain as compatibility aliases. Release
-SHALL require the active claim identifier, reconcile the workspace while
-retaining the claim, and release the claim only when all managed worktrees
-satisfy the reusable snapshot requirement. A successful release SHALL leave the
-workspace directory, worktree files, source repositories, and worktree
-associations unchanged.
+The `--claim-id` spelling is the only supported claim option. Release SHALL
+require the active claim identifier, reconcile the workspace while retaining
+the claim, and release the claim only when all managed worktrees satisfy the
+reusable snapshot requirement. A successful release SHALL leave the workspace
+directory, worktree files, source repositories, and worktree associations
+unchanged.
 
 #### Scenario: Release a Reusable Workspace
 

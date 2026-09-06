@@ -174,9 +174,9 @@ trees create <workspace-path> --repo <repository-path>...
 trees release <workspace-path> --claim-id <claim-id>
 ```
 
-The existing `--checkout-id` spelling may remain as a compatibility alias while
-the claim terminology is introduced. The claim identifier applies to release,
-not automatic creation.
+The release command uses only the `--claim-id` spelling. The claim identifier
+applies to release, not automatic creation; no legacy checkout option is part
+of the command contract.
 
 The automatic form does not accept a concrete workspace path. It canonicalizes
 and inspects every repository, resolves its `origin_repositories` rows, sorts
