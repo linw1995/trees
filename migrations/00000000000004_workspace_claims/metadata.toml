@@ -1,2 +1,3 @@
-# Replace the workspace access lease with a persistent usage claim.
+# Replace the workspace access lease with a persistent usage claim and align
+# the idle timestamp with the release primitive.
 run_in_transaction = false

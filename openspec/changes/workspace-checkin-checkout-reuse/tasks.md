@@ -25,7 +25,8 @@
 - [x] 2.1 Add follow-up migration `00000000000004` that converts the existing
   `workspace_leases` table into `workspace_claims`, preserves active workspace
   IDs and acquisition timestamps, removes workspace lease owner, expiry, and
-  heartbeat columns, and keeps one active claim per workspace
+  heartbeat columns, renames the idle timestamp to `last_released_at`, and
+  keeps one active claim per workspace
 - [x] 2.2 Backfill legacy explicit-path workspace records as `manual` without
   touching Git or the filesystem, and provide a reversible down migration for
   workspace claims
@@ -38,8 +39,6 @@
 - [x] 2.5 Verify claim acquisition races, wrong-token rejection, mode,
   timestamp persistence, tombstone retention, JSON detail validation, and
   migration upgrade/downgrade
-- [x] 2.6 Add migration `00000000000005` to rename the workspace idle
-  timestamp from `last_checked_in_at` to `last_released_at`
 
 ## 3. Git Observation and Reconciliation
 

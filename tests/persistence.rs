@@ -59,9 +59,6 @@ fn workspace_claim_migration_preserves_claim_metadata() {
     let mut connection = database::connect(&path).expect("database should open");
     connection
         .revert_last_migration(database::MIGRATIONS)
-        .expect("release timestamp migration should revert");
-    connection
-        .revert_last_migration(database::MIGRATIONS)
         .expect("claim migration should revert");
 
     let workspace_id = WorkspaceId::new();
@@ -105,13 +102,10 @@ fn workspace_claim_migration_preserves_claim_metadata() {
 
     connection
         .revert_last_migration(database::MIGRATIONS)
-        .expect("release timestamp migration should downgrade");
-    connection
-        .revert_last_migration(database::MIGRATIONS)
         .expect("claim migration should downgrade");
     connection
         .run_pending_migrations(database::MIGRATIONS)
-        .expect("claim and release timestamp migrations should rerun");
+        .expect("claim migration should rerun");
     let rerun = trees::storage::find_workspace_claim_by_id(&mut connection, &claim_id)
         .expect("rerun claim should be queryable");
     assert_eq!(rerun.claimed_at, claimed_at);
@@ -361,16 +355,13 @@ fn migration_three_normalizes_a_database_already_at_migration_two() {
 
     connection
         .revert_last_migration(database::MIGRATIONS)
-        .expect("release timestamp migration should revert");
-    connection
-        .revert_last_migration(database::MIGRATIONS)
         .expect("claim migration should revert");
     connection
         .revert_last_migration(database::MIGRATIONS)
         .expect("pool registry migration should revert");
     connection
         .run_pending_migrations(database::MIGRATIONS)
-        .expect("pool, claim, and release timestamp migrations should rerun");
+        .expect("pool and claim migrations should rerun");
 
     drop(connection);
     fs::remove_file(path).expect("migration database should be removable");

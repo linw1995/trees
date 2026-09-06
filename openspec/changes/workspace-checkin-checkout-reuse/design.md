@@ -371,10 +371,10 @@ coupled to this claim in this change.
    management, pool, origin, and workspace reuse data. Add follow-up migration
    `00000000000004` to convert `workspace_leases` into `workspace_claims`,
    preserving active workspace IDs and acquisition timestamps while dropping
-   workspace-claim owner, expiry, and heartbeat metadata. Add migration
-   `00000000000005` to rename the idle timestamp to `last_released_at`.
-   Existing explicit-path workspace rows remain `manual` with no active claim;
-   the migrations do not touch Git or delete files.
+   workspace-claim owner, expiry, and heartbeat metadata, and rename the idle
+   timestamp to `last_released_at`. Existing explicit-path workspace rows remain
+   `manual` with no active claim; the migrations do not touch Git or delete
+   files.
 2. Extend the repository and domain layers without changing existing
    workspace or repo-worktree identifiers.
 3. Make reconciliation understand `dirty` worktrees before enabling pool
