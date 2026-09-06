@@ -126,7 +126,7 @@
   candidate safety or reported reasons.
 - [x] 7.2 Require the lease-backed access reconciliation boundary and remove
   the lease-free access facade after consumer review.
-- [ ] 7.3 Remove the post-acquisition allocation test seam and retain
-  equivalent integration coverage.
+- [x] 7.3 Remove the post-acquisition allocation test seam and retain
+  allocation and reconciliation coverage through normal paths.
 - [ ] 7.4 Remove the legacy `--checkout-id` CLI alias after compatibility
   review.

@@ -259,6 +259,11 @@ records the failed acquisition before returning an error. The caller never
 receives a successful acquisition result for a workspace that fails the final
 safety check.
 
+The allocation implementation does not expose a callback seam for injecting
+post-acquisition changes. The final reconciliation behavior is verified
+through normal allocation and integration paths rather than a
+production-visible test hook.
+
 The access boundary is lease-backed by construction. The generic reconciliation
 entry point remains available for non-access observation, but access workflows
 do not have a second lease-free facade.

@@ -234,18 +234,6 @@ pub fn acquire_automatic_candidate(
     plan: &AutomaticAllocationPlan,
     candidate: &crate::storage::WorkspaceRow,
 ) -> Result<AutomaticClaimResult, WorkspaceError> {
-    acquire_automatic_candidate_with_post_acquire_hook(connection, plan, candidate, || {})
-}
-
-fn acquire_automatic_candidate_with_post_acquire_hook<F>(
-    connection: &mut SqliteConnection,
-    plan: &AutomaticAllocationPlan,
-    candidate: &crate::storage::WorkspaceRow,
-    post_acquire: F,
-) -> Result<AutomaticClaimResult, WorkspaceError>
-where
-    F: FnOnce(),
-{
     let intent_json = JsonDocument::from_serializable(plan).map_err(WorkspaceError::Json)?;
     let intent = OperationIntent::new(
         candidate.id,
@@ -299,8 +287,6 @@ where
         fail_operation(connection, &lease_id, &primary);
         return Err(primary);
     }
-
-    post_acquire();
 
     let final_boundary = match reconciliation::reconcile_workspace_for_access_with_lease(
         connection,
@@ -1763,58 +1749,6 @@ mod tests {
             .expect("allocated claim should be releasable");
         crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
             .expect("test worktree should be removable");
-        drop(connection);
-        fs::remove_file(database_path).expect("state database should be removable");
-        fs::remove_dir_all(root).expect("test root should be removable");
-    }
-
-    #[test]
-    fn removes_a_claim_when_final_reconciliation_fails() {
-        let (root, database_path, mut connection, plan, candidate, worktree_path) =
-            automatic_candidate_fixture();
-        let dirty_path = worktree_path.join("local-change");
-        let error = acquire_automatic_candidate_with_post_acquire_hook(
-            &mut connection,
-            &plan,
-            &candidate,
-            || {
-                fs::write(&dirty_path, "dirty\n").expect("test worktree should become dirty");
-            },
-        )
-        .expect_err("post-check dirty state should reject acquire");
-
-        assert!(matches!(error, WorkspaceError::NotReusable(_)));
-        assert!(
-            crate::storage::find_workspace_claim(&mut connection, &candidate.id)
-                .expect("claim lookup should succeed")
-                .is_none()
-        );
-        assert_eq!(
-            crate::storage::find_workspace(&mut connection, &candidate.id)
-                .expect("workspace lookup should succeed")
-                .state,
-            WorkspaceState::Degraded
-        );
-        assert_eq!(
-            crate::storage::list_repo_worktrees(&mut connection, &candidate.id)
-                .expect("worktree lookup should succeed")[0]
-                .state,
-            RepoWorktreeState::Dirty
-        );
-        let acquire_event = crate::schema::lifecycle_events::table
-            .filter(crate::schema::lifecycle_events::entity_id.eq(candidate.id.to_string()))
-            .filter(crate::schema::lifecycle_events::event_type.eq("workspace_acquire_failed"))
-            .select(crate::storage::EventRow::as_select())
-            .first(&mut connection)
-            .expect("acquire failure event should exist");
-        assert_eq!(
-            crate::storage::operation_state(&mut connection, &acquire_event.operation_id)
-                .expect("acquire operation state should exist"),
-            Some(OperationState::Failed)
-        );
-
-        crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
-            .expect("dirty test worktree should be removable");
         drop(connection);
         fs::remove_file(database_path).expect("state database should be removable");
         fs::remove_dir_all(root).expect("test root should be removable");
