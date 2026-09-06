@@ -357,7 +357,9 @@ applicable.
 Operation lease renewals are short lease-token-checked updates to
 `operation_leases` made while an external step runs. They protect the in-flight
 operation and do not hold SQLite transactions during Git or filesystem work.
-Git reads happen outside SQLite transactions. Before returning from automatic
+Reconciliation keeps the caller's `operation_id` as lifecycle-event context;
+it does not use that ID to select or mutate the current lease, which is always
+addressed by `lease_id`. Git reads happen outside SQLite transactions. Before returning from automatic
 acquisition or release, the workflow performs a final reconciliation so the
 operation result is based on Git's authoritative metadata rather than a stale
 database snapshot. Existing `trees codex` behavior remains backward compatible
