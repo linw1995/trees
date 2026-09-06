@@ -282,7 +282,8 @@ pub fn execute(
             continue;
         }
 
-        let Some(operation) = begin_gc_operation(connection, &candidate, &scan, force)? else {
+        let Some((operation, lease_id)) = begin_gc_operation(connection, &candidate, &scan, force)?
+        else {
             report.skipped.push(GcSkipped {
                 workspace_path: candidate.workspace.canonical_path,
                 reason: GcCandidateReason::ActiveOperation,
@@ -298,6 +299,7 @@ pub fn execute(
             finish_gc_failure(
                 connection,
                 &operation.id,
+                &lease_id,
                 &workspace_id,
                 details_json,
                 &error_text,
@@ -315,6 +317,7 @@ pub fn execute(
             finish_gc_skip(
                 connection,
                 &operation.id,
+                &lease_id,
                 &workspace_id,
                 details_json,
                 GcCandidateReason::Claimed,
@@ -331,6 +334,7 @@ pub fn execute(
             finish_gc_skip(
                 connection,
                 &operation.id,
+                &lease_id,
                 &workspace_id,
                 details_json,
                 GcCandidateReason::Unhealthy,
@@ -350,6 +354,7 @@ pub fn execute(
                 finish_gc_skip(
                     connection,
                     &operation.id,
+                    &lease_id,
                     &workspace_id,
                     details_json,
                     reason,
@@ -367,6 +372,7 @@ pub fn execute(
             finish_gc_failure(
                 connection,
                 &operation.id,
+                &lease_id,
                 &workspace_id,
                 gc_details(&workspace.canonical_path, &scan, force, Some(&error_text)),
                 &error_text,
@@ -381,6 +387,7 @@ pub fn execute(
         if let Err(error) = record_workspace_reclaimed(
             connection,
             &operation.id,
+            &lease_id,
             &workspace_id,
             Some(gc_details(&workspace.canonical_path, &scan, force, None)),
         ) {
@@ -388,6 +395,7 @@ pub fn execute(
             finish_gc_failure(
                 connection,
                 &operation.id,
+                &lease_id,
                 &workspace_id,
                 gc_details(&workspace.canonical_path, &scan, force, Some(&error_text)),
                 &error_text,
@@ -427,18 +435,18 @@ fn begin_gc_operation(
     candidate: &GcCandidate,
     scan: &GcScan,
     force: bool,
-) -> Result<Option<crate::storage::OperationRow>, GcError> {
+) -> Result<Option<(crate::storage::OperationRow, crate::domain::LeaseId)>, GcError> {
     let intent_json = gc_details(&candidate.workspace.canonical_path, scan, force, None);
     let intent = OperationIntent::new(
         candidate.workspace.id,
         "gc",
-        format!("process:{}", std::process::id()),
         Timestamp::after_seconds(300),
         "reclaim workspace",
         intent_json,
     );
+    let lease_id = intent.lease_id;
     match begin_operation(connection, &intent) {
-        Ok(operation) => Ok(Some(operation)),
+        Ok(operation) => Ok(Some((operation, lease_id))),
         Err(OperationIntentError::WorkspaceBusy(_)) => Ok(None),
         Err(OperationIntentError::Database(error)) => Err(GcError::Database(error)),
     }
@@ -469,6 +477,7 @@ fn gc_details(
 fn finish_gc_skip(
     connection: &mut SqliteConnection,
     operation_id: &OperationId,
+    lease_id: &crate::domain::LeaseId,
     workspace_id: &WorkspaceId,
     details_json: JsonDocument,
     reason: GcCandidateReason,
@@ -480,6 +489,7 @@ fn finish_gc_skip(
     record_workspace_gc_skipped(
         connection,
         operation_id,
+        lease_id,
         workspace_id,
         Some(details_json),
         error_json,
@@ -490,6 +500,7 @@ fn finish_gc_skip(
 fn finish_gc_failure(
     connection: &mut SqliteConnection,
     operation_id: &OperationId,
+    lease_id: &crate::domain::LeaseId,
     workspace_id: &WorkspaceId,
     details_json: JsonDocument,
     error: &str,
@@ -501,6 +512,7 @@ fn finish_gc_failure(
     record_workspace_gc_failure(
         connection,
         operation_id,
+        lease_id,
         workspace_id,
         Some(details_json),
         error_json,
@@ -986,13 +998,17 @@ mod tests {
                 .state,
             crate::domain::RepoWorktreeState::Reclaimed
         );
-        let operation = crate::schema::operations::table
+        let operation_id = crate::schema::operations::table
             .filter(crate::schema::operations::workspace_id.eq(workspace.id))
             .order(crate::schema::operations::started_at.desc())
-            .select(crate::storage::OperationRow::as_select())
-            .first(&mut connection)
+            .select(crate::schema::operations::id)
+            .first::<crate::domain::OperationId>(&mut connection)
             .expect("GC operation should exist");
-        assert_eq!(operation.state, crate::domain::OperationState::Succeeded);
+        assert_eq!(
+            crate::storage::operation_state(&mut connection, &operation_id)
+                .expect("GC operation state should exist"),
+            Some(crate::domain::OperationState::Succeeded)
+        );
         assert_eq!(
             crate::git::list_worktrees(&source)
                 .expect("source worktrees should be readable")

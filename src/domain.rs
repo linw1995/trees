@@ -79,6 +79,7 @@ uuid_identifier!(PoolId);
 uuid_identifier!(OriginRepositoryId);
 uuid_identifier!(RepoWorktreeId);
 uuid_identifier!(OperationId);
+uuid_identifier!(LeaseId);
 uuid_identifier!(EventId);
 uuid_identifier!(ClaimId);
 

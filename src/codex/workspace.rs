@@ -5,14 +5,14 @@ use diesel::result::{DatabaseErrorKind, Error as DieselError};
 use diesel::sqlite::SqliteConnection;
 
 use crate::domain::{
-    CanonicalPath, JsonDocument, OperationId, OperationState, Timestamp, WorkspaceId,
+    CanonicalPath, JsonDocument, LeaseId, OperationId, OperationState, Timestamp, WorkspaceId,
     WorkspaceState,
 };
 use crate::reconciliation::{self, ReconciliationError, RecoveryOutcome};
 use crate::storage::{
-    append_event, find_workspace_by_path, list_repo_worktrees, persist_operation_intent,
-    record_operation_transition, with_short_transaction, EventDraft, OperationIntent,
-    OperationIntentError, RepoWorktreeRow, TransitionMetadata,
+    find_workspace_by_path, list_repo_worktrees, persist_operation_intent,
+    record_operation_transition, with_short_transaction, OperationIntent, OperationIntentError,
+    RepoWorktreeRow, TransitionMetadata,
 };
 use crate::validation::{self, ValidationError};
 
@@ -46,7 +46,7 @@ pub fn prepare(
         | RecoveryOutcome::Failed => {}
     }
 
-    let operation_id = start_reconciliation_operation(connection, workspace.id)?;
+    let (operation_id, lease_id) = start_reconciliation_operation(connection, workspace.id)?;
     let summary =
         match reconciliation::reconcile_workspace(connection, &workspace.id, &operation_id) {
             Ok(summary) => summary,
@@ -54,13 +54,19 @@ pub fn prepare(
                 let _ = finish_reconciliation_operation(
                     connection,
                     &operation_id,
+                    &lease_id,
                     OperationState::Failed,
                 );
                 return Err(WorkspacePreparationError::Reconciliation(error));
             }
         };
-    finish_reconciliation_operation(connection, &operation_id, OperationState::Succeeded)
-        .map_err(WorkspacePreparationError::Database)?;
+    finish_reconciliation_operation(
+        connection,
+        &operation_id,
+        &lease_id,
+        OperationState::Succeeded,
+    )
+    .map_err(WorkspacePreparationError::Database)?;
 
     if summary.workspace_state != WorkspaceState::Ready {
         return Err(WorkspacePreparationError::NotReady {
@@ -91,32 +97,16 @@ pub fn prepare(
 fn start_reconciliation_operation(
     connection: &mut SqliteConnection,
     workspace_id: WorkspaceId,
-) -> Result<OperationId, WorkspacePreparationError> {
+) -> Result<(OperationId, LeaseId), WorkspacePreparationError> {
     let intent = OperationIntent::new(
         workspace_id,
         "codex_reconciliation",
-        format!("process:{}", std::process::id()),
         Timestamp::after_seconds(300),
         "reconcile workspace",
         JsonDocument::parse(r#"{"command":"codex"}"#).map_err(WorkspacePreparationError::Json)?,
     );
     with_short_transaction(connection, |connection| {
         persist_operation_intent(connection, &intent)?;
-        append_event(
-            connection,
-            &EventDraft {
-                operation_id: intent.id,
-                entity_type: "operation".to_owned(),
-                entity_id: intent.id.to_string(),
-                event_type: "codex_reconciliation_started".to_owned(),
-                source: "trees".to_owned(),
-                occurred_at: intent.started_at.clone(),
-                previous_state: None,
-                current_state: Some(OperationState::Running.to_string()),
-                details_json: None,
-                error_json: None,
-            },
-        )?;
         Ok::<(), DieselError>(())
     })
     .map_err(|error| match error {
@@ -125,21 +115,22 @@ fn start_reconciliation_operation(
         }
         error => WorkspacePreparationError::Database(error),
     })?;
-    Ok(intent.id)
+    Ok((intent.id, intent.lease_id))
 }
 
 fn finish_reconciliation_operation(
     connection: &mut SqliteConnection,
     operation_id: &OperationId,
+    lease_id: &LeaseId,
     state: OperationState,
 ) -> Result<(), DieselError> {
     record_operation_transition(
         connection,
         operation_id,
+        lease_id,
         state,
-        "reconciliation complete",
-        None,
-        TransitionMetadata::new("codex_reconciliation_finished", "trees"),
+        TransitionMetadata::new("codex_reconciliation_finished", "trees")
+            .with_pending_step("reconciliation complete"),
     )
 }
 

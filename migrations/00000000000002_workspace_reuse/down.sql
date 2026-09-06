@@ -1,10 +1,83 @@
 PRAGMA foreign_keys = OFF;
 
-ALTER TABLE operations
-    ADD COLUMN last_heartbeat_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z';
+CREATE TABLE operations_v1 (
+    id TEXT NOT NULL PRIMARY KEY CHECK (length(id) = 36),
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+    kind TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('running', 'succeeded', 'failed', 'rolled_back')),
+    owner_id TEXT NOT NULL,
+    lease_expires_at TEXT NOT NULL,
+    last_heartbeat_at TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    pending_step TEXT NOT NULL,
+    intent_json TEXT NOT NULL CHECK (json_valid(intent_json)),
+    error_json TEXT CHECK (error_json IS NULL OR json_valid(error_json))
+);
 
-UPDATE operations
-SET last_heartbeat_at = started_at;
+WITH latest_operation_events AS (
+    SELECT
+        event.operation_id,
+        event.current_state,
+        event.occurred_at,
+        event.details_json,
+        event.error_json
+    FROM lifecycle_events AS event
+    WHERE event.entity_type = 'operation'
+      AND NOT EXISTS (
+          SELECT 1
+          FROM lifecycle_events AS newer
+          WHERE newer.entity_type = 'operation'
+            AND newer.operation_id = event.operation_id
+            AND (
+                newer.occurred_at > event.occurred_at
+                OR (
+                    newer.occurred_at = event.occurred_at
+                    AND newer.event_id > event.event_id
+                )
+            )
+      )
+)
+INSERT INTO operations_v1 (
+    id,
+    workspace_id,
+    kind,
+    state,
+    owner_id,
+    lease_expires_at,
+    last_heartbeat_at,
+    started_at,
+    finished_at,
+    pending_step,
+    intent_json,
+    error_json
+)
+SELECT
+    operation.id,
+    operation.workspace_id,
+    operation.kind,
+    COALESCE(latest.current_state, 'failed'),
+    COALESCE(lease.lease_id, 'migration'),
+    COALESCE(lease.lease_expires_at, latest.occurred_at, operation.started_at),
+    COALESCE(latest.occurred_at, operation.started_at),
+    operation.started_at,
+    CASE
+        WHEN latest.current_state IN ('succeeded', 'failed', 'rolled_back')
+            THEN latest.occurred_at
+        ELSE NULL
+    END,
+    COALESCE(json_extract(latest.details_json, '$.pending_step'), 'downgraded'),
+    operation.intent_json,
+    latest.error_json
+FROM operations AS operation
+LEFT JOIN operation_leases AS lease
+  ON lease.operation_id = operation.id
+LEFT JOIN latest_operation_events AS latest
+  ON latest.operation_id = operation.id;
+
+DROP TABLE operation_leases;
+DROP TABLE operations;
+ALTER TABLE operations_v1 RENAME TO operations;
 
 CREATE TABLE workspaces_v1 (
     id TEXT NOT NULL PRIMARY KEY CHECK (length(id) = 36),

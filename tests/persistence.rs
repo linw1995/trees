@@ -11,8 +11,8 @@ use trees::domain::{
 };
 use trees::storage::{
     begin_operation, ensure_origin_repository, find_operation, insert_event, insert_repo_worktree,
-    insert_workspace, list_repo_worktrees, persist_operation_intent, EventRow, NewEvent,
-    NewRepoWorktree, NewWorkspace, OperationIntent, OperationIntentError,
+    insert_workspace, list_repo_worktrees, operation_state, persist_operation_intent, EventRow,
+    NewEvent, NewRepoWorktree, NewWorkspace, OperationIntent, OperationIntentError,
 };
 
 fn database_path() -> std::path::PathBuf {
@@ -147,7 +147,6 @@ fn migration_preserves_operation_and_event_rows_without_rebuilding_them() {
         &OperationIntent::new(
             workspace_id,
             "create",
-            "migration-test",
             Timestamp::after_seconds(300),
             "attach repository",
             JsonDocument::parse("{}").unwrap(),
@@ -195,10 +194,9 @@ fn migration_preserves_operation_and_event_rows_without_rebuilding_them() {
         .run_pending_migrations(database::MIGRATIONS)
         .expect("migration should upgrade");
     assert_eq!(
-        find_operation(&mut connection, &operation.id)
-            .expect("operation should survive upgrade")
-            .state,
-        OperationState::Running
+        operation_state(&mut connection, &operation.id)
+            .expect("operation state should survive upgrade"),
+        Some(OperationState::Running)
     );
     assert_eq!(
         trees::schema::lifecycle_events::table
@@ -270,7 +268,6 @@ fn database_constraints_and_immutable_events_are_enforced() {
     let invalid_workspace_intent = OperationIntent::new(
         WorkspaceId::new(),
         "create",
-        "test-owner",
         Timestamp::after_seconds(300),
         "attach repo",
         JsonDocument::parse("{}").unwrap(),
@@ -285,7 +282,6 @@ fn database_constraints_and_immutable_events_are_enforced() {
         &OperationIntent::new(
             workspace_id,
             "create",
-            "test-owner",
             Timestamp::after_seconds(300),
             "attach repo",
             JsonDocument::parse("{}").unwrap(),
@@ -326,7 +322,6 @@ fn database_constraints_and_immutable_events_are_enforced() {
             &OperationIntent::new(
                 workspace_id,
                 "create",
-                "second-owner",
                 Timestamp::after_seconds(300),
                 "attach repo",
                 JsonDocument::parse("{}").unwrap(),

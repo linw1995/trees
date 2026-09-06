@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use crate::claim::WorkspaceClaim;
 use crate::domain::{
-    CanonicalPath, ClaimId, JsonDocument, OperationState, OriginRepositoryId, PoolId,
+    CanonicalPath, ClaimId, JsonDocument, LeaseId, OperationState, OriginRepositoryId, PoolId,
     RepoWorktreeId, RepoWorktreeState, Timestamp, WorkspaceId, WorkspaceManagementMode,
     WorkspaceState,
 };
@@ -91,7 +91,7 @@ pub struct TrackedRepository {
 pub struct CreationContext {
     pub workspace_id: WorkspaceId,
     pub operation_id: crate::domain::OperationId,
-    owner_id: String,
+    pub(crate) lease_id: LeaseId,
     pub plan: CreationPlan,
     pub repositories: Vec<TrackedRepository>,
 }
@@ -227,16 +227,15 @@ fn acquire_automatic_candidate_with_post_acquire_hook<F>(
 where
     F: FnOnce(),
 {
-    let owner_id = format!("process:{}", std::process::id());
     let intent_json = JsonDocument::from_serializable(plan).map_err(WorkspaceError::Json)?;
     let intent = OperationIntent::new(
         candidate.id,
         "acquire",
-        owner_id,
         Timestamp::after_seconds(300),
         "acquire workspace claim",
         intent_json,
     );
+    let lease_id = intent.lease_id;
     let operation = begin_operation(connection, &intent).map_err(map_operation_error)?;
     let boundary = match reconciliation::reconcile_workspace_for_access(
         connection,
@@ -246,28 +245,28 @@ where
         Ok(boundary) => boundary,
         Err(error) => {
             let primary = WorkspaceError::Reconciliation(error);
-            fail_operation(connection, &operation.id, &primary);
+            fail_operation(connection, &operation.id, &lease_id, &primary);
             return Err(primary);
         }
     };
     if boundary.workspace.management_mode != crate::domain::WorkspaceManagementMode::Automatic {
         let primary = WorkspaceError::NotAutomatic(candidate.canonical_path.clone());
-        fail_operation(connection, &operation.id, &primary);
+        fail_operation(connection, &operation.id, &lease_id, &primary);
         return Err(primary);
     }
     let Some(pool_id) = boundary.workspace.pool_id else {
         let primary = WorkspaceError::RepositorySetMismatch(candidate.id);
-        fail_operation(connection, &operation.id, &primary);
+        fail_operation(connection, &operation.id, &lease_id, &primary);
         return Err(primary);
     };
     if boundary.claim.is_some() {
         let primary = WorkspaceError::ClaimActive(candidate.id);
-        fail_operation(connection, &operation.id, &primary);
+        fail_operation(connection, &operation.id, &lease_id, &primary);
         return Err(primary);
     }
     if boundary.summary.workspace_state != WorkspaceState::Ready {
         let primary = WorkspaceError::NotReusable(candidate.canonical_path.clone());
-        fail_operation(connection, &operation.id, &primary);
+        fail_operation(connection, &operation.id, &lease_id, &primary);
         return Err(primary);
     }
 
@@ -281,7 +280,7 @@ where
     );
     if let Err(error) = record_result {
         let primary = WorkspaceError::Database(error);
-        fail_operation(connection, &operation.id, &primary);
+        fail_operation(connection, &operation.id, &lease_id, &primary);
         return Err(primary);
     }
 
@@ -298,6 +297,7 @@ where
             return Err(fail_acquire(
                 connection,
                 &operation.id,
+                &lease_id,
                 &candidate.id,
                 &claim.id,
                 primary,
@@ -312,11 +312,26 @@ where
         return Err(fail_acquire(
             connection,
             &operation.id,
+            &lease_id,
             &candidate.id,
             &claim.id,
             primary,
             Some(details_json),
         ));
+    }
+
+    if let Err(error) = record_operation_transition(
+        connection,
+        &operation.id,
+        &lease_id,
+        OperationState::Succeeded,
+        TransitionMetadata::new("operation_succeeded", "trees")
+            .with_pending_step("acquire complete")
+            .with_details(details_json.clone()),
+    ) {
+        let primary = WorkspaceError::Database(error);
+        fail_operation(connection, &operation.id, &lease_id, &primary);
+        return Err(primary);
     }
 
     Ok(AutomaticClaimResult {
@@ -346,21 +361,24 @@ fn map_operation_error(error: OperationIntentError) -> WorkspaceError {
 fn fail_operation(
     connection: &mut SqliteConnection,
     operation_id: &crate::domain::OperationId,
+    lease_id: &LeaseId,
     error: &WorkspaceError,
 ) {
     let _ = record_operation_transition(
         connection,
         operation_id,
+        lease_id,
         OperationState::Failed,
-        "operation failed",
-        None,
-        TransitionMetadata::new("operation_failed", "trees").with_error(error_document(error)),
+        TransitionMetadata::new("operation_failed", "trees")
+            .with_pending_step("operation failed")
+            .with_error(error_document(error)),
     );
 }
 
 fn fail_acquire(
     connection: &mut SqliteConnection,
     operation_id: &crate::domain::OperationId,
+    lease_id: &LeaseId,
     workspace_id: &WorkspaceId,
     claim_id: &ClaimId,
     primary: WorkspaceError,
@@ -370,6 +388,7 @@ fn fail_acquire(
     match record_workspace_acquire_failure(
         connection,
         operation_id,
+        lease_id,
         workspace_id,
         claim_id,
         details_json,
@@ -409,11 +428,11 @@ pub fn release_automatic_workspace(
     let intent = OperationIntent::new(
         workspace.id,
         "release",
-        format!("process:{}", std::process::id()),
         Timestamp::after_seconds(300),
         "release workspace claim",
         intent_json,
     );
+    let lease_id = intent.lease_id;
     let operation = begin_operation(connection, &intent).map_err(map_operation_error)?;
     let boundary = match reconciliation::reconcile_workspace_for_access(
         connection,
@@ -423,23 +442,23 @@ pub fn release_automatic_workspace(
         Ok(boundary) => boundary,
         Err(error) => {
             let primary = WorkspaceError::Reconciliation(error);
-            fail_operation(connection, &operation.id, &primary);
+            fail_operation(connection, &operation.id, &lease_id, &primary);
             return Err(primary);
         }
     };
     if boundary.workspace.management_mode != WorkspaceManagementMode::Automatic {
         let primary = WorkspaceError::NotAutomatic(boundary.workspace.canonical_path);
-        fail_operation(connection, &operation.id, &primary);
+        fail_operation(connection, &operation.id, &lease_id, &primary);
         return Err(primary);
     }
     let Some(active_claim) = boundary.claim.as_ref() else {
         let primary = WorkspaceError::ClaimNotFound(claim_id);
-        fail_operation(connection, &operation.id, &primary);
+        fail_operation(connection, &operation.id, &lease_id, &primary);
         return Err(primary);
     };
     if active_claim.id != claim_id {
         let primary = WorkspaceError::ClaimNotFound(claim_id);
-        fail_operation(connection, &operation.id, &primary);
+        fail_operation(connection, &operation.id, &lease_id, &primary);
         return Err(primary);
     }
     // Do not release the claim until live reconciliation proves the slot is
@@ -450,6 +469,7 @@ pub fn release_automatic_workspace(
         return Err(fail_release(
             connection,
             &operation.id,
+            &lease_id,
             &workspace.id,
             primary,
             Some(details_json),
@@ -458,12 +478,13 @@ pub fn release_automatic_workspace(
     if let Err(error) = record_workspace_release(
         connection,
         &operation.id,
+        &lease_id,
         &workspace.id,
         &claim_id,
         Some(details_json),
     ) {
         let primary = WorkspaceError::Database(error);
-        fail_operation(connection, &operation.id, &primary);
+        fail_operation(connection, &operation.id, &lease_id, &primary);
         return Err(primary);
     }
     let released_workspace =
@@ -489,6 +510,7 @@ fn release_details(workspace_path: &CanonicalPath, claim_id: ClaimId) -> JsonDoc
 fn fail_release(
     connection: &mut SqliteConnection,
     operation_id: &crate::domain::OperationId,
+    lease_id: &LeaseId,
     workspace_id: &WorkspaceId,
     primary: WorkspaceError,
     details_json: Option<JsonDocument>,
@@ -497,6 +519,7 @@ fn fail_release(
     match record_workspace_release_rejection(
         connection,
         operation_id,
+        lease_id,
         workspace_id,
         details_json,
         error_json,
@@ -618,6 +641,7 @@ fn provision_automatic_new(
         connection,
         &context.workspace_id,
         &context.operation_id,
+        &context.lease_id,
         &claim,
         Some(details_json),
     ) {
@@ -749,11 +773,9 @@ fn initialize_creation_with_mode(
     }
 
     let workspace_id = claim.map(|claim| claim.workspace_id).unwrap_or_default();
-    let owner_id = format!("process:{}", std::process::id());
     let operation_intent = OperationIntent::new(
         workspace_id,
         "create",
-        owner_id,
         Timestamp::after_seconds(300),
         "prepare worktrees",
         intent_json,
@@ -857,21 +879,6 @@ fn initialize_creation_with_mode(
                 },
             )?;
         }
-        append_event(
-            connection,
-            &EventDraft {
-                operation_id: operation_intent.id,
-                entity_type: "operation".to_owned(),
-                entity_id: operation_intent.id.to_string(),
-                event_type: "operation_started".to_owned(),
-                source: "trees".to_owned(),
-                occurred_at: now,
-                previous_state: None,
-                current_state: Some("running".to_owned()),
-                details_json: None,
-                error_json: None,
-            },
-        )?;
         Ok::<(), diesel::result::Error>(())
     })
     .map_err(WorkspaceError::Database)?;
@@ -879,7 +886,7 @@ fn initialize_creation_with_mode(
     Ok(CreationContext {
         workspace_id,
         operation_id: operation_intent.id,
-        owner_id: operation_intent.owner_id,
+        lease_id: operation_intent.lease_id,
         plan,
         repositories,
     })
@@ -950,8 +957,13 @@ pub fn create_with_connection(
     execute_creation(connection, &context)?;
     reconciliation::reconcile_workspace(connection, &context.workspace_id, &context.operation_id)
         .map_err(WorkspaceError::Reconciliation)?;
-    finalize_persisted_creation(connection, &context.workspace_id, &context.operation_id)
-        .map_err(WorkspaceError::Database)?;
+    finalize_persisted_creation(
+        connection,
+        &context.workspace_id,
+        &context.operation_id,
+        &context.lease_id,
+    )
+    .map_err(WorkspaceError::Database)?;
     Ok(CreationResult {
         workspace_path: context.plan.workspace_path,
         worktree_paths: context
@@ -995,6 +1007,7 @@ fn execute_repository_step(
     persist_operation_step_intent(
         connection,
         &context.operation_id,
+        &context.lease_id,
         format!("attach {}", repository.plan.source_path),
         intent_json,
     )
@@ -1002,11 +1015,11 @@ fn execute_repository_step(
     // The subprocess and lease-renewal callback run outside SQLite
     // transactions; each renewal is an independent short operation update.
     let operation_id = context.operation_id;
-    let owner_id = context.owner_id.clone();
+    let lease_id = context.lease_id;
     git::add_detached_worktree_with_heartbeat(
         &repository.plan.source_path,
         &repository.plan.worktree_path,
-        || match crate::storage::renew_operation_lease(connection, &operation_id, &owner_id) {
+        || match crate::storage::renew_operation_lease(connection, &operation_id, &lease_id) {
             Ok(true) => Ok(()),
             Ok(false) => Err(GitError::Heartbeat(
                 "operation lease is no longer owned".to_owned(),
@@ -1020,12 +1033,14 @@ fn execute_repository_step(
         connection,
         &repository.id,
         &context.operation_id,
+        &context.lease_id,
         RepoWorktreeState::Attached,
         worktree.head,
-        "worktree attached",
-        TransitionMetadata::new("worktree_attached", "trees").with_details(
-            JsonDocument::from_serializable(&repository.plan).map_err(WorkspaceError::Json)?,
-        ),
+        TransitionMetadata::new("worktree_attached", "trees")
+            .with_pending_step("worktree attached")
+            .with_details(
+                JsonDocument::from_serializable(&repository.plan).map_err(WorkspaceError::Json)?,
+            ),
     )
     .map_err(WorkspaceError::Database)?;
     reconciliation::reconcile_workspace(connection, &context.workspace_id, &context.operation_id)
@@ -1119,10 +1134,11 @@ fn rollback_creation(
     if let Err(error) = record_operation_transition(
         connection,
         &context.operation_id,
+        &context.lease_id,
         operation_state,
-        "rollback complete",
-        None,
-        TransitionMetadata::new(operation_event, "trees").with_error(error_json.clone()),
+        TransitionMetadata::new(operation_event, "trees")
+            .with_pending_step("rollback complete")
+            .with_error(error_json.clone()),
     ) {
         errors.push(error.to_string());
     }
@@ -1364,6 +1380,7 @@ mod tests {
             &mut connection,
             &context.workspace_id,
             &context.operation_id,
+            &context.lease_id,
         )
         .expect("creation should finalize");
         assert!(context.plan.workspace_path.as_path().exists());
@@ -1391,16 +1408,14 @@ mod tests {
             context.operation_id
         );
         assert_eq!(
-            crate::storage::find_operation(&mut connection, &context.operation_id)
-                .unwrap()
-                .state,
-            OperationState::Succeeded
+            crate::storage::operation_state(&mut connection, &context.operation_id).unwrap(),
+            Some(OperationState::Succeeded)
         );
         assert_eq!(
             crate::storage::list_events_for_operation(&mut connection, &context.operation_id)
                 .unwrap()
                 .len(),
-            11
+            13
         );
         for repository in &context.repositories {
             crate::git::remove_worktree(
@@ -1624,10 +1639,9 @@ mod tests {
             .first(&mut connection)
             .expect("acquire event should exist");
         assert_eq!(
-            crate::storage::find_operation(&mut connection, &acquire_event.operation_id)
-                .expect("acquire operation should exist")
-                .state,
-            OperationState::Succeeded
+            crate::storage::operation_state(&mut connection, &acquire_event.operation_id)
+                .expect("acquire operation state should exist"),
+            Some(OperationState::Succeeded)
         );
 
         crate::storage::release_workspace_claim(&mut connection, &candidate.id, &result.claim_id)
@@ -1679,10 +1693,9 @@ mod tests {
             .first(&mut connection)
             .expect("acquire failure event should exist");
         assert_eq!(
-            crate::storage::find_operation(&mut connection, &acquire_event.operation_id)
-                .expect("acquire operation should exist")
-                .state,
-            OperationState::Failed
+            crate::storage::operation_state(&mut connection, &acquire_event.operation_id)
+                .expect("acquire operation state should exist"),
+            Some(OperationState::Failed)
         );
 
         crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
@@ -1760,7 +1773,11 @@ mod tests {
             crate::storage::find_operation(&mut connection, &release_event.operation_id)
                 .expect("release operation should exist");
         assert_eq!(operation.kind, "release");
-        assert_eq!(operation.state, OperationState::Succeeded);
+        assert_eq!(
+            crate::storage::operation_state(&mut connection, &operation.id)
+                .expect("release operation state should exist"),
+            Some(OperationState::Succeeded)
+        );
         assert!(worktree_path.exists());
 
         crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
@@ -1806,10 +1823,9 @@ mod tests {
             .first(&mut connection)
             .expect("release rejection event should exist");
         assert_eq!(
-            crate::storage::find_operation(&mut connection, &rejected_event.operation_id)
-                .expect("release operation should exist")
-                .state,
-            OperationState::Failed
+            crate::storage::operation_state(&mut connection, &rejected_event.operation_id)
+                .expect("release operation state should exist"),
+            Some(OperationState::Failed)
         );
 
         crate::storage::release_workspace_claim(&mut connection, &candidate.id, &acquire.claim_id)
@@ -1907,14 +1923,18 @@ mod tests {
             .expect("claim lookup should succeed")
             .expect("provisioned workspace should be acquired");
         assert_eq!(claim.id, result.claim_id);
-        let operation = crate::schema::operations::table
+        let operation_id = crate::schema::operations::table
             .filter(crate::schema::operations::workspace_id.eq(workspace.id))
-            .select(crate::storage::OperationRow::as_select())
-            .first(&mut connection)
+            .select(crate::schema::operations::id)
+            .first::<crate::domain::OperationId>(&mut connection)
             .expect("provisioning operation should exist");
-        assert_eq!(operation.state, OperationState::Succeeded);
+        assert_eq!(
+            crate::storage::operation_state(&mut connection, &operation_id)
+                .expect("provisioning operation state should exist"),
+            Some(OperationState::Succeeded)
+        );
         assert!(
-            crate::storage::list_events_for_operation(&mut connection, &operation.id)
+            crate::storage::list_events_for_operation(&mut connection, &operation_id)
                 .expect("provisioning events should be readable")
                 .iter()
                 .any(|event| event.event_type == "workspace_claimed")
@@ -1983,12 +2003,16 @@ mod tests {
                 .iter()
                 .all(|worktree| worktree.state == RepoWorktreeState::Failed)
         );
-        let operation = crate::schema::operations::table
+        let operation_id = crate::schema::operations::table
             .filter(crate::schema::operations::workspace_id.eq(workspace.id))
-            .select(crate::storage::OperationRow::as_select())
-            .first(&mut connection)
+            .select(crate::schema::operations::id)
+            .first::<crate::domain::OperationId>(&mut connection)
             .expect("provisioning operation should exist");
-        assert_eq!(operation.state, OperationState::RolledBack);
+        assert_eq!(
+            crate::storage::operation_state(&mut connection, &operation_id)
+                .expect("provisioning operation state should exist"),
+            Some(OperationState::RolledBack)
+        );
         assert_eq!(
             crate::git::list_worktrees(&CanonicalPath::resolve(&first).unwrap())
                 .expect("first repository worktrees should be readable")
@@ -2041,10 +2065,8 @@ mod tests {
             WorkspaceState::Failed
         );
         assert_eq!(
-            crate::storage::find_operation(&mut connection, &context.operation_id)
-                .unwrap()
-                .state,
-            OperationState::RolledBack
+            crate::storage::operation_state(&mut connection, &context.operation_id).unwrap(),
+            Some(OperationState::RolledBack)
         );
         assert_eq!(
             crate::storage::list_repo_worktrees(&mut connection, &context.workspace_id)
@@ -2082,10 +2104,8 @@ mod tests {
             WorkspaceError::OperationActive(workspace_id) if workspace_id == context.workspace_id
         ));
         assert_eq!(
-            crate::storage::find_operation(&mut connection, &context.operation_id)
-                .unwrap()
-                .state,
-            OperationState::Running
+            crate::storage::operation_state(&mut connection, &context.operation_id).unwrap(),
+            Some(OperationState::Running)
         );
         assert!(!context.plan.workspace_path.as_path().exists());
 
@@ -2110,8 +2130,8 @@ mod tests {
         let context = initialize_creation(&mut connection, plan)
             .expect("initial operation should be persisted");
         execute_creation(&mut connection, &context).expect("Git steps should complete");
-        diesel::update(crate::schema::operations::table.find(&context.operation_id))
-            .set(crate::schema::operations::lease_expires_at.eq(Timestamp::now()))
+        diesel::update(crate::schema::operation_leases::table.find(&context.operation_id))
+            .set(crate::schema::operation_leases::lease_expires_at.eq(Timestamp::now()))
             .execute(&mut connection)
             .expect("operation lease should expire");
 
@@ -2119,10 +2139,8 @@ mod tests {
             .expect_err("recovered workspace should remain managed");
         assert!(matches!(error, WorkspaceError::AlreadyManaged(_)));
         assert_eq!(
-            crate::storage::find_operation(&mut connection, &context.operation_id)
-                .unwrap()
-                .state,
-            OperationState::Succeeded
+            crate::storage::operation_state(&mut connection, &context.operation_id).unwrap(),
+            Some(OperationState::Succeeded)
         );
         assert!(
             crate::storage::list_events_for_operation(&mut connection, &context.operation_id)

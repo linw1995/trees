@@ -1,3 +1,4 @@
-# The migration builds the normalized workspace reuse schema in one step and
-# temporarily disables SQLite foreign keys while replacing referenced tables.
+# The migration builds the normalized workspace reuse schema and separates
+# immutable operation facts from mutable operation lease state.
+# SQLite foreign keys are temporarily disabled while referenced tables change.
 run_in_transaction = false

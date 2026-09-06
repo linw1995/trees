@@ -3,7 +3,7 @@ use std::fmt;
 use diesel::sqlite::SqliteConnection;
 
 use crate::domain::{
-    JsonDocument, OperationId, OperationState, RepoWorktreeState, Timestamp, WorkspaceId,
+    JsonDocument, LeaseId, OperationId, OperationState, RepoWorktreeState, Timestamp, WorkspaceId,
     WorkspaceState,
 };
 use crate::git::GitError;
@@ -78,6 +78,7 @@ pub fn reconcile_workspace(
                 TransitionMetadata {
                     event_type: "external_worktree_changed".to_owned(),
                     source: "reconciliation".to_owned(),
+                    pending_step: None,
                     details_json: details,
                     error_json,
                 },
@@ -250,23 +251,25 @@ pub fn recover_expired_operation(
     connection: &mut SqliteConnection,
     workspace_id: &WorkspaceId,
 ) -> Result<RecoveryOutcome, ReconciliationError> {
-    let operation = match find_running_operation(connection, workspace_id)
+    let running_operation = match find_running_operation(connection, workspace_id)
         .map_err(ReconciliationError::Database)?
     {
         Some(operation) => operation,
         None => return Ok(RecoveryOutcome::NoRunningOperation),
     };
-    if !operation.lease_expires_at.has_expired() {
+    let operation = running_operation.operation;
+    let lease = running_operation.lease;
+    if !lease.lease_expires_at.has_expired() {
         return Ok(RecoveryOutcome::LeaseActive);
     }
-    let recovery_owner = format!("recovery:process:{}", std::process::id());
+    let recovery_lease_id = LeaseId::new();
     let recovery_lease = Timestamp::after_seconds(300);
     if !claim_expired_operation(
         connection,
         &operation.id,
-        &operation.owner_id,
-        &operation.lease_expires_at,
-        &recovery_owner,
+        &lease.lease_id,
+        &lease.lease_expires_at,
+        &recovery_lease_id,
         &recovery_lease,
     )
     .map_err(ReconciliationError::Database)?
@@ -297,6 +300,7 @@ pub fn recover_expired_operation(
             &operation,
             &repositories,
             &observations,
+            &recovery_lease_id,
         );
     }
 
@@ -307,6 +311,7 @@ pub fn recover_expired_operation(
         &operation,
         &repositories,
         &observations,
+        &recovery_lease_id,
     )
 }
 
@@ -412,6 +417,7 @@ fn recover_completed_operation(
     operation: &OperationRow,
     repositories: &[RepoWorktreeRow],
     observations: &[RecoveryObservation],
+    lease_id: &LeaseId,
 ) -> Result<RecoveryOutcome, ReconciliationError> {
     for (repository, observation) in repositories.iter().zip(observations) {
         let head = observation
@@ -432,7 +438,7 @@ fn recover_completed_operation(
             .map_err(ReconciliationError::Database)?;
         }
     }
-    finalize_creation(connection, workspace_id, &operation.id)
+    finalize_creation(connection, workspace_id, &operation.id, lease_id)
         .map_err(ReconciliationError::Database)?;
     append_recovery_event(
         connection,
@@ -450,6 +456,7 @@ fn recover_incomplete_operation(
     operation: &OperationRow,
     repositories: &[RepoWorktreeRow],
     observations: &[RecoveryObservation],
+    lease_id: &LeaseId,
 ) -> Result<RecoveryOutcome, ReconciliationError> {
     let worktree_error_json = json_error("operation did not complete before its lease expired");
     let mut errors = observations
@@ -492,10 +499,11 @@ fn recover_incomplete_operation(
     if let Err(error) = record_operation_transition(
         connection,
         &operation.id,
+        lease_id,
         operation_state,
-        "recovery rollback complete",
-        None,
-        TransitionMetadata::new("operation_recovered", "recovery").with_error(error_json.clone()),
+        TransitionMetadata::new("operation_recovered", "recovery")
+            .with_pending_step("recovery rollback complete")
+            .with_error(error_json.clone()),
     ) {
         errors.push(error.to_string());
     }
@@ -507,13 +515,6 @@ fn recover_incomplete_operation(
         TransitionMetadata::new("workspace_recovery_failed", "recovery").with_error(error_json),
     )
     .map_err(ReconciliationError::Database)?;
-    append_recovery_event(
-        connection,
-        &operation.id,
-        operation_state,
-        "operation_recovered",
-    )?;
-
     if errors.is_empty() {
         Ok(RecoveryOutcome::RolledBack)
     } else {
@@ -722,8 +723,8 @@ mod tests {
         connection: &mut diesel::sqlite::SqliteConnection,
         operation_id: &OperationId,
     ) {
-        diesel::update(crate::schema::operations::table.find(operation_id))
-            .set(crate::schema::operations::lease_expires_at.eq(Timestamp::now()))
+        diesel::update(crate::schema::operation_leases::table.find(operation_id))
+            .set(crate::schema::operation_leases::lease_expires_at.eq(Timestamp::now()))
             .execute(connection)
             .expect("operation lease should be updated");
     }
@@ -755,6 +756,7 @@ mod tests {
             &mut connection,
             &context.workspace_id,
             &context.operation_id,
+            &context.lease_id,
         )
         .expect("creation should finalize");
 
@@ -812,6 +814,7 @@ mod tests {
             &mut connection,
             &context.workspace_id,
             &context.operation_id,
+            &context.lease_id,
         )
         .expect("creation should finalize");
 
@@ -868,6 +871,7 @@ mod tests {
             &mut connection,
             &context.workspace_id,
             &context.operation_id,
+            &context.lease_id,
         )
         .expect("creation should finalize");
 
@@ -913,6 +917,7 @@ mod tests {
             &mut connection,
             &context.workspace_id,
             &context.operation_id,
+            &context.lease_id,
         )
         .expect("creation should finalize");
 
@@ -954,6 +959,7 @@ mod tests {
             &mut connection,
             &context.workspace_id,
             &context.operation_id,
+            &context.lease_id,
         )
         .expect("creation should finalize");
 
@@ -999,6 +1005,7 @@ mod tests {
             &mut connection,
             &context.workspace_id,
             &context.operation_id,
+            &context.lease_id,
         )
         .expect("creation should finalize");
 
@@ -1048,10 +1055,8 @@ mod tests {
             RecoveryOutcome::Succeeded
         );
         assert_eq!(
-            crate::storage::find_operation(&mut connection, &context.operation_id)
-                .unwrap()
-                .state,
-            OperationState::Succeeded
+            crate::storage::operation_state(&mut connection, &context.operation_id).unwrap(),
+            Some(OperationState::Succeeded)
         );
         assert!(
             crate::storage::list_events_for_operation(&mut connection, &context.operation_id)
@@ -1087,10 +1092,8 @@ mod tests {
         );
         assert!(!context.plan.workspace_path.as_path().exists());
         assert_eq!(
-            crate::storage::find_operation(&mut connection, &context.operation_id)
-                .unwrap()
-                .state,
-            OperationState::RolledBack
+            crate::storage::operation_state(&mut connection, &context.operation_id).unwrap(),
+            Some(OperationState::RolledBack)
         );
         assert!(
             crate::storage::list_repo_worktrees(&mut connection, &context.workspace_id)
@@ -1131,10 +1134,8 @@ mod tests {
         );
         assert!(worktree_path.join("README").exists());
         assert_eq!(
-            crate::storage::find_operation(&mut connection, &context.operation_id)
-                .unwrap()
-                .state,
-            OperationState::Failed
+            crate::storage::operation_state(&mut connection, &context.operation_id).unwrap(),
+            Some(OperationState::Failed)
         );
 
         drop(connection);
@@ -1160,10 +1161,8 @@ mod tests {
         );
         assert!(context.plan.workspace_path.as_path().exists());
         assert_eq!(
-            crate::storage::find_operation(&mut connection, &context.operation_id)
-                .unwrap()
-                .state,
-            OperationState::Failed
+            crate::storage::operation_state(&mut connection, &context.operation_id).unwrap(),
+            Some(OperationState::Failed)
         );
 
         drop(connection);

@@ -52,14 +52,17 @@ diesel::table! {
         id -> Text,
         workspace_id -> Text,
         kind -> Text,
-        state -> Text,
-        owner_id -> Text,
-        lease_expires_at -> Text,
         started_at -> Text,
-        finished_at -> Nullable<Text>,
-        pending_step -> Text,
         intent_json -> Text,
-        error_json -> Nullable<Text>,
+    }
+}
+
+diesel::table! {
+    operation_leases (operation_id) {
+        operation_id -> Text,
+        workspace_id -> Text,
+        lease_id -> Text,
+        lease_expires_at -> Text,
     }
 }
 
@@ -91,6 +94,8 @@ diesel::table! {
 }
 
 diesel::joinable!(lifecycle_events -> operations (operation_id));
+diesel::joinable!(operation_leases -> operations (operation_id));
+diesel::joinable!(operation_leases -> workspaces (workspace_id));
 diesel::joinable!(operations -> workspaces (workspace_id));
 diesel::joinable!(repo_worktrees -> workspaces (workspace_id));
 diesel::joinable!(repo_worktrees -> origin_repositories (origin_repository_id));
@@ -103,6 +108,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     lifecycle_events,
     origin_repositories,
     operations,
+    operation_leases,
     repo_worktrees,
     workspace_claims,
     workspace_pool_repositories,

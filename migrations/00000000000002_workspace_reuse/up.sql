@@ -128,7 +128,111 @@ CREATE TABLE workspace_claims (
     claimed_at TEXT NOT NULL
 );
 
-ALTER TABLE operations
-    DROP COLUMN last_heartbeat_at;
+CREATE TABLE operations_legacy AS
+SELECT
+    id,
+    workspace_id,
+    kind,
+    state,
+    lease_expires_at,
+    started_at,
+    finished_at,
+    pending_step,
+    intent_json,
+    error_json
+FROM operations;
+
+CREATE TABLE operations_v2 (
+    id TEXT NOT NULL PRIMARY KEY CHECK (length(id) = 36),
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+    kind TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    intent_json TEXT NOT NULL CHECK (json_valid(intent_json))
+);
+
+INSERT INTO operations_v2 (
+    id,
+    workspace_id,
+    kind,
+    started_at,
+    intent_json
+)
+SELECT
+    id,
+    workspace_id,
+    kind,
+    started_at,
+    intent_json
+FROM operations_legacy;
+
+INSERT INTO lifecycle_events (
+    event_id,
+    operation_id,
+    entity_type,
+    entity_id,
+    event_type,
+    source,
+    occurred_at,
+    previous_state,
+    current_state,
+    details_json,
+    error_json
+)
+SELECT
+    legacy.id,
+    legacy.id,
+    'operation',
+    legacy.id,
+    CASE
+        WHEN legacy.state = 'running' THEN 'operation_started'
+        ELSE 'operation_migrated'
+    END,
+    'migration',
+    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+    NULL,
+    legacy.state,
+    json_object('pending_step', legacy.pending_step),
+    legacy.error_json
+FROM operations_legacy AS legacy
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM lifecycle_events AS event
+    WHERE event.operation_id = legacy.id
+      AND event.entity_type = 'operation'
+)
+  AND NOT EXISTS (
+    SELECT 1
+    FROM lifecycle_events AS event
+    WHERE event.event_id = legacy.id
+);
+
+DROP TABLE operations;
+ALTER TABLE operations_v2 RENAME TO operations;
+
+CREATE TABLE operation_leases (
+    operation_id TEXT NOT NULL PRIMARY KEY REFERENCES operations(id),
+    workspace_id TEXT NOT NULL UNIQUE REFERENCES workspaces(id),
+    lease_id TEXT NOT NULL CHECK (length(lease_id) = 36),
+    lease_expires_at TEXT NOT NULL
+);
+
+INSERT INTO operation_leases (
+    operation_id,
+    workspace_id,
+    lease_id,
+    lease_expires_at
+)
+SELECT
+    id,
+    workspace_id,
+    id,
+    lease_expires_at
+FROM operations_legacy
+WHERE state = 'running';
+
+DROP TABLE operations_legacy;
+
+CREATE INDEX operation_leases_expiry_idx
+    ON operation_leases (lease_expires_at);
 
 PRAGMA foreign_keys = ON;

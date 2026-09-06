@@ -7,13 +7,13 @@ use diesel::sqlite::Sqlite;
 
 use crate::claim::WorkspaceClaim;
 use crate::domain::{
-    CanonicalPath, ClaimId, EventId, JsonDocument, OperationId, OperationState, OriginRepositoryId,
-    PoolId, RepoWorktreeId, RepoWorktreeState, Timestamp, WorkspaceId, WorkspaceManagementMode,
-    WorkspaceState,
+    CanonicalPath, ClaimId, EventId, JsonDocument, LeaseId, OperationId, OperationState,
+    OriginRepositoryId, PoolId, RepoWorktreeId, RepoWorktreeState, Timestamp, WorkspaceId,
+    WorkspaceManagementMode, WorkspaceState,
 };
 use crate::schema::{
-    lifecycle_events, operations, origin_repositories, repo_worktrees, workspace_claims,
-    workspace_pool_repositories, workspace_pools, workspaces,
+    lifecycle_events, operation_leases, operations, origin_repositories, repo_worktrees,
+    workspace_claims, workspace_pool_repositories, workspace_pools, workspaces,
 };
 
 macro_rules! impl_text_codec {
@@ -41,6 +41,7 @@ impl_text_codec!(PoolId);
 impl_text_codec!(OriginRepositoryId);
 impl_text_codec!(RepoWorktreeId);
 impl_text_codec!(OperationId);
+impl_text_codec!(LeaseId);
 impl_text_codec!(EventId);
 impl_text_codec!(ClaimId);
 impl_text_codec!(WorkspaceState);
@@ -212,21 +213,16 @@ pub struct NewRepoWorktree {
     pub last_observed_at: Timestamp,
 }
 
-#[derive(Debug, Queryable, Selectable, Identifiable)]
+/// An immutable operation fact; mutable lease and state data live elsewhere.
+#[derive(Debug, Clone, Queryable, Selectable, Identifiable)]
 #[diesel(table_name = operations)]
 #[diesel(check_for_backend(Sqlite))]
 pub struct OperationRow {
     pub id: OperationId,
     pub workspace_id: WorkspaceId,
     pub kind: String,
-    pub state: OperationState,
-    pub owner_id: String,
-    pub lease_expires_at: Timestamp,
     pub started_at: Timestamp,
-    pub finished_at: Option<Timestamp>,
-    pub pending_step: String,
     pub intent_json: JsonDocument,
-    pub error_json: Option<JsonDocument>,
 }
 
 #[derive(Debug, Insertable)]
@@ -235,14 +231,36 @@ pub struct NewOperation {
     pub id: OperationId,
     pub workspace_id: WorkspaceId,
     pub kind: String,
-    pub state: OperationState,
-    pub owner_id: String,
-    pub lease_expires_at: Timestamp,
     pub started_at: Timestamp,
-    pub finished_at: Option<Timestamp>,
-    pub pending_step: String,
     pub intent_json: JsonDocument,
-    pub error_json: Option<JsonDocument>,
+}
+
+/// The current lease for an in-flight operation.
+#[derive(Debug, Clone, Queryable, Selectable, Identifiable)]
+#[diesel(table_name = operation_leases)]
+#[diesel(primary_key(operation_id))]
+#[diesel(check_for_backend(Sqlite))]
+pub struct OperationLeaseRow {
+    pub operation_id: OperationId,
+    pub workspace_id: WorkspaceId,
+    pub lease_id: LeaseId,
+    pub lease_expires_at: Timestamp,
+}
+
+#[derive(Debug, Insertable)]
+#[diesel(table_name = operation_leases)]
+pub struct NewOperationLease {
+    pub operation_id: OperationId,
+    pub workspace_id: WorkspaceId,
+    pub lease_id: LeaseId,
+    pub lease_expires_at: Timestamp,
+}
+
+/// The operation fact and current lease used by recovery checks.
+#[derive(Debug, Clone)]
+pub struct RunningOperation {
+    pub operation: OperationRow,
+    pub lease: OperationLeaseRow,
 }
 
 #[derive(Debug, Clone)]
@@ -250,7 +268,7 @@ pub struct OperationIntent {
     pub id: OperationId,
     pub workspace_id: WorkspaceId,
     pub kind: String,
-    pub owner_id: String,
+    pub lease_id: LeaseId,
     pub lease_expires_at: Timestamp,
     pub pending_step: String,
     pub intent_json: JsonDocument,
@@ -261,7 +279,6 @@ impl OperationIntent {
     pub fn new(
         workspace_id: WorkspaceId,
         kind: impl Into<String>,
-        owner_id: impl Into<String>,
         lease_expires_at: Timestamp,
         pending_step: impl Into<String>,
         intent_json: JsonDocument,
@@ -271,7 +288,7 @@ impl OperationIntent {
             id: OperationId::new(),
             workspace_id,
             kind: kind.into(),
-            owner_id: owner_id.into(),
+            lease_id: LeaseId::new(),
             lease_expires_at,
             pending_step: pending_step.into(),
             intent_json,
