@@ -117,6 +117,75 @@ fn combined_feature_migration_preserves_legacy_workspace() {
 }
 
 #[test]
+fn combined_feature_migration_preserves_legacy_operation_lease() {
+    let path = database_path();
+    let mut connection = database::connect(&path).expect("database should open");
+    connection
+        .revert_last_migration(database::MIGRATIONS)
+        .expect("feature migration should revert");
+
+    let workspace_id = WorkspaceId::new();
+    let operation_id = trees::domain::OperationId::new();
+    let workspace_path = CanonicalPath::resolve(".").expect("workspace path should resolve");
+    let started_at = Timestamp::now();
+    let lease_expires_at = Timestamp::after_seconds(300);
+
+    diesel::sql_query(
+        "INSERT INTO workspaces \
+         (id, canonical_path, state, created_at, updated_at, last_reconciled_at) \
+         VALUES (?, ?, 'creating', ?, ?, NULL)",
+    )
+    .bind::<diesel::sql_types::Text, _>(workspace_id.to_string())
+    .bind::<diesel::sql_types::Text, _>(workspace_path.to_string())
+    .bind::<diesel::sql_types::Text, _>(started_at.to_string())
+    .bind::<diesel::sql_types::Text, _>(started_at.to_string())
+    .execute(&mut connection)
+    .expect("legacy workspace should be inserted");
+    diesel::sql_query(
+        "INSERT INTO operations \
+         (id, workspace_id, kind, state, owner_id, lease_expires_at, last_heartbeat_at, \
+          started_at, finished_at, pending_step, intent_json, error_json) \
+         VALUES (?, ?, 'create', 'running', ?, ?, ?, ?, NULL, ?, ?, NULL)",
+    )
+    .bind::<diesel::sql_types::Text, _>(operation_id.to_string())
+    .bind::<diesel::sql_types::Text, _>(workspace_id.to_string())
+    .bind::<diesel::sql_types::Text, _>("legacy-process")
+    .bind::<diesel::sql_types::Text, _>(lease_expires_at.to_string())
+    .bind::<diesel::sql_types::Text, _>(started_at.to_string())
+    .bind::<diesel::sql_types::Text, _>(started_at.to_string())
+    .bind::<diesel::sql_types::Text, _>("prepare worktrees")
+    .bind::<diesel::sql_types::Text, _>(r#"{"legacy":true}"#)
+    .execute(&mut connection)
+    .expect("legacy operation should be inserted");
+
+    connection
+        .run_pending_migrations(database::MIGRATIONS)
+        .expect("feature migration should apply");
+
+    let operation = find_operation(&mut connection, &operation_id)
+        .expect("migrated operation fact should be queryable");
+    assert_eq!(operation.id, operation_id);
+    assert_eq!(operation.workspace_id, workspace_id);
+    assert_eq!(operation.kind, "create");
+    assert_eq!(operation.started_at, started_at);
+    assert_eq!(
+        operation_state(&mut connection, &operation_id)
+            .expect("migrated operation state should be queryable"),
+        Some(OperationState::Running)
+    );
+    let lease = trees::storage::find_operation_lease(&mut connection, &operation_id)
+        .expect("migrated operation lease should be queryable")
+        .expect("running legacy operation should retain its lease");
+    assert_eq!(lease.operation_id, operation_id);
+    assert_eq!(lease.workspace_id, workspace_id);
+    assert_eq!(lease.lease_id.to_string(), operation_id.to_string());
+    assert_eq!(lease.lease_expires_at, lease_expires_at);
+
+    drop(connection);
+    fs::remove_file(path).expect("temporary database should be removable");
+}
+
+#[test]
 fn migration_preserves_operation_and_event_rows_without_rebuilding_them() {
     let path = database_path();
     let mut connection = database::connect(&path).expect("database should open");
