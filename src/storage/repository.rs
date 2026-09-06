@@ -213,18 +213,22 @@ pub fn ensure_workspace_pool(
         return Ok(pool);
     }
 
-    let value = NewWorkspacePool {
-        id: PoolId::new(),
-        hash_key: repository_set.hash_key().to_owned(),
-        repository_ids: repository_set.repository_ids().to_owned(),
-    };
-    match insert_workspace_pool(connection, &value) {
-        Ok(pool) => Ok(pool),
-        Err(Error::DatabaseError(DatabaseErrorKind::UniqueViolation, _)) => {
-            find_workspace_pool(connection, repository_set)?.ok_or(Error::NotFound)
+    // Serialize only the lookup-and-create window because repository_ids is a
+    // collision-check payload rather than a database uniqueness constraint.
+    connection.immediate_transaction(|connection| {
+        if let Some(pool) = find_workspace_pool(connection, repository_set)? {
+            return Ok(pool);
         }
-        Err(error) => Err(error),
-    }
+
+        insert_workspace_pool(
+            connection,
+            &NewWorkspacePool {
+                id: PoolId::new(),
+                hash_key: repository_set.hash_key().to_owned(),
+                repository_ids: repository_set.repository_ids().to_owned(),
+            },
+        )
+    })
 }
 
 pub fn insert_workspace_pool_repositories(
@@ -1425,7 +1429,7 @@ mod tests {
     }
 
     #[test]
-    fn pool_lookup_verifies_repository_ids_after_hash_filtering() {
+    fn pool_lookup_verifies_repository_ids_without_a_unique_payload_constraint() {
         let database_path =
             std::env::temp_dir().join(format!("trees-{}.sqlite", WorkspaceId::new()));
         let mut connection = database::connect(&database_path).expect("database should open");
@@ -1469,6 +1473,16 @@ mod tests {
                 .id,
             second_pool.id
         );
+        let duplicate_payload_pool = insert_workspace_pool(
+            &mut connection,
+            &NewWorkspacePool {
+                id: PoolId::new(),
+                hash_key: first.hash_key().to_owned(),
+                repository_ids: first.repository_ids().to_owned(),
+            },
+        )
+        .expect("duplicate payload should not be rejected by the schema");
+        assert_ne!(duplicate_payload_pool.id, first_pool.id);
         drop(connection);
         fs::remove_file(database_path).expect("temporary database should be removable");
     }

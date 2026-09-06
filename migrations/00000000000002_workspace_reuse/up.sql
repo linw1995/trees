@@ -17,8 +17,7 @@ CREATE TABLE workspace_pools (
     repository_ids TEXT NOT NULL CHECK (
         json_valid(repository_ids)
         AND json_type(repository_ids) = 'array'
-    ),
-    UNIQUE (repository_ids)
+    )
 );
 
 CREATE INDEX workspace_pools_hash_idx

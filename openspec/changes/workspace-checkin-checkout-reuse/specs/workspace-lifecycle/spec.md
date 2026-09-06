@@ -13,6 +13,8 @@ independent of the derived slot root. A manual workspace MAY leave the pool ID
 null. The pool registry SHALL maintain explicit relations to origin
 repositories, and the source path SHALL be stored on the origin repository
 record rather than copied into each pool relation or worktree row. The
+`repository_ids` payload SHALL be used for exact collision verification and
+SHALL NOT be indexed or constrained as a unique key. The
 management mode and pool ID SHALL be independent from workspace health and
 active workspace claims. Existing legacy explicit-path workspace rows SHALL be
 filled in as `manual` when this schema is introduced.

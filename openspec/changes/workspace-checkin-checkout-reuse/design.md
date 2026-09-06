@@ -81,7 +81,8 @@ slots:
 - `workspace_pools.hash_key`: a non-unique BLAKE3 lookup value derived from the
   sorted origin repository IDs; it is used only by the lookup index;
 - `workspace_pools.repository_ids`: the canonical sorted origin repository ID
-  set used for exact matching after the hash lookup;
+  set used for exact matching after the hash lookup; it is a collision-check
+  payload, not a unique key or index;
 - `workspace_pool_repositories`: the many-to-many relation between pools and
   origin repositories;
 - `origin_repositories`: one row per Git common-directory identity, including
@@ -89,8 +90,10 @@ slots:
 
 The hash is intentionally not unique. A hash collision creates separate pool
 rows and the exact `repository_ids` comparison selects the correct one. The
-exact repository ID set is unique for a logical pool, independent of where its
-workspace slots are stored.
+pool payload is not constrained as a unique key. A short immediate transaction
+rechecks the exact payload before creating a missing pool, so concurrent
+callers do not create duplicate logical pools without making the payload an
+index.
 
 The workspace claim table stores the current usage claim only:
 
