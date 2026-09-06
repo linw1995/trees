@@ -19,9 +19,6 @@ FROM workspace_leases;
 
 DROP TABLE workspace_leases;
 
-CREATE INDEX workspace_claims_workspace_idx
-    ON workspace_claims (workspace_id);
-
 ALTER TABLE workspaces
     RENAME COLUMN last_checked_in_at TO last_released_at;
 
