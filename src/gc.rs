@@ -13,8 +13,8 @@ use crate::reconciliation;
 use crate::storage::{
     begin_operation, find_running_operation, find_workspace, find_workspace_claim,
     list_automatic_workspaces, list_repo_worktrees, record_workspace_gc_failure,
-    record_workspace_gc_skipped, record_workspace_reclaimed, OperationIntent, OperationIntentError,
-    RepoWorktreeRow,
+    record_workspace_gc_skipped, record_workspace_reclaimed, renew_operation_lease,
+    OperationIntent, OperationIntentError, RepoWorktreeRow,
 };
 use crate::validation;
 
@@ -318,9 +318,12 @@ pub fn execute(
         };
         let workspace_id = candidate.workspace.id;
         let details_json = gc_details(&candidate.workspace.canonical_path, &scan, force, None);
-        if let Err(error) =
-            reconciliation::reconcile_workspace(connection, &workspace_id, &operation.id)
-        {
+        if let Err(error) = reconciliation::reconcile_workspace_with_lease(
+            connection,
+            &workspace_id,
+            &operation.id,
+            &lease_id,
+        ) {
             let error_text = error.to_string();
             finish_gc_failure(
                 connection,
@@ -392,9 +395,16 @@ pub fn execute(
                 continue;
             }
         };
-        if let Err(error) = remove_physical_workspace(&removal_plan, force) {
+        if let Err(error) = remove_physical_workspace(&removal_plan, force, || {
+            renew_gc_lease(connection, &lease_id)
+        }) {
             let error_text = error.to_string();
-            let _ = reconciliation::reconcile_workspace(connection, &workspace_id, &operation.id);
+            let _ = reconciliation::reconcile_workspace_with_lease(
+                connection,
+                &workspace_id,
+                &operation.id,
+                &lease_id,
+            );
             finish_gc_failure(
                 connection,
                 &operation.id,
@@ -682,24 +692,44 @@ fn prepare_removal(
     })
 }
 
-fn remove_physical_workspace(plan: &RemovalPlan, force: bool) -> Result<(), GcPhysicalError> {
+fn remove_physical_workspace<F>(
+    plan: &RemovalPlan,
+    force: bool,
+    mut heartbeat: F,
+) -> Result<(), GcPhysicalError>
+where
+    F: FnMut() -> Result<(), GcPhysicalError>,
+{
     for worktree in &plan.worktrees {
+        heartbeat()?;
         if worktree.remove_from_git {
+            let mut git_heartbeat =
+                || heartbeat().map_err(|error| git::GitError::Heartbeat(error.to_string()));
             if force {
-                git::remove_worktree(&worktree.repository, &worktree.path)
-                    .map_err(GcPhysicalError::Git)?;
+                git::remove_worktree_with_heartbeat(
+                    &worktree.repository,
+                    &worktree.path,
+                    &mut git_heartbeat,
+                )
+                .map_err(GcPhysicalError::Git)?;
             } else {
-                git::remove_clean_worktree(&worktree.repository, &worktree.path)
-                    .map_err(GcPhysicalError::Git)?;
+                git::remove_clean_worktree_with_heartbeat(
+                    &worktree.repository,
+                    &worktree.path,
+                    &mut git_heartbeat,
+                )
+                .map_err(GcPhysicalError::Git)?;
             }
         } else if worktree.path.exists() {
-            remove_path(&worktree.path)?;
+            remove_path_with_heartbeat(&worktree.path, &mut heartbeat)?;
         }
     }
     for entry in &plan.extra_entries {
-        remove_path(entry)?;
+        heartbeat()?;
+        remove_path_with_heartbeat(entry, &mut heartbeat)?;
     }
     if plan.workspace_path.exists() {
+        heartbeat()?;
         fs::remove_dir(&plan.workspace_path).map_err(|source| GcPhysicalError::Io {
             path: plan.workspace_path.clone(),
             source,
@@ -708,13 +738,27 @@ fn remove_physical_workspace(plan: &RemovalPlan, force: bool) -> Result<(), GcPh
     Ok(())
 }
 
-fn remove_path(path: &Path) -> Result<(), GcPhysicalError> {
+fn remove_path_with_heartbeat<F>(path: &Path, heartbeat: &mut F) -> Result<(), GcPhysicalError>
+where
+    F: FnMut() -> Result<(), GcPhysicalError>,
+{
+    heartbeat()?;
     let metadata = fs::symlink_metadata(path).map_err(|source| GcPhysicalError::Io {
         path: path.to_owned(),
         source,
     })?;
     if metadata.file_type().is_dir() {
-        fs::remove_dir_all(path).map_err(|source| GcPhysicalError::Io {
+        for entry in fs::read_dir(path).map_err(|source| GcPhysicalError::Io {
+            path: path.to_owned(),
+            source,
+        })? {
+            let entry = entry.map_err(|source| GcPhysicalError::Io {
+                path: path.to_owned(),
+                source,
+            })?;
+            remove_path_with_heartbeat(&entry.path(), heartbeat)?;
+        }
+        fs::remove_dir(path).map_err(|source| GcPhysicalError::Io {
             path: path.to_owned(),
             source,
         })?;
@@ -727,9 +771,24 @@ fn remove_path(path: &Path) -> Result<(), GcPhysicalError> {
     Ok(())
 }
 
+fn renew_gc_lease(
+    connection: &mut SqliteConnection,
+    lease_id: &crate::domain::LeaseId,
+) -> Result<(), GcPhysicalError> {
+    match renew_operation_lease(connection, lease_id)
+        .map_err(|error| GcPhysicalError::Lease(error.to_string()))?
+    {
+        true => Ok(()),
+        false => Err(GcPhysicalError::Lease(
+            "operation lease is no longer owned".to_owned(),
+        )),
+    }
+}
+
 #[derive(Debug)]
 enum GcPhysicalError {
     Git(crate::git::GitError),
+    Lease(String),
     Io {
         path: PathBuf,
         source: std::io::Error,
@@ -740,6 +799,7 @@ impl fmt::Display for GcPhysicalError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Git(error) => error.fmt(formatter),
+            Self::Lease(error) => write!(formatter, "GC operation lease renewal failed: {error}"),
             Self::Io { path, source } => {
                 write!(
                     formatter,

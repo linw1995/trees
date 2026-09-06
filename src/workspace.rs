@@ -237,10 +237,11 @@ where
     );
     let lease_id = intent.lease_id;
     let operation = begin_operation(connection, &intent).map_err(map_operation_error)?;
-    let boundary = match reconciliation::reconcile_workspace_for_access(
+    let boundary = match reconciliation::reconcile_workspace_for_access_with_lease(
         connection,
         &candidate.id,
         &operation.id,
+        &lease_id,
     ) {
         Ok(boundary) => boundary,
         Err(error) => {
@@ -286,10 +287,11 @@ where
 
     post_acquire();
 
-    let final_boundary = match reconciliation::reconcile_workspace_for_access(
+    let final_boundary = match reconciliation::reconcile_workspace_for_access_with_lease(
         connection,
         &candidate.id,
         &operation.id,
+        &lease_id,
     ) {
         Ok(boundary) => boundary,
         Err(error) => {
@@ -434,10 +436,11 @@ pub fn release_automatic_workspace(
     );
     let lease_id = intent.lease_id;
     let operation = begin_operation(connection, &intent).map_err(map_operation_error)?;
-    let boundary = match reconciliation::reconcile_workspace_for_access(
+    let boundary = match reconciliation::reconcile_workspace_for_access_with_lease(
         connection,
         &workspace.id,
         &operation.id,
+        &lease_id,
     ) {
         Ok(boundary) => boundary,
         Err(error) => {
@@ -592,20 +595,22 @@ fn provision_automatic_new(
         intent_json,
     )?;
 
-    if let Err(error) = reconciliation::reconcile_workspace(
+    if let Err(error) = reconciliation::reconcile_workspace_with_lease(
         connection,
         &context.workspace_id,
         &context.operation_id,
+        &context.lease_id,
     ) {
         let primary = WorkspaceError::Reconciliation(error);
         return fail_creation(connection, &context, &[], None, Some(&claim), primary)
             .map(|_| unreachable!("automatic provisioning rollback always fails the operation"));
     }
     execute_creation_with_claim(connection, &context, Some(&claim))?;
-    let summary = match reconciliation::reconcile_workspace(
+    let summary = match reconciliation::reconcile_workspace_with_lease(
         connection,
         &context.workspace_id,
         &context.operation_id,
+        &context.lease_id,
     ) {
         Ok(summary) => summary,
         Err(error) => {
@@ -952,11 +957,21 @@ pub fn create_with_connection(
 ) -> Result<CreationResult, WorkspaceError> {
     reconcile_before_creation(connection, &plan.workspace_path)?;
     let context = initialize_creation(connection, plan)?;
-    reconciliation::reconcile_workspace(connection, &context.workspace_id, &context.operation_id)
-        .map_err(WorkspaceError::Reconciliation)?;
+    reconciliation::reconcile_workspace_with_lease(
+        connection,
+        &context.workspace_id,
+        &context.operation_id,
+        &context.lease_id,
+    )
+    .map_err(WorkspaceError::Reconciliation)?;
     execute_creation(connection, &context)?;
-    reconciliation::reconcile_workspace(connection, &context.workspace_id, &context.operation_id)
-        .map_err(WorkspaceError::Reconciliation)?;
+    reconciliation::reconcile_workspace_with_lease(
+        connection,
+        &context.workspace_id,
+        &context.operation_id,
+        &context.lease_id,
+    )
+    .map_err(WorkspaceError::Reconciliation)?;
     finalize_persisted_creation(
         connection,
         &context.workspace_id,
@@ -1042,8 +1057,13 @@ fn execute_repository_step(
             ),
     )
     .map_err(WorkspaceError::Database)?;
-    reconciliation::reconcile_workspace(connection, &context.workspace_id, &context.operation_id)
-        .map_err(WorkspaceError::Reconciliation)?;
+    reconciliation::reconcile_workspace_with_lease(
+        connection,
+        &context.workspace_id,
+        &context.operation_id,
+        &context.lease_id,
+    )
+    .map_err(WorkspaceError::Reconciliation)?;
     Ok(())
 }
 
@@ -1083,9 +1103,16 @@ fn rollback_creation(
     for repository in repositories {
         match git::find_worktree(&repository.plan.source_path, &repository.plan.worktree_path) {
             Ok(_) => {
-                if let Err(error) = git::remove_worktree(
+                if let Err(error) = git::remove_worktree_with_heartbeat(
                     &repository.plan.source_path,
                     &repository.plan.worktree_path,
+                    || match crate::storage::renew_operation_lease(connection, &context.lease_id) {
+                        Ok(true) => Ok(()),
+                        Ok(false) => Err(GitError::Heartbeat(
+                            "operation lease is no longer owned".to_owned(),
+                        )),
+                        Err(error) => Err(GitError::Heartbeat(error.to_string())),
+                    },
                 ) {
                     errors.push(error.to_string());
                 }
@@ -1107,8 +1134,14 @@ fn rollback_creation(
     }
 
     if context.plan.workspace_path.as_path().exists() {
-        if let Err(error) = fs::remove_dir(&context.plan.workspace_path) {
-            errors.push(error.to_string());
+        match crate::storage::renew_operation_lease(connection, &context.lease_id) {
+            Ok(true) => {
+                if let Err(error) = fs::remove_dir(&context.plan.workspace_path) {
+                    errors.push(error.to_string());
+                }
+            }
+            Ok(false) => errors.push("operation lease is no longer owned".to_owned()),
+            Err(error) => errors.push(error.to_string()),
         }
     }
 

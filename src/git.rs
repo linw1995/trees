@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -217,6 +217,27 @@ pub fn remove_worktree(repository: &CanonicalPath, worktree_path: &Path) -> Resu
     Ok(())
 }
 
+pub fn remove_worktree_with_heartbeat<F>(
+    repository: &CanonicalPath,
+    worktree_path: &Path,
+    heartbeat: F,
+) -> Result<(), GitError>
+where
+    F: FnMut() -> Result<(), GitError>,
+{
+    run_git_with_heartbeat(
+        repository.as_path(),
+        &[
+            arg("worktree"),
+            arg("remove"),
+            arg("--force"),
+            worktree_path.as_os_str().to_owned(),
+        ],
+        heartbeat,
+    )?;
+    Ok(())
+}
+
 pub fn remove_clean_worktree(
     repository: &CanonicalPath,
     worktree_path: &Path,
@@ -230,6 +251,80 @@ pub fn remove_clean_worktree(
         ],
     )?;
     Ok(())
+}
+
+pub fn remove_clean_worktree_with_heartbeat<F>(
+    repository: &CanonicalPath,
+    worktree_path: &Path,
+    heartbeat: F,
+) -> Result<(), GitError>
+where
+    F: FnMut() -> Result<(), GitError>,
+{
+    run_git_with_heartbeat(
+        repository.as_path(),
+        &[
+            arg("worktree"),
+            arg("remove"),
+            worktree_path.as_os_str().to_owned(),
+        ],
+        heartbeat,
+    )?;
+    Ok(())
+}
+
+pub fn inspect_repository_identity_with_heartbeat<F>(
+    repository: &CanonicalPath,
+    heartbeat: F,
+) -> Result<CanonicalPath, GitError>
+where
+    F: FnMut() -> Result<(), GitError>,
+{
+    inspect_common_directory_with_heartbeat(repository.as_path(), heartbeat)
+}
+
+pub fn inspect_worktree_identity_with_heartbeat<F>(
+    worktree_path: &Path,
+    heartbeat: F,
+) -> Result<CanonicalPath, GitError>
+where
+    F: FnMut() -> Result<(), GitError>,
+{
+    inspect_common_directory_with_heartbeat(worktree_path, heartbeat)
+}
+
+pub fn list_worktrees_with_heartbeat<F>(
+    repository: &CanonicalPath,
+    heartbeat: F,
+) -> Result<Vec<WorktreeInfo>, GitError>
+where
+    F: FnMut() -> Result<(), GitError>,
+{
+    let output = run_git_with_heartbeat(
+        repository.as_path(),
+        &[arg("worktree"), arg("list"), arg("--porcelain")],
+        heartbeat,
+    )?;
+    parse_worktree_list(repository, &output)
+}
+
+pub fn is_worktree_clean_with_heartbeat<F>(
+    worktree_path: &Path,
+    heartbeat: F,
+) -> Result<bool, GitError>
+where
+    F: FnMut() -> Result<(), GitError>,
+{
+    let output = run_git_with_heartbeat(
+        worktree_path,
+        &[
+            arg("status"),
+            arg("--porcelain=v1"),
+            arg("--untracked-files=all"),
+        ],
+        heartbeat,
+    )?;
+    Ok(output.trim().is_empty())
 }
 
 fn parse_worktree_list(
@@ -338,6 +433,30 @@ fn inspect_common_directory(path: &Path) -> Result<CanonicalPath, GitError> {
     CanonicalPath::resolve(common_dir).map_err(GitError::Canonicalize)
 }
 
+fn inspect_common_directory_with_heartbeat<F>(
+    path: &Path,
+    heartbeat: F,
+) -> Result<CanonicalPath, GitError>
+where
+    F: FnMut() -> Result<(), GitError>,
+{
+    let output = single_line(
+        "rev-parse --git-common-dir",
+        run_git_with_heartbeat(
+            path,
+            &[arg("rev-parse"), arg("--git-common-dir")],
+            heartbeat,
+        )?,
+    )?;
+    let common_dir = PathBuf::from(output);
+    let common_dir = if common_dir.is_absolute() {
+        common_dir
+    } else {
+        path.join(common_dir)
+    };
+    CanonicalPath::resolve(common_dir).map_err(GitError::Canonicalize)
+}
+
 fn single_line(operation: &str, output: String) -> Result<String, GitError> {
     let value = output.trim();
     if value.is_empty() || value.lines().count() != 1 {
@@ -423,6 +542,7 @@ where
             operation: operation.to_owned(),
             source,
         })?;
+    let mut last_heartbeat = Instant::now();
 
     loop {
         match child.try_wait().map_err(|source| GitError::Io {
@@ -431,11 +551,15 @@ where
         })? {
             Some(_) => break,
             None => {
-                std::thread::sleep(poll_interval);
-                if let Err(error) = heartbeat() {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(error);
+                if last_heartbeat.elapsed() >= poll_interval {
+                    if let Err(error) = heartbeat() {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(error);
+                    }
+                    last_heartbeat = Instant::now();
+                } else {
+                    std::thread::sleep(Duration::from_millis(10));
                 }
             }
         }

@@ -11,8 +11,8 @@ use crate::storage::{
     append_event, claim_expired_operation, finalize_creation, find_operation,
     find_running_operation, find_workspace, find_workspace_claim, list_repo_worktrees,
     record_operation_transition, record_repo_worktree_transition, record_workspace_transition,
-    update_workspace_observation, EventDraft, OperationRow, RepoWorktreeRow, TransitionMetadata,
-    WorkspaceClaimRow, WorkspaceRow,
+    renew_operation_lease, update_workspace_observation, EventDraft, OperationRow, RepoWorktreeRow,
+    TransitionMetadata, WorkspaceClaimRow, WorkspaceRow,
 };
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -34,6 +34,24 @@ pub fn reconcile_workspace_for_access(
     operation_id: &OperationId,
 ) -> Result<AccessBoundary, ReconciliationError> {
     let summary = reconcile_workspace(connection, workspace_id, operation_id)?;
+    load_access_boundary(connection, workspace_id, summary)
+}
+
+pub fn reconcile_workspace_for_access_with_lease(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+    operation_id: &OperationId,
+    lease_id: &LeaseId,
+) -> Result<AccessBoundary, ReconciliationError> {
+    let summary = reconcile_workspace_with_lease(connection, workspace_id, operation_id, lease_id)?;
+    load_access_boundary(connection, workspace_id, summary)
+}
+
+fn load_access_boundary(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+    summary: ReconciliationSummary,
+) -> Result<AccessBoundary, ReconciliationError> {
     let workspace =
         find_workspace(connection, workspace_id).map_err(ReconciliationError::Database)?;
     let claim =
@@ -50,6 +68,24 @@ pub fn reconcile_workspace(
     workspace_id: &WorkspaceId,
     operation_id: &OperationId,
 ) -> Result<ReconciliationSummary, ReconciliationError> {
+    reconcile_workspace_inner(connection, workspace_id, operation_id, None)
+}
+
+pub fn reconcile_workspace_with_lease(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+    operation_id: &OperationId,
+    lease_id: &LeaseId,
+) -> Result<ReconciliationSummary, ReconciliationError> {
+    reconcile_workspace_inner(connection, workspace_id, operation_id, Some(lease_id))
+}
+
+fn reconcile_workspace_inner(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+    operation_id: &OperationId,
+    lease_id: Option<&LeaseId>,
+) -> Result<ReconciliationSummary, ReconciliationError> {
     let workspace =
         find_workspace(connection, workspace_id).map_err(ReconciliationError::Database)?;
     if workspace.state == WorkspaceState::Reclaimed {
@@ -64,7 +100,11 @@ pub fn reconcile_workspace(
     let mut observed_states = Vec::with_capacity(repositories.len());
 
     for repository in repositories {
-        let observation = observe_repository(&repository);
+        let observation = match lease_id {
+            Some(lease_id) => observe_repository(&repository, || renew_lease(connection, lease_id)),
+            None => observe_repository(&repository, || Ok(())),
+        }
+        .map_err(ReconciliationError::Git)?;
         let (state, head, details, error_json) = observation.into_record();
         observed_states.push(state);
         if state != repository.state || head.as_deref() != repository.last_head.as_deref() {
@@ -128,47 +168,74 @@ pub fn reconcile_workspace(
     })
 }
 
-fn observe_repository(repository: &RepoWorktreeRow) -> Observation {
-    let actual_repository_identity =
-        match crate::git::inspect_repository_identity(&repository.source_path) {
-            Ok(identity) => identity,
-            Err(error) => return Observation::Failed(error.to_string()),
-        };
+fn renew_lease(connection: &mut SqliteConnection, lease_id: &LeaseId) -> Result<(), GitError> {
+    match renew_operation_lease(connection, lease_id)
+        .map_err(|error| GitError::Heartbeat(error.to_string()))?
+    {
+        true => Ok(()),
+        false => Err(GitError::Heartbeat(
+            "operation lease is no longer owned".to_owned(),
+        )),
+    }
+}
+
+fn observe_repository<F>(
+    repository: &RepoWorktreeRow,
+    mut heartbeat: F,
+) -> Result<Observation, GitError>
+where
+    F: FnMut() -> Result<(), GitError>,
+{
+    let actual_repository_identity = match crate::git::inspect_repository_identity_with_heartbeat(
+        &repository.source_path,
+        &mut heartbeat,
+    ) {
+        Ok(identity) => identity,
+        Err(error) => return observation_from_git_error(error),
+    };
     if actual_repository_identity != repository.repository_identity {
-        return Observation::Diverged {
+        return Ok(Observation::Diverged {
             head: None,
             branch: None,
             reason: Some(format!(
                 "source repository identity changed from {} to {}",
                 repository.repository_identity, actual_repository_identity
             )),
-        };
+        });
     }
 
-    match crate::git::list_worktrees(&repository.source_path) {
+    match crate::git::list_worktrees_with_heartbeat(&repository.source_path, &mut heartbeat) {
         Ok(worktrees) => {
             let worktree = worktrees
                 .into_iter()
                 .find(|worktree| worktree.path.as_path() == repository.worktree_path.as_path());
             match worktree {
-                Some(worktree) if worktree.prunable.is_some() => Observation::Missing {
+                Some(worktree) if worktree.prunable.is_some() => Ok(Observation::Missing {
                     reason: Some("Git marked the worktree as prunable".to_owned()),
-                },
-                Some(_) if !repository.worktree_path.as_path().exists() => Observation::Missing {
-                    reason: Some("worktree path does not exist".to_owned()),
-                },
+                }),
+                Some(_) if !repository.worktree_path.as_path().exists() => {
+                    Ok(Observation::Missing {
+                        reason: Some("worktree path does not exist".to_owned()),
+                    })
+                }
                 Some(worktree) => {
-                    match crate::git::inspect_worktree_identity(repository.worktree_path.as_path())
-                    {
+                    match crate::git::inspect_worktree_identity_with_heartbeat(
+                        repository.worktree_path.as_path(),
+                        &mut heartbeat,
+                    ) {
                         Ok(identity) => {
-                            let clean =
-                                crate::git::is_worktree_clean(repository.worktree_path.as_path())
-                                    .unwrap_or(false);
+                            let clean = match crate::git::is_worktree_clean_with_heartbeat(
+                                repository.worktree_path.as_path(),
+                                &mut heartbeat,
+                            ) {
+                                Ok(clean) => clean,
+                                Err(error) => return observation_from_git_error(error),
+                            };
                             let fingerprint = crate::git::ObservationFingerprint::from_worktree(
                                 identity, worktree, clean,
                             );
                             if fingerprint.repository_identity != repository.repository_identity {
-                                Observation::Diverged {
+                                Ok(Observation::Diverged {
                                     head: fingerprint.head,
                                     branch: fingerprint.branch,
                                     reason: Some(format!(
@@ -176,65 +243,79 @@ fn observe_repository(repository: &RepoWorktreeRow) -> Observation {
                                         repository.repository_identity,
                                         fingerprint.repository_identity
                                     )),
-                                }
+                                })
                             } else if fingerprint.matches_attachment(
                                 &repository.repository_identity,
                                 &repository.worktree_path,
                                 repository.last_head.as_deref(),
                             ) {
                                 if fingerprint.clean {
-                                    Observation::Attached {
+                                    Ok(Observation::Attached {
                                         head: fingerprint.head,
-                                    }
+                                    })
                                 } else {
-                                    Observation::Dirty {
+                                    Ok(Observation::Dirty {
                                         head: fingerprint.head,
-                                    }
+                                    })
                                 }
                             } else {
-                                Observation::Diverged {
+                                Ok(Observation::Diverged {
                                     head: fingerprint.head,
                                     branch: fingerprint.branch,
                                     reason: Some(
                                         "worktree observation fingerprint changed".to_owned(),
                                     ),
-                                }
+                                })
                             }
                         }
-                        Err(error) => Observation::Diverged {
+                        Err(error) if matches!(&error, GitError::Heartbeat(_)) => Err(error),
+                        Err(error) => Ok(Observation::Diverged {
                             head: worktree.head,
                             branch: worktree.branch,
                             reason: Some(format!("worktree identity is unavailable: {error}")),
-                        },
+                        }),
                     }
                 }
-                None if repository.state == RepoWorktreeState::Pending => Observation::Pending {
-                    head: repository.last_head.clone(),
-                },
+                None if repository.state == RepoWorktreeState::Pending => {
+                    Ok(Observation::Pending {
+                        head: repository.last_head.clone(),
+                    })
+                }
                 None if !repository.worktree_path.as_path().exists() => {
-                    Observation::Missing { reason: None }
+                    Ok(Observation::Missing { reason: None })
                 }
                 None => {
-                    match crate::git::inspect_worktree_identity(repository.worktree_path.as_path())
-                    {
-                        Ok(identity) => Observation::Diverged {
+                    match crate::git::inspect_worktree_identity_with_heartbeat(
+                        repository.worktree_path.as_path(),
+                        &mut heartbeat,
+                    ) {
+                        Ok(identity) => Ok(Observation::Diverged {
                             head: None,
                             branch: None,
                             reason: Some(format!(
                                 "worktree identity {} is not listed by the source repository",
                                 identity
                             )),
-                        },
-                        Err(error) => Observation::Diverged {
+                        }),
+                        Err(error) if matches!(&error, GitError::Heartbeat(_)) => Err(error),
+                        Err(error) => Ok(Observation::Diverged {
                             head: None,
                             branch: None,
                             reason: Some(format!("worktree path is not a Git worktree: {error}")),
-                        },
+                        }),
                     }
                 }
             }
         }
-        Err(error) => Observation::Failed(error.to_string()),
+        Err(error) => observation_from_git_error(error),
+    }
+}
+
+fn observation_from_git_error(error: GitError) -> Result<Observation, GitError> {
+    if matches!(&error, GitError::Heartbeat(_)) {
+        Err(error)
+    } else {
+        Ok(Observation::Failed(error.to_string()))
     }
 }
 
@@ -282,10 +363,12 @@ pub fn recover_expired_operation(
         find_workspace(connection, workspace_id).map_err(ReconciliationError::Database)?;
     let repositories =
         list_repo_worktrees(connection, workspace_id).map_err(ReconciliationError::Database)?;
+    let mut heartbeat = || renew_lease(connection, &recovery_lease_id);
     let observations = repositories
         .iter()
-        .map(observe_for_recovery)
-        .collect::<Vec<_>>();
+        .map(|repository| observe_for_recovery(repository, &mut heartbeat))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(ReconciliationError::Git)?;
     let complete = !repositories.is_empty()
         && repositories
             .iter()
@@ -322,74 +405,95 @@ struct RecoveryObservation {
     error: Option<String>,
 }
 
-fn observe_for_recovery(repository: &RepoWorktreeRow) -> RecoveryObservation {
-    let actual_repository_identity =
-        match crate::git::inspect_repository_identity(&repository.source_path) {
-            Ok(identity) => identity,
-            Err(error) => return unsafe_recovery_observation(error.to_string()),
-        };
+fn observe_for_recovery<F>(
+    repository: &RepoWorktreeRow,
+    mut heartbeat: F,
+) -> Result<RecoveryObservation, GitError>
+where
+    F: FnMut() -> Result<(), GitError>,
+{
+    let actual_repository_identity = match crate::git::inspect_repository_identity_with_heartbeat(
+        &repository.source_path,
+        &mut heartbeat,
+    ) {
+        Ok(identity) => identity,
+        Err(error) => return recovery_observation_from_git_error(error),
+    };
     if actual_repository_identity != repository.repository_identity {
-        return unsafe_recovery_observation(format!(
+        return Ok(unsafe_recovery_observation(format!(
             "source repository identity changed from {} to {}",
             repository.repository_identity, actual_repository_identity
-        ));
+        )));
     }
 
-    let worktree = match crate::git::list_worktrees(&repository.source_path) {
-        Ok(worktrees) => worktrees
-            .into_iter()
-            .find(|worktree| worktree.path.as_path() == repository.worktree_path.as_path()),
-        Err(error) => return unsafe_recovery_observation(error.to_string()),
-    };
+    let worktree =
+        match crate::git::list_worktrees_with_heartbeat(&repository.source_path, &mut heartbeat) {
+            Ok(worktrees) => worktrees
+                .into_iter()
+                .find(|worktree| worktree.path.as_path() == repository.worktree_path.as_path()),
+            Err(error) => return recovery_observation_from_git_error(error),
+        };
     let Some(worktree) = worktree else {
         if !repository.worktree_path.as_path().exists() {
-            return RecoveryObservation {
+            return Ok(RecoveryObservation {
                 worktree: None,
                 owned_by_operation: false,
                 complete: false,
                 error: None,
-            };
+            });
         }
 
-        return match crate::git::inspect_worktree_identity(repository.worktree_path.as_path()) {
-            Ok(identity) => unsafe_recovery_observation(format!(
+        return match crate::git::inspect_worktree_identity_with_heartbeat(
+            repository.worktree_path.as_path(),
+            &mut heartbeat,
+        ) {
+            Ok(identity) => Ok(unsafe_recovery_observation(format!(
                 "worktree identity {} is not listed by the source repository",
                 identity
-            )),
-            Err(error) => {
-                unsafe_recovery_observation(format!("worktree path is not a Git worktree: {error}"))
-            }
+            ))),
+            Err(error) if matches!(&error, GitError::Heartbeat(_)) => Err(error),
+            Err(error) => Ok(unsafe_recovery_observation(format!(
+                "worktree path is not a Git worktree: {error}"
+            ))),
         };
     };
 
     if worktree.prunable.is_some() || !repository.worktree_path.as_path().exists() {
-        return RecoveryObservation {
+        return Ok(RecoveryObservation {
             worktree: None,
             owned_by_operation: false,
             complete: false,
             error: None,
-        };
+        });
     }
 
-    let actual_worktree_identity =
-        match crate::git::inspect_worktree_identity(repository.worktree_path.as_path()) {
-            Ok(identity) => identity,
-            Err(error) => return unsafe_recovery_observation(error.to_string()),
-        };
-    let clean = crate::git::is_worktree_clean(repository.worktree_path.as_path()).unwrap_or(false);
+    let actual_worktree_identity = match crate::git::inspect_worktree_identity_with_heartbeat(
+        repository.worktree_path.as_path(),
+        &mut heartbeat,
+    ) {
+        Ok(identity) => identity,
+        Err(error) => return recovery_observation_from_git_error(error),
+    };
+    let clean = match crate::git::is_worktree_clean_with_heartbeat(
+        repository.worktree_path.as_path(),
+        &mut heartbeat,
+    ) {
+        Ok(clean) => clean,
+        Err(error) => return recovery_observation_from_git_error(error),
+    };
     let fingerprint = crate::git::ObservationFingerprint::from_worktree(
         actual_worktree_identity,
         worktree.clone(),
         clean,
     );
     if fingerprint.repository_identity != repository.repository_identity {
-        return unsafe_recovery_observation(format!(
+        return Ok(unsafe_recovery_observation(format!(
             "worktree identity changed from {} to {}",
             repository.repository_identity, fingerprint.repository_identity
-        ));
+        )));
     }
 
-    RecoveryObservation {
+    Ok(RecoveryObservation {
         worktree: Some(worktree),
         owned_by_operation: true,
         complete: fingerprint.matches_attached(
@@ -398,6 +502,14 @@ fn observe_for_recovery(repository: &RepoWorktreeRow) -> RecoveryObservation {
             repository.last_head.as_deref(),
         ),
         error: None,
+    })
+}
+
+fn recovery_observation_from_git_error(error: GitError) -> Result<RecoveryObservation, GitError> {
+    if matches!(&error, GitError::Heartbeat(_)) {
+        Err(error)
+    } else {
+        Ok(unsafe_recovery_observation(error.to_string()))
     }
 }
 
@@ -464,11 +576,17 @@ fn recover_incomplete_operation(
         .collect::<Vec<_>>();
     for (repository, observation) in repositories.iter().zip(observations) {
         if observation.owned_by_operation {
-            if let Err(error) = crate::git::remove_worktree(
-                &repository.source_path,
-                repository.worktree_path.as_path(),
-            ) {
-                errors.push(error.to_string());
+            match renew_lease(connection, lease_id) {
+                Ok(()) => {
+                    if let Err(error) = crate::git::remove_worktree_with_heartbeat(
+                        &repository.source_path,
+                        repository.worktree_path.as_path(),
+                        || renew_lease(connection, lease_id),
+                    ) {
+                        errors.push(error.to_string());
+                    }
+                }
+                Err(error) => errors.push(error.to_string()),
             }
         }
         if let Err(error) = record_repo_worktree_transition(
@@ -484,8 +602,13 @@ fn recover_incomplete_operation(
         }
     }
     if errors.is_empty() && workspace.canonical_path.as_path().exists() {
-        if let Err(error) = std::fs::remove_dir(&workspace.canonical_path) {
-            errors.push(error.to_string());
+        match renew_lease(connection, lease_id) {
+            Ok(()) => {
+                if let Err(error) = std::fs::remove_dir(&workspace.canonical_path) {
+                    errors.push(error.to_string());
+                }
+            }
+            Err(error) => errors.push(error.to_string()),
         }
     }
     let error_json = recovery_error(&errors);

@@ -47,19 +47,23 @@ pub fn prepare(
     }
 
     let (operation_id, lease_id) = start_reconciliation_operation(connection, workspace.id)?;
-    let summary =
-        match reconciliation::reconcile_workspace(connection, &workspace.id, &operation_id) {
-            Ok(summary) => summary,
-            Err(error) => {
-                let _ = finish_reconciliation_operation(
-                    connection,
-                    &operation_id,
-                    &lease_id,
-                    OperationState::Failed,
-                );
-                return Err(WorkspacePreparationError::Reconciliation(error));
-            }
-        };
+    let summary = match reconciliation::reconcile_workspace_with_lease(
+        connection,
+        &workspace.id,
+        &operation_id,
+        &lease_id,
+    ) {
+        Ok(summary) => summary,
+        Err(error) => {
+            let _ = finish_reconciliation_operation(
+                connection,
+                &operation_id,
+                &lease_id,
+                OperationState::Failed,
+            );
+            return Err(WorkspacePreparationError::Reconciliation(error));
+        }
+    };
     finish_reconciliation_operation(
         connection,
         &operation_id,
