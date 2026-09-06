@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -34,6 +34,7 @@ pub struct ObservationFingerprint {
     pub branch: Option<String>,
     pub existence: WorktreeExistence,
     pub prunable: Option<String>,
+    pub clean: bool,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
@@ -45,7 +46,11 @@ pub enum WorktreeExistence {
 }
 
 impl ObservationFingerprint {
-    pub fn from_worktree(repository_identity: CanonicalPath, worktree: WorktreeInfo) -> Self {
+    pub fn from_worktree(
+        repository_identity: CanonicalPath,
+        worktree: WorktreeInfo,
+        clean: bool,
+    ) -> Self {
         let existence = if worktree.prunable.is_some() {
             WorktreeExistence::Prunable
         } else {
@@ -59,6 +64,7 @@ impl ObservationFingerprint {
             branch: worktree.branch,
             existence,
             prunable: worktree.prunable,
+            clean,
         }
     }
 
@@ -71,10 +77,20 @@ impl ObservationFingerprint {
             branch: None,
             existence: WorktreeExistence::Missing,
             prunable: None,
+            clean: false,
         }
     }
 
     pub fn matches_attached(
+        &self,
+        repository_identity: &CanonicalPath,
+        worktree_identity: &CanonicalPath,
+        expected_head: Option<&str>,
+    ) -> bool {
+        self.matches_attachment(repository_identity, worktree_identity, expected_head) && self.clean
+    }
+
+    pub fn matches_attachment(
         &self,
         repository_identity: &CanonicalPath,
         worktree_identity: &CanonicalPath,
@@ -137,6 +153,18 @@ pub fn find_worktree(
         .ok_or_else(|| GitError::WorktreeNotFound(worktree_path.to_owned()))
 }
 
+pub fn is_worktree_clean(worktree_path: &Path) -> Result<bool, GitError> {
+    let output = run_git(
+        worktree_path,
+        &[
+            arg("status"),
+            arg("--porcelain=v1"),
+            arg("--untracked-files=all"),
+        ],
+    )?;
+    Ok(output.trim().is_empty())
+}
+
 pub fn add_detached_worktree(
     repository: &CanonicalPath,
     worktree_path: &Path,
@@ -187,6 +215,116 @@ pub fn remove_worktree(repository: &CanonicalPath, worktree_path: &Path) -> Resu
         ],
     )?;
     Ok(())
+}
+
+pub fn remove_worktree_with_heartbeat<F>(
+    repository: &CanonicalPath,
+    worktree_path: &Path,
+    heartbeat: F,
+) -> Result<(), GitError>
+where
+    F: FnMut() -> Result<(), GitError>,
+{
+    run_git_with_heartbeat(
+        repository.as_path(),
+        &[
+            arg("worktree"),
+            arg("remove"),
+            arg("--force"),
+            worktree_path.as_os_str().to_owned(),
+        ],
+        heartbeat,
+    )?;
+    Ok(())
+}
+
+pub fn remove_clean_worktree(
+    repository: &CanonicalPath,
+    worktree_path: &Path,
+) -> Result<(), GitError> {
+    run_git(
+        repository.as_path(),
+        &[
+            arg("worktree"),
+            arg("remove"),
+            worktree_path.as_os_str().to_owned(),
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn remove_clean_worktree_with_heartbeat<F>(
+    repository: &CanonicalPath,
+    worktree_path: &Path,
+    heartbeat: F,
+) -> Result<(), GitError>
+where
+    F: FnMut() -> Result<(), GitError>,
+{
+    run_git_with_heartbeat(
+        repository.as_path(),
+        &[
+            arg("worktree"),
+            arg("remove"),
+            worktree_path.as_os_str().to_owned(),
+        ],
+        heartbeat,
+    )?;
+    Ok(())
+}
+
+pub fn inspect_repository_identity_with_heartbeat<F>(
+    repository: &CanonicalPath,
+    heartbeat: F,
+) -> Result<CanonicalPath, GitError>
+where
+    F: FnMut() -> Result<(), GitError>,
+{
+    inspect_common_directory_with_heartbeat(repository.as_path(), heartbeat)
+}
+
+pub fn inspect_worktree_identity_with_heartbeat<F>(
+    worktree_path: &Path,
+    heartbeat: F,
+) -> Result<CanonicalPath, GitError>
+where
+    F: FnMut() -> Result<(), GitError>,
+{
+    inspect_common_directory_with_heartbeat(worktree_path, heartbeat)
+}
+
+pub fn list_worktrees_with_heartbeat<F>(
+    repository: &CanonicalPath,
+    heartbeat: F,
+) -> Result<Vec<WorktreeInfo>, GitError>
+where
+    F: FnMut() -> Result<(), GitError>,
+{
+    let output = run_git_with_heartbeat(
+        repository.as_path(),
+        &[arg("worktree"), arg("list"), arg("--porcelain")],
+        heartbeat,
+    )?;
+    parse_worktree_list(repository, &output)
+}
+
+pub fn is_worktree_clean_with_heartbeat<F>(
+    worktree_path: &Path,
+    heartbeat: F,
+) -> Result<bool, GitError>
+where
+    F: FnMut() -> Result<(), GitError>,
+{
+    let output = run_git_with_heartbeat(
+        worktree_path,
+        &[
+            arg("status"),
+            arg("--porcelain=v1"),
+            arg("--untracked-files=all"),
+        ],
+        heartbeat,
+    )?;
+    Ok(output.trim().is_empty())
 }
 
 fn parse_worktree_list(
@@ -295,6 +433,30 @@ fn inspect_common_directory(path: &Path) -> Result<CanonicalPath, GitError> {
     CanonicalPath::resolve(common_dir).map_err(GitError::Canonicalize)
 }
 
+fn inspect_common_directory_with_heartbeat<F>(
+    path: &Path,
+    heartbeat: F,
+) -> Result<CanonicalPath, GitError>
+where
+    F: FnMut() -> Result<(), GitError>,
+{
+    let output = single_line(
+        "rev-parse --git-common-dir",
+        run_git_with_heartbeat(
+            path,
+            &[arg("rev-parse"), arg("--git-common-dir")],
+            heartbeat,
+        )?,
+    )?;
+    let common_dir = PathBuf::from(output);
+    let common_dir = if common_dir.is_absolute() {
+        common_dir
+    } else {
+        path.join(common_dir)
+    };
+    CanonicalPath::resolve(common_dir).map_err(GitError::Canonicalize)
+}
+
 fn single_line(operation: &str, output: String) -> Result<String, GitError> {
     let value = output.trim();
     if value.is_empty() || value.lines().count() != 1 {
@@ -380,6 +542,7 @@ where
             operation: operation.to_owned(),
             source,
         })?;
+    let mut last_heartbeat = Instant::now();
 
     loop {
         match child.try_wait().map_err(|source| GitError::Io {
@@ -388,11 +551,15 @@ where
         })? {
             Some(_) => break,
             None => {
-                std::thread::sleep(poll_interval);
-                if let Err(error) = heartbeat() {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(error);
+                if last_heartbeat.elapsed() >= poll_interval {
+                    if let Err(error) = heartbeat() {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(error);
+                    }
+                    last_heartbeat = Instant::now();
+                } else {
+                    std::thread::sleep(Duration::from_millis(10));
                 }
             }
         }
@@ -564,6 +731,19 @@ mod tests {
     }
 
     #[test]
+    fn removes_a_clean_worktree_without_force() {
+        let (root, repository) = repository();
+        let worktree_path = root.join("workspace");
+        add_detached_worktree(&repository, &worktree_path).expect("worktree should be added");
+
+        remove_clean_worktree(&repository, &worktree_path)
+            .expect("clean worktree should be removed without force");
+        assert!(!worktree_path.exists());
+
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
     fn polls_a_long_running_command_and_invokes_heartbeat() {
         let mut heartbeats = 0;
         run_command_with_heartbeat(
@@ -610,6 +790,7 @@ mod tests {
                 bare: false,
                 prunable: None,
             },
+            true,
         );
         let encoded = serde_json::to_string(&fingerprint).expect("fingerprint should serialize");
         let decoded: ObservationFingerprint =
@@ -625,6 +806,21 @@ mod tests {
         changed.branch = Some("refs/heads/feature".to_owned());
         assert_ne!(changed, fingerprint);
 
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn detects_clean_and_dirty_worktrees_without_mutating_them() {
+        let (root, repository) = repository();
+        let worktree_path = root.join("workspace");
+        add_detached_worktree(&repository, &worktree_path).expect("worktree should be added");
+
+        assert!(is_worktree_clean(&worktree_path).expect("status should succeed"));
+        fs::write(worktree_path.join("untracked"), "change\n")
+            .expect("untracked file should be written");
+        assert!(!is_worktree_clean(&worktree_path).expect("status should succeed"));
+
+        remove_worktree(&repository, &worktree_path).expect("worktree should be removed");
         fs::remove_dir_all(root).expect("test root should be removable");
     }
 }

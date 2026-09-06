@@ -4,11 +4,13 @@ use std::process::Command;
 
 use diesel::prelude::*;
 
-use trees::domain::{CanonicalPath, OperationState, RepoWorktreeState, WorkspaceState};
+use trees::domain::{
+    CanonicalPath, OperationId, RepoWorktreeState, WorkspaceManagementMode, WorkspaceState,
+};
 use trees::git;
 use trees::reconciliation::reconcile_workspace;
 use trees::storage::{
-    find_workspace_by_path, list_events_for_operation, list_repo_worktrees, OperationRow,
+    find_workspace_by_path, list_events_for_operation, list_repo_worktrees, operation_state,
 };
 use trees::workspace::{
     create_with_connection, execute_creation, initialize_creation, prepare_create, CreateRequest,
@@ -88,6 +90,7 @@ fn creates_direct_child_worktrees_and_tracks_events() {
     .unwrap()
     .unwrap();
     assert_eq!(workspace.state, WorkspaceState::Ready);
+    assert_eq!(workspace.management_mode, WorkspaceManagementMode::Manual);
     assert_eq!(
         list_repo_worktrees(&mut connection, &workspace.id)
             .unwrap()
@@ -98,14 +101,17 @@ fn creates_direct_child_worktrees_and_tracks_events() {
         .unwrap()
         .iter()
         .all(|repository| repository.state == RepoWorktreeState::Attached));
-    let operation = trees::schema::operations::table
+    let operation_id = trees::schema::operations::table
         .filter(trees::schema::operations::workspace_id.eq(&workspace.id))
-        .select(OperationRow::as_select())
-        .first(&mut connection)
+        .select(trees::schema::operations::id)
+        .first::<OperationId>(&mut connection)
         .unwrap();
-    assert_eq!(operation.state, OperationState::Succeeded);
-    let events = list_events_for_operation(&mut connection, &operation.id).unwrap();
-    assert_eq!(events.len(), 11);
+    assert_eq!(
+        operation_state(&mut connection, &operation_id).unwrap(),
+        Some(trees::domain::OperationState::Succeeded)
+    );
+    let events = list_events_for_operation(&mut connection, &operation_id).unwrap();
+    assert_eq!(events.len(), 13);
     assert!(events
         .windows(2)
         .all(|pair| pair[0].occurred_at <= pair[1].occurred_at));
@@ -113,7 +119,7 @@ fn creates_direct_child_worktrees_and_tracks_events() {
     let removed = result.worktree_paths[0].clone();
     git::remove_worktree(&CanonicalPath::resolve(&first).unwrap(), &removed)
         .expect("external worktree removal should succeed");
-    let summary = reconcile_workspace(&mut connection, &workspace.id, &operation.id)
+    let summary = reconcile_workspace(&mut connection, &workspace.id, &operation_id)
         .expect("reconciliation should succeed");
     assert_eq!(summary.workspace_state, WorkspaceState::Degraded);
     assert_eq!(summary.changed_worktrees, 1);
@@ -183,15 +189,15 @@ fn detects_an_external_worktree_branch_change() {
     )
     .unwrap()
     .unwrap();
-    let operation = trees::schema::operations::table
+    let operation_id = trees::schema::operations::table
         .filter(trees::schema::operations::workspace_id.eq(&workspace.id))
-        .select(OperationRow::as_select())
-        .first(&mut connection)
+        .select(trees::schema::operations::id)
+        .first::<OperationId>(&mut connection)
         .unwrap();
 
     let worktree_path = &result.worktree_paths[0];
     run_git(worktree_path, &["checkout", "-q", "-b", "external"]);
-    let summary = reconcile_workspace(&mut connection, &workspace.id, &operation.id)
+    let summary = reconcile_workspace(&mut connection, &workspace.id, &operation_id)
         .expect("reconciliation should succeed");
     assert_eq!(summary.workspace_state, WorkspaceState::Degraded);
     assert_eq!(summary.changed_worktrees, 1);

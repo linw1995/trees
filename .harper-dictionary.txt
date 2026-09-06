@@ -1,5 +1,9 @@
 Clippy
 clippy
+BLAKE3
+Checkin
+GC
+checkin
 direnv
 Git's
 JSON
@@ -9,6 +13,7 @@ Fenix
 Lifecycle
 OpenSpec
 OpenSpec's
+prunable
 SQLite
 UUID
 UUIDs

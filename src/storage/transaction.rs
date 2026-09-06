@@ -1,11 +1,15 @@
 use diesel::result::QueryResult;
 use diesel::sqlite::SqliteConnection;
-use diesel::Connection;
+use std::thread;
+use std::time::Duration;
 
-/// Runs only database work in one short transaction.
+const SQLITE_RETRY_ATTEMPTS: usize = 5;
+const SQLITE_RETRY_DELAY: Duration = Duration::from_millis(10);
+
+/// Runs only database metadata work in one short transaction.
 ///
-/// External Git processes must run before or after this closure so SQLite does
-/// not keep a transaction open while waiting for a subprocess.
+/// External Git and filesystem operations must run before or after this
+/// closure so SQLite does not keep a transaction open while waiting for them.
 pub fn with_short_transaction<T, F>(
     connection: &mut SqliteConnection,
     operation: F,
@@ -13,7 +17,61 @@ pub fn with_short_transaction<T, F>(
 where
     F: FnOnce(&mut SqliteConnection) -> QueryResult<T>,
 {
-    connection.transaction(operation)
+    connection.immediate_transaction(operation)
+}
+
+/// Runs immediate metadata work with bounded retries for transient SQLite busy errors.
+pub fn with_immediate_transaction<T, F>(
+    connection: &mut SqliteConnection,
+    mut operation: F,
+) -> QueryResult<T>
+where
+    F: FnMut(&mut SqliteConnection) -> QueryResult<T>,
+{
+    retry_sqlite_transaction(connection, |connection| {
+        connection.immediate_transaction(&mut operation)
+    })
+}
+
+/// Runs a deferred metadata transaction with bounded retries for transient SQLite busy errors.
+pub fn with_retrying_short_transaction<T, F>(
+    connection: &mut SqliteConnection,
+    mut operation: F,
+) -> QueryResult<T>
+where
+    F: FnMut(&mut SqliteConnection) -> QueryResult<T>,
+{
+    retry_sqlite_transaction(connection, |connection| {
+        connection.immediate_transaction(&mut operation)
+    })
+}
+
+fn retry_sqlite_transaction<T, F>(
+    connection: &mut SqliteConnection,
+    mut transaction: F,
+) -> QueryResult<T>
+where
+    F: FnMut(&mut SqliteConnection) -> QueryResult<T>,
+{
+    for attempt in 0..=SQLITE_RETRY_ATTEMPTS {
+        match transaction(connection) {
+            Ok(value) => return Ok(value),
+            Err(error) if attempt < SQLITE_RETRY_ATTEMPTS && is_sqlite_busy(&error) => {
+                thread::sleep(SQLITE_RETRY_DELAY * 2_u32.pow(attempt as u32));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("SQLite transaction retry loop must return from every attempt")
+}
+
+fn is_sqlite_busy(error: &diesel::result::Error) -> bool {
+    matches!(
+        error,
+        diesel::result::Error::DatabaseError(_, information)
+            if information.message().contains("locked")
+                || information.message().contains("busy")
+    )
 }
 
 #[cfg(test)]

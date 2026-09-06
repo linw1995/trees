@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -30,14 +31,6 @@ macro_rules! uuid_identifier {
         impl $name {
             pub fn new() -> Self {
                 Self(Uuid::now_v7())
-            }
-
-            pub fn as_uuid(&self) -> &Uuid {
-                &self.0
-            }
-
-            pub fn into_uuid(self) -> Uuid {
-                self.0
             }
         }
 
@@ -83,9 +76,50 @@ macro_rules! uuid_identifier {
 }
 
 uuid_identifier!(WorkspaceId);
+uuid_identifier!(PoolId);
+uuid_identifier!(OriginRepositoryId);
 uuid_identifier!(RepoWorktreeId);
 uuid_identifier!(OperationId);
+uuid_identifier!(LeaseId);
 uuid_identifier!(EventId);
+uuid_identifier!(ClaimId);
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, AsExpression, FromSqlRow)]
+#[diesel(sql_type = diesel::sql_types::Text)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceManagementMode {
+    Automatic,
+    Manual,
+}
+
+impl WorkspaceManagementMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Automatic => "automatic",
+            Self::Manual => "manual",
+        }
+    }
+
+    const ALL: &'static [&'static str] = &["automatic", "manual"];
+}
+
+impl fmt::Display for WorkspaceManagementMode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for WorkspaceManagementMode {
+    type Err = StateParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "automatic" => Ok(Self::Automatic),
+            "manual" => Ok(Self::Manual),
+            _ => Err(StateParseError::new(value, Self::ALL)),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum IdentifierError {
@@ -119,6 +153,7 @@ pub enum WorkspaceState {
     Ready,
     Degraded,
     Failed,
+    Reclaimed,
 }
 
 impl WorkspaceState {
@@ -128,6 +163,7 @@ impl WorkspaceState {
             Self::Ready => "ready",
             Self::Degraded => "degraded",
             Self::Failed => "failed",
+            Self::Reclaimed => "reclaimed",
         }
     }
 }
@@ -147,13 +183,14 @@ impl FromStr for WorkspaceState {
             "ready" => Ok(Self::Ready),
             "degraded" => Ok(Self::Degraded),
             "failed" => Ok(Self::Failed),
+            "reclaimed" => Ok(Self::Reclaimed),
             _ => Err(StateParseError::new(value, Self::ALL)),
         }
     }
 }
 
 impl WorkspaceState {
-    const ALL: &'static [&'static str] = &["creating", "ready", "degraded", "failed"];
+    const ALL: &'static [&'static str] = &["creating", "ready", "degraded", "failed", "reclaimed"];
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, AsExpression, FromSqlRow)]
@@ -162,9 +199,11 @@ impl WorkspaceState {
 pub enum RepoWorktreeState {
     Pending,
     Attached,
+    Dirty,
     Missing,
     Diverged,
     Failed,
+    Reclaimed,
 }
 
 impl RepoWorktreeState {
@@ -172,13 +211,23 @@ impl RepoWorktreeState {
         match self {
             Self::Pending => "pending",
             Self::Attached => "attached",
+            Self::Dirty => "dirty",
             Self::Missing => "missing",
             Self::Diverged => "diverged",
             Self::Failed => "failed",
+            Self::Reclaimed => "reclaimed",
         }
     }
 
-    const ALL: &'static [&'static str] = &["pending", "attached", "missing", "diverged", "failed"];
+    const ALL: &'static [&'static str] = &[
+        "pending",
+        "attached",
+        "dirty",
+        "missing",
+        "diverged",
+        "failed",
+        "reclaimed",
+    ];
 }
 
 impl fmt::Display for RepoWorktreeState {
@@ -194,9 +243,11 @@ impl FromStr for RepoWorktreeState {
         match value {
             "pending" => Ok(Self::Pending),
             "attached" => Ok(Self::Attached),
+            "dirty" => Ok(Self::Dirty),
             "missing" => Ok(Self::Missing),
             "diverged" => Ok(Self::Diverged),
             "failed" => Ok(Self::Failed),
+            "reclaimed" => Ok(Self::Reclaimed),
             _ => Err(StateParseError::new(value, Self::ALL)),
         }
     }
@@ -377,18 +428,6 @@ impl JsonDocument {
             .map(Self)
             .map_err(JsonDocumentError::Parse)
     }
-
-    pub fn as_value(&self) -> &Value {
-        &self.0
-    }
-
-    pub fn into_value(self) -> Value {
-        self.0
-    }
-
-    pub fn to_canonical_string(&self) -> Result<String, JsonDocumentError> {
-        serde_json::to_string(&self.0).map_err(JsonDocumentError::Serialize)
-    }
 }
 
 impl fmt::Display for JsonDocument {
@@ -428,12 +467,22 @@ impl std::error::Error for JsonDocumentError {
     }
 }
 
-#[derive(
-    Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, AsExpression, FromSqlRow,
-)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, AsExpression, FromSqlRow)]
 #[diesel(sql_type = diesel::sql_types::Text)]
 #[serde(transparent)]
 pub struct Timestamp(String);
+
+impl Ord for Timestamp {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.parse_datetime().cmp(&other.parse_datetime())
+    }
+}
+
+impl PartialOrd for Timestamp {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
 impl Timestamp {
     pub fn now() -> Self {
@@ -442,6 +491,10 @@ impl Timestamp {
 
     pub fn after_seconds(seconds: i64) -> Self {
         Self::from_datetime(OffsetDateTime::now_utc() + time::Duration::seconds(seconds))
+    }
+
+    pub fn before_seconds(seconds: i64) -> Self {
+        Self::from_datetime(OffsetDateTime::now_utc() - time::Duration::seconds(seconds))
     }
 
     fn from_datetime(value: OffsetDateTime) -> Self {
@@ -463,9 +516,11 @@ impl Timestamp {
     }
 
     pub fn has_expired(&self) -> bool {
-        OffsetDateTime::parse(self.as_str(), &Rfc3339)
-            .map(|value| value <= OffsetDateTime::now_utc())
-            .unwrap_or(true)
+        self.parse_datetime() <= OffsetDateTime::now_utc()
+    }
+
+    fn parse_datetime(&self) -> OffsetDateTime {
+        OffsetDateTime::parse(self.as_str(), &Rfc3339).unwrap_or(OffsetDateTime::UNIX_EPOCH)
     }
 }
 
@@ -507,17 +562,41 @@ mod tests {
         let identifier = WorkspaceId::new();
         let text = identifier.to_string();
 
-        assert_eq!(identifier.as_uuid().get_version_num(), 7);
+        assert_eq!(Uuid::parse_str(&text).unwrap().get_version_num(), 7);
         assert_eq!(
             WorkspaceId::from_str(&text).expect("identifier should parse"),
             identifier
         );
         assert!(WorkspaceId::from_str(&Uuid::nil().to_string()).is_err());
+
+        let claim_id = ClaimId::new();
+        let encoded = serde_json::to_string(&claim_id).expect("claim ID should serialize");
+        assert_eq!(
+            serde_json::from_str::<ClaimId>(&encoded).expect("claim ID should deserialize"),
+            claim_id
+        );
     }
 
     #[test]
     fn states_use_storage_names() {
         assert_eq!(WorkspaceState::Ready.to_string(), "ready");
+        assert_eq!(WorkspaceManagementMode::Automatic.to_string(), "automatic");
+        assert_eq!(
+            WorkspaceManagementMode::from_str("manual").unwrap(),
+            WorkspaceManagementMode::Manual
+        );
+        assert_eq!(
+            WorkspaceState::from_str("reclaimed").unwrap(),
+            WorkspaceState::Reclaimed
+        );
+        assert_eq!(
+            RepoWorktreeState::from_str("dirty").unwrap(),
+            RepoWorktreeState::Dirty
+        );
+        assert_eq!(
+            RepoWorktreeState::from_str("reclaimed").unwrap(),
+            RepoWorktreeState::Reclaimed
+        );
         assert_eq!(
             RepoWorktreeState::from_str("diverged").unwrap(),
             RepoWorktreeState::Diverged
@@ -540,7 +619,7 @@ mod tests {
     fn json_documents_are_validated_and_canonicalized() {
         let document = JsonDocument::parse(r#"{"b":2,"a":1}"#).expect("JSON should parse");
 
-        assert_eq!(document.to_canonical_string().unwrap(), r#"{"a":1,"b":2}"#);
+        assert_eq!(document.to_string(), r#"{"a":1,"b":2}"#);
         assert!(JsonDocument::parse("not json").is_err());
     }
 
@@ -550,5 +629,15 @@ mod tests {
 
         assert_eq!(Timestamp::parse(timestamp.to_string()).unwrap(), timestamp);
         assert!(Timestamp::parse("not a timestamp").is_err());
+        assert!(Timestamp::before_seconds(60) < timestamp);
+        assert!(Timestamp::after_seconds(60) > timestamp);
+    }
+
+    #[test]
+    fn timestamps_compare_by_time_instead_of_fraction_string_shape() {
+        let shorter_fraction = Timestamp::parse("2026-01-01T00:00:00.9Z").unwrap();
+        let longer_fraction = Timestamp::parse("2026-01-01T00:00:00.10Z").unwrap();
+
+        assert!(longer_fraction < shorter_fraction);
     }
 }

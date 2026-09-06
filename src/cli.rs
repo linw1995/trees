@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -17,16 +17,71 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     Create(CreateArgs),
+    Release(ReleaseArgs),
+    Config(ConfigArgs),
+    Gc(GcArgs),
     Codex(CodexArgs),
 }
 
 #[derive(Debug, Args)]
 pub struct CreateArgs {
     #[arg(value_name = "WORKSPACE_PATH")]
-    pub workspace_path: PathBuf,
+    pub workspace_path: Option<PathBuf>,
 
     #[arg(long = "repo", required = true, value_name = "REPOSITORY_PATH")]
     pub repositories: Vec<PathBuf>,
+
+    #[arg(long, help = "Print the create result as JSON")]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ReleaseArgs {
+    #[arg(value_name = "WORKSPACE_PATH")]
+    pub workspace_path: PathBuf,
+
+    #[arg(long = "claim-id", required = true, value_name = "CLAIM_ID")]
+    pub claim_id: String,
+}
+
+#[derive(Debug, Args)]
+pub struct ConfigArgs {
+    #[command(subcommand)]
+    pub command: ConfigCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigCommand {
+    Set(ConfigSetArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ConfigSetArgs {
+    #[arg(value_enum, value_name = "SETTING")]
+    pub setting: ConfigSetting,
+
+    #[arg(value_name = "VALUE")]
+    pub value: PathBuf,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub enum ConfigSetting {
+    WorkspacesDir,
+}
+
+#[derive(Debug, Args)]
+pub struct GcArgs {
+    #[arg(long = "older-than", value_name = "DURATION")]
+    pub older_than: crate::gc::GcDuration,
+
+    #[arg(long)]
+    pub dry_run: bool,
+
+    #[arg(long)]
+    pub yes: bool,
+
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Debug, Args)]
@@ -87,11 +142,115 @@ mod tests {
         let Command::Create(arguments) = cli.command else {
             panic!("expected create command");
         };
-        assert_eq!(arguments.workspace_path, PathBuf::from("/tmp/workspace"));
+        assert_eq!(
+            arguments.workspace_path,
+            Some(PathBuf::from("/tmp/workspace"))
+        );
         assert_eq!(
             arguments.repositories,
             [PathBuf::from("/tmp/one"), PathBuf::from("/tmp/two")]
         );
+        assert!(!arguments.json);
+    }
+
+    #[test]
+    fn parses_automatic_create_without_a_workspace_path() {
+        let cli = Cli::try_parse_from([
+            "trees", "create", "--repo", "/tmp/one", "--repo", "/tmp/two",
+        ])
+        .expect("automatic create command should parse");
+
+        let Command::Create(arguments) = cli.command else {
+            panic!("expected create command");
+        };
+        assert_eq!(arguments.workspace_path, None);
+        assert_eq!(
+            arguments.repositories,
+            [PathBuf::from("/tmp/one"), PathBuf::from("/tmp/two")]
+        );
+        assert!(!arguments.json);
+    }
+
+    #[test]
+    fn parses_create_json_output_flag() {
+        let cli = Cli::try_parse_from(["trees", "create", "--repo", "/tmp/one", "--json"])
+            .expect("create command should parse");
+
+        let Command::Create(arguments) = cli.command else {
+            panic!("expected create command");
+        };
+        assert!(arguments.json);
+    }
+
+    #[test]
+    fn parses_release_with_a_claim_id() {
+        let cli = Cli::try_parse_from([
+            "trees",
+            "release",
+            "/tmp/workspace",
+            "--claim-id",
+            "claim-id",
+        ])
+        .expect("release command should parse");
+
+        let Command::Release(arguments) = cli.command else {
+            panic!("expected release command");
+        };
+        assert_eq!(arguments.workspace_path, PathBuf::from("/tmp/workspace"));
+        assert_eq!(arguments.claim_id, "claim-id");
+    }
+
+    #[test]
+    fn rejects_the_legacy_checkout_id_option() {
+        assert!(Cli::try_parse_from([
+            "trees",
+            "release",
+            "/tmp/workspace",
+            "--checkout-id",
+            "claim-id",
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn parses_workspace_directory_configuration() {
+        let cli = Cli::try_parse_from([
+            "trees",
+            "config",
+            "set",
+            "workspaces-dir",
+            "relative-workspaces",
+        ])
+        .expect("configuration command should parse");
+
+        let Command::Config(arguments) = cli.command else {
+            panic!("expected config command");
+        };
+        let ConfigCommand::Set(arguments) = arguments.command;
+        assert!(matches!(arguments.setting, ConfigSetting::WorkspacesDir));
+        assert_eq!(arguments.value, PathBuf::from("relative-workspaces"));
+    }
+
+    #[test]
+    fn parses_gc_threshold_and_confirmation_flags() {
+        let cli = Cli::try_parse_from([
+            "trees",
+            "gc",
+            "--older-than",
+            "30d",
+            "--dry-run",
+            "--yes",
+            "--force",
+        ])
+        .expect("GC command should parse");
+
+        let Command::Gc(arguments) = cli.command else {
+            panic!("expected GC command");
+        };
+        assert_eq!(arguments.older_than.seconds(), 30 * 24 * 60 * 60);
+        assert!(arguments.dry_run);
+        assert!(arguments.yes);
+        assert!(arguments.force);
     }
 
     #[test]

@@ -41,6 +41,53 @@ trees create ./workspace --repo /path/to/api --repo /path/to/web
 
 Each repository becomes a direct child worktree under `./workspace`. The source repositories remain at their original paths.
 
+An automatic workspace is allocated from the reusable pool for a repository
+set. It does not take a workspace path; Trees reuses an idle slot or creates a
+generated path below its managed workspace directory:
+
+```sh
+trees create --repo /path/to/api --repo /path/to/web
+trees release /absolute/path/to/workspace --claim-id CLAIM_ID
+```
+
+The automatic command prints Bash assignments that can be captured by a shell:
+`WORKSPACE_PATH`, `POOL_ID`, and `CLAIM_ID`. Use `--json` for a single JSON
+object instead. Keep the claim ID with the caller that owns the workspace and
+pass it to release. Release retains the claim when Git reports dirty, missing, prunable,
+diverged, or failed worktrees, so the claim holder can repair the workspace before
+returning it.
+`POOL_ID` is the stable UUID of the repository-set pool; its BLAKE3 hash and
+canonical sorted origin repository ID set are stored internally for indexed
+lookup and exact matching.
+
+The command shape selects the management mode. An explicit workspace path is
+manual and remains outside automatic allocation and GC; omitting the path is
+automatic. No `--mode` option is needed. Manual workspaces keep the existing
+direct-child worktree behavior and are never removed by automatic GC.
+
+Configure the automatic workspace content directory independently from the
+lifecycle database:
+
+```sh
+trees config set workspaces-dir /absolute/path/to/workspaces
+```
+
+The configured value is persisted as an absolute path. If unset, Trees uses
+the platform data-directory default. Reclaim old automatic workspaces with an
+explicit threshold:
+
+```sh
+trees gc --older-than 30d --dry-run
+trees gc --older-than 30d --yes
+trees gc --older-than 30d --force
+```
+
+Normal GC reports automatic, unclaimed, claimed, age-eligible, and
+candidate counts before asking for confirmation. `--yes` skips confirmation
+while keeping normal safety checks. `--force` also skips confirmation and may
+remove dirty worktrees or unexpected content, but never bypasses manual,
+claim, operation, root-containment, or repository-identity guards.
+
 Launch an interactive Codex session for a managed workspace:
 
 ```sh
@@ -113,4 +160,7 @@ See the [contributing guide](CONTRIBUTING.md) for the development workflow and t
 
 ## Current Scope
 
-The current CLI provides workspace creation with detached worktrees from each repository's current `HEAD`. Branch selection, workspace deletion, and user-facing status or history commands are not part of the current command surface.
+The current CLI provides manual and automatic workspace creation, explicit
+acquire and release, configured automatic workspace roots, and time-bounded
+automatic GC. Branch selection, repair, and user-facing status or history
+commands are not part of the current command surface.

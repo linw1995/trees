@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-08-29
+goal: Allow automatically managed Git worktree workspaces to be borrowed,
+  returned, and reclaimed by age without affecting manual workspaces or
+  destroying unsafe Git state.
