@@ -8,8 +8,8 @@ use serde::Serialize;
 use crate::claim::WorkspaceClaim;
 use crate::domain::{
     CanonicalPath, ClaimId, JsonDocument, OperationState, OriginRepositoryId, PoolId,
-    RepoWorktreeId, RepoWorktreeState, Timestamp, WorkspaceId, WorkspaceManagementMetadata,
-    WorkspaceManagementMode, WorkspaceState,
+    RepoWorktreeId, RepoWorktreeState, Timestamp, WorkspaceId, WorkspaceManagementMode,
+    WorkspaceState,
 };
 use crate::git::{self, GitError};
 use crate::naming::{self, NamingError, WorktreePlan};
@@ -543,10 +543,6 @@ fn provision_automatic_new(
         next_generated_workspace(connection, normalized_plan.workspace_root.as_path())?;
     let creation_plan = automatic_creation_plan(&normalized_plan, workspace_path.clone())?;
     let claim = WorkspaceClaim::new(workspace_id);
-    let management = WorkspaceManagementMetadata {
-        mode: WorkspaceManagementMode::Automatic,
-        pool_id: Some(pool.id),
-    };
     let intent_json = JsonDocument::from_serializable(&serde_json::json!({
         "allocation": normalized_plan,
         "workspace_id": workspace_id,
@@ -554,10 +550,11 @@ fn provision_automatic_new(
         "claim_id": claim.id,
     }))
     .map_err(WorkspaceError::Json)?;
-    let context = initialize_creation_with_metadata(
+    let context = initialize_creation_with_mode(
         connection,
         creation_plan,
-        management,
+        WorkspaceManagementMode::Automatic,
+        Some(pool.id),
         Some(&claim),
         intent_json,
     )?;
@@ -716,22 +713,21 @@ pub fn initialize_creation(
     plan: CreationPlan,
 ) -> Result<CreationContext, WorkspaceError> {
     let intent_json = JsonDocument::from_serializable(&plan).map_err(WorkspaceError::Json)?;
-    initialize_creation_with_metadata(
+    initialize_creation_with_mode(
         connection,
         plan,
-        WorkspaceManagementMetadata {
-            mode: WorkspaceManagementMode::Manual,
-            pool_id: None,
-        },
+        WorkspaceManagementMode::Manual,
+        None,
         None,
         intent_json,
     )
 }
 
-fn initialize_creation_with_metadata(
+fn initialize_creation_with_mode(
     connection: &mut SqliteConnection,
     plan: CreationPlan,
-    management: WorkspaceManagementMetadata,
+    management_mode: WorkspaceManagementMode,
+    pool_id: Option<PoolId>,
     claim: Option<&WorkspaceClaim>,
     intent_json: JsonDocument,
 ) -> Result<CreationContext, WorkspaceError> {
@@ -762,7 +758,7 @@ fn initialize_creation_with_metadata(
                 &repository.source_path,
             )
             .map_err(WorkspaceError::Database)?;
-            if let Some(pool_id) = management.pool_id {
+            if let Some(pool_id) = pool_id {
                 insert_workspace_pool_repositories(
                     connection,
                     &[NewWorkspacePoolRepository {
@@ -791,8 +787,8 @@ fn initialize_creation_with_metadata(
                 created_at: now.clone(),
                 updated_at: now.clone(),
                 last_reconciled_at: None,
-                management_mode: management.mode,
-                pool_id: management.pool_id,
+                management_mode,
+                pool_id,
                 last_released_at: None,
                 reclaimed_at: None,
             },
