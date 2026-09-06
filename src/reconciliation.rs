@@ -71,10 +71,6 @@ pub fn reconcile_workspace(
     reconcile_workspace_inner(connection, workspace_id, operation_id, None)
 }
 
-/// Reconciles Git state under an operation lease.
-///
-/// `operation_id` attributes lifecycle events; `lease_id` is the sole token
-/// used to renew and protect the current operation lease.
 pub fn reconcile_workspace_with_lease(
     connection: &mut SqliteConnection,
     workspace_id: &WorkspaceId,
