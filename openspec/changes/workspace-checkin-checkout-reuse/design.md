@@ -60,10 +60,11 @@ keeps management policy, health, and access as three independent dimensions.
 
 The claim row is persistent usage state, not a long-lived SQLite lock. Claim
 acquisition and release keep SQLite transactions limited to claim, snapshot,
-operation, and event changes. Git and filesystem work runs between those short
-transactions so a slow subprocess cannot block other database users. Operation
-leases are a separate, expiring coordination mechanism for in-flight work and
-may be renewed by their owner while external steps run.
+operation-lease, and event changes. Git and filesystem work runs between those
+short transactions so a slow subprocess cannot block other database users.
+Operation facts are append-only. Current operation-lease state is stored in a
+separate mutable table and may be renewed by its holder while external steps
+run.
 
 New `trees create` calls without a positional workspace path are
 `automatic`; calls with an explicit path are `manual`. The command shape is
@@ -104,14 +105,25 @@ The workspace claim table stores the current usage claim only:
 The claim remains while the caller uses the workspace, but it does not hold a
 database transaction or database lock. It is released explicitly by the
 release operation; this model does not infer abandonment from process
-liveness or expire a claim. Operation rows retain their own expiry metadata
-for short-lived operation recovery. The workspace and
-repo-worktree IDs never change when a claim is reused.
+liveness or expire a claim. The workspace and repo-worktree IDs never change
+when a claim is reused.
 
-Operation rows retain their own owner and expiry metadata. Those operation
-leases protect a mutation while Git or filesystem work runs outside SQLite
-transactions. Only operation leases are renewed through short
-transactions.
+Operation facts and operation leases are deliberately separate:
+
+- `operations` is append-only and stores the immutable operation identity,
+  workspace, kind, intent, and start time;
+- `operation_leases` stores at most one current lease per operation, references
+  `operations.id` through `operation_id`, carries the workspace ID with a
+  uniqueness constraint, and stores the mutable lease token and expiry time;
+- `lifecycle_events` stores append-only operation starts, steps, recoveries, and
+  terminal transitions. The latest operation event is the operation state;
+- Lease renewal updates only `operation_leases` and does not append a heartbeat
+  event. Lease takeover replaces the lease token through an atomic
+  operation-id/token/expiry check.
+
+The operation lease protects a mutation while Git or filesystem work runs
+outside SQLite transactions. Workspace claims remain independent and are not
+renewed or expired by this mechanism.
 
 ### Resolve the Managed Workspace Root
 
@@ -263,9 +275,9 @@ Workspace claims remain active until explicit release and are never replaced by
 automatic allocation. Operation leases independently protect a mutation while
 Git or filesystem work runs outside SQLite transactions. When an operation
 lease expires, a later invocation may claim the operation through an atomic
-owner/expiry check, observe external state, and either finish or roll back the
-incomplete operation. Operation lease recovery does not create, release, or
-extend a workspace claim.
+`operation_id`/lease-token/expiry check, observe external state, and either
+finish or roll back the incomplete operation. Operation lease recovery does not
+create, release, or extend a workspace claim.
 
 ### Reclaim Only Idle Automatic Workspaces
 
@@ -324,23 +336,24 @@ removal steps.
 
 ### Reuse Existing Lifecycle Transactions and Events
 
-Acquisition, release, operation recovery, and GC are represented as normal
-`operations` with kinds `acquire`, `release`, `operation_recovery`, and `gc`.
-Their intent is persisted before any claim or reclamation mutation, and their
-terminal state, state change, and lifecycle event are committed atomically in
-short Diesel transactions. External Git and filesystem work is performed
-between those transactions. Access and GC events use `entity_type = workspace`
-and the stable workspace ID; structured details carry claim identifiers, GC
-counts, age cutoffs, and the `forced` marker when applicable.
+Acquisition, release, operation recovery, and GC append immutable operation
+facts with kinds `acquire`, `release`, `operation_recovery`, and `gc`. Their
+intent is persisted before any claim or reclamation mutation. The current lease
+row, terminal lifecycle event, state change, and claim/reclamation mutation are
+committed atomically in short Diesel transactions. External Git and filesystem
+work is performed between those transactions. Access and GC events use
+`entity_type = workspace` and the stable workspace ID; structured details carry
+claim identifiers, GC counts, age cutoffs, and the `forced` marker when
+applicable.
 
-Operation lease renewals are short owner-checked updates made while an
-external step runs. They protect the in-flight operation and do not hold SQLite
-transactions during Git or filesystem work. Git reads happen outside SQLite
-transactions. Before returning from automatic acquisition or release, the
-workflow performs a final reconciliation so the operation result is based on
-Git's authoritative metadata rather than a stale database snapshot. Existing
-`trees codex` behavior remains backward compatible and is not implicitly
-coupled to this claim in this change.
+Operation lease renewals are short lease-token-checked updates to
+`operation_leases` made while an external step runs. They protect the in-flight
+operation and do not hold SQLite transactions during Git or filesystem work.
+Git reads happen outside SQLite transactions. Before returning from automatic
+acquisition or release, the workflow performs a final reconciliation so the
+operation result is based on Git's authoritative metadata rather than a stale
+database snapshot. Existing `trees codex` behavior remains backward compatible
+and is not implicitly coupled to this claim in this change.
 
 ## Risks / Trade-Offs
 
@@ -375,10 +388,12 @@ coupled to this claim in this change.
 
 1. Consolidate the workspace reuse, origin, pool, claim, operation, and naming
    changes into migration `00000000000002`. The migration builds the final
-   schema directly from the original lifecycle tables, preserves existing
-   workspace IDs and repo-worktree observations, drops workspace-claim owner,
-   expiry, and heartbeat metadata, renames the idle timestamp to
-   `last_released_at`, and derives slot roots from workspace paths. Existing
+   schema directly from the original lifecycle tables and preserves existing
+   workspace IDs and repo-worktree observations. It drops workspace-claim
+   owner, expiry, and heartbeat metadata, moves mutable operation lease state
+   into `operation_leases`, and represents operation state transitions through
+   append-only lifecycle events. It renames the idle timestamp to
+   `last_released_at` and derives slot roots from workspace paths. Existing
    explicit-path workspace rows remain `manual` with no active claim; the
    migration does not touch Git or delete files.
 2. Extend the repository and domain layers without changing existing

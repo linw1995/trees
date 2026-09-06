@@ -126,7 +126,7 @@ fingerprint SHALL be idempotent.
 Acquire and release SHALL use the existing per-workspace
 operation serialization. A request SHALL NOT replace an active claim or run
 concurrently with another non-terminal workspace operation. Claim changes,
-operation transitions, and access lifecycle events SHALL use the existing
+operation lease changes, and access lifecycle events SHALL use the existing
 short Diesel transaction boundaries. Git and filesystem work SHALL occur
 outside those transactions.
 
@@ -139,11 +139,12 @@ outside those transactions.
 ### Requirement: Keep SQLite Critical Sections Short
 
 Access and mutation workflows SHALL hold SQLite transactions only while
-persisting intent, claim, snapshot, operation, or lifecycle-event changes. They
-MUST NOT invoke Git commands or filesystem operations from inside those
-transactions. Automatic creation SHALL persist each step intent before the
-external Git operation and persist its result afterward. Operation lease
-renewal SHALL be one short metadata update and SHALL NOT span external work.
+appending operation facts, changing claims or current operation leases,
+updating snapshots, and appending lifecycle events. They MUST NOT invoke Git
+commands or filesystem operations from inside those transactions. Automatic
+creation SHALL append each step intent before the external Git operation and
+append its result afterward. Operation lease renewal SHALL be one short
+`operation_leases` update and SHALL NOT span external work.
 
 #### Scenario: Run External Work Outside SQLite Transactions
 
@@ -152,22 +153,62 @@ renewal SHALL be one short metadata update and SHALL NOT span external work.
 - **THEN** no SQLite transaction remains open while the external operation is
   running, and the operation can be followed by a short result transaction
 
+### Requirement: Keep Operation Facts Append-Only
+
+The `operations` table SHALL be append-only. An operation row SHALL contain
+only immutable operation identity, workspace identity, kind, intent, and start
+time. It SHALL NOT be updated with the current leaseholder, lease expiry,
+pending step, terminal state, finish time, or error details. Operation starts,
+steps, recoveries, and terminal transitions SHALL be appended to
+`lifecycle_events`; the latest operation event is the authoritative operation
+state.
+
+#### Scenario: Preserve an Operation Fact
+
+- **WHEN** an operation reaches a new step or terminal state
+- **THEN** Trees appends a lifecycle event without updating the original
+  `operations` row
+
+### Requirement: Manage Current Operation Leases Separately
+
+The system SHALL persist current operation lease state in an
+`operation_leases` table. Each lease SHALL reference exactly one operation
+through `operation_id`, and SHALL carry a uniquely constrained
+`workspace_id`; at most one active lease SHALL exist for an operation, and at
+most one active operation lease SHALL exist for a workspace. The lease row
+SHALL contain an opaque lease token and an expiration time. Lease renewal and
+takeover SHALL update only this current lease row and SHALL use an atomic
+operation ID, token, and expiry check. Lease changes SHALL NOT create a
+workspace claim or mutate the immutable `operations` row.
+
+#### Scenario: Renew the Current Operation Lease
+
+- **WHEN** the current leaseholder renews an unexpired operation lease
+- **THEN** only the matching `operation_leases` row is updated and no
+  heartbeat event is appended
+
+#### Scenario: Expired Operation Lease Takeover
+
+- **WHEN** a lease has expired and a later invocation provides the current
+  lease token
+- **THEN** the lease token is atomically replaced, external state is observed,
+  and the recovery transition is appended to `lifecycle_events`
+
 ### Requirement: Renew Operation Leases During External Work
 
-Each non-terminal workspace operation SHALL carry an owner identity and an
-expiration time. A long-running Git or filesystem step MAY renew the operation
-lease through an owner-checked short transaction. Operation
-lease renewal SHALL protect the in-flight mutation from premature recovery;
-it SHALL NOT create or extend a workspace claim. An expired operation MAY be
-recovered only after an atomic owner/expiry check and a fresh external-state
-observation.
+A long-running Git or filesystem step MAY renew the current operation lease
+through a lease-token-checked short transaction. Operation lease renewal SHALL
+protect the in-flight mutation from premature recovery; it SHALL NOT create or
+extend a workspace claim. An expired operation MAY be recovered only after an
+atomic operation ID, lease-token, and expiry check followed by fresh
+external-state observation.
 
 #### Scenario: Keep a Long External Step Owned
 
 - **WHEN** an external Git operation outlives the current operation lease
-- **THEN** the owning process can renew the operation lease with a short
-  renewal transaction, and another process cannot recover that operation
-  while the owner check still succeeds
+- **THEN** the current leaseholder can renew the `operation_leases` row with a
+  short renewal transaction, and another process cannot recover that operation
+  while the lease-token check still succeeds
 
 ### Requirement: Record Access Events with Existing Lifecycle Identity
 

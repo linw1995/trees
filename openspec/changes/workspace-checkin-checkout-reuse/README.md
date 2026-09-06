@@ -40,8 +40,9 @@ configured, Trees uses the platform data-directory default. The lifecycle
 database remains separate from this content directory, and persisted paths are
 absolute.
 
-Claims and operation leases are updated in short SQLite transactions. Git and
-filesystem work runs outside those transactions. Operation lease renewals keep
-an in-flight external step owned and allow a later invocation to recover an
-expired operation. Workspace claims are not renewed or expired by this model;
-GC never overrides an active claim.
+Claims and current operation leases are updated in short SQLite transactions.
+Operation facts and lifecycle events are append-only; Git and filesystem work
+runs outside those transactions. Operation lease renewals keep an in-flight
+external step owned and allow a later invocation to recover an expired
+operation. Workspace claims are not renewed or expired by this model; GC never
+overrides an active claim.

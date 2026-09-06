@@ -325,27 +325,28 @@ reaches a per-workspace operation SHALL be
 represented by an operation and an immutable lifecycle event. A `--dry-run` GC
 inspection and a read-only candidate skip SHALL NOT create operations or
 events. Access and GC events SHALL use the stable workspace entity identity
-and SHALL include management mode, claim identifiers, operation owner
-context, timestamps, age cutoff, unclaimed/claimed counts, and relevant
+and SHALL include management mode, claim identifiers, operation context,
+timestamps, age cutoff, unclaimed/claimed counts, and relevant
 reconciliation or failure details as canonical JSON. Forced GC events SHALL
 include `forced: true`. Claim or filesystem snapshot changes and terminal
-operation state SHALL be committed atomically with their event in a short
-SQLite transaction; physical GC removal SHALL be completed before a workspace
-is marked `reclaimed`.
+operation events SHALL be committed atomically with current lease changes in a
+short SQLite transaction; physical GC removal SHALL be completed before a
+workspace is marked `reclaimed`. The operation fact itself SHALL remain
+append-only.
 
 #### Scenario: Audit a Release Rejection
 
 - **WHEN** release is rejected because a worktree is dirty or diverged
-- **THEN** the operation is failed, the workspace and worktree snapshot
-  reflects the observed health, the active claim remains, and the event log
-  contains the rejection reason and claim identifier
+- **THEN** a terminal operation-failed event is appended. The workspace and
+  worktree snapshot reflect the observed health, the active claim remains, and
+  the event log contains the rejection reason and claim identifier
 
 #### Scenario: Audit Repeated Reconciliation
 
 - **WHEN** acquire or release observes no change from the stored reusable
   snapshot
 - **THEN** no duplicate external-change event is appended, while the access
-  operation still records its own successful transition
+  operation still appends its own successful terminal event
 
 #### Scenario: Preserve Reclamation History
 

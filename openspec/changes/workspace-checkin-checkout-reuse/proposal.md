@@ -45,8 +45,8 @@ manual responsibility.
 - Persist at most one active workspace claim per workspace, with a claim
   identifier and timestamp, while keeping workspace health separate from access
   state.
-  Claim and operation updates SHALL use short SQLite transactions; Git and
-  filesystem work SHALL never hold those transactions open.
+  Claim and operation-lease updates SHALL use short SQLite transactions; Git
+  and filesystem work SHALL never hold those transactions open.
 - Require every managed worktree to be present, attached, detached, clean,
   and at its recorded revision before a claim can be acquired or released.
 - Recover abandoned operations through operation-lease expiry and fresh
@@ -55,9 +55,10 @@ manual responsibility.
   restricted to an explicit GC operation, with `--force` as the explicit
   opt-in for unsafe automatic-slot cleanup; active claims remain protected.
 - Record acquire, release, rejection, and operation recovery actions in the
-  existing operation and immutable lifecycle event model; operation lease
-  renewals update the running operation without appending an event for each
-  renewal.
+  existing immutable lifecycle event model. Operation facts are append-only;
+  current operation leases are managed in a separate `operation_leases` table.
+  Lease renewals update only that current lease row without appending an event
+  for each renewal.
 - Preserve explicit-path creation for manual workspaces without adding a
   redundant mode flag, while keeping repair and manual-workspace overrides
   outside this change. GC retains lifecycle tombstones instead of deleting
@@ -87,8 +88,9 @@ manual responsibility.
   from the existing lifecycle tables. Legacy workspace IDs and worktree
   observations are preserved, existing explicit-path workspaces become
   manual, and active workspace claims are stored without claim owner or
-  expiry metadata. Operation expiry metadata remains on the existing
-  operations table, and its expiry is renewed during long external steps.
+  expiry metadata. Operation facts remain append-only, while current lease
+  ownership and expiry move to `operation_leases` and are renewed during long
+  external steps.
 - Extends the path/configuration layers with a configurable platform-specific
   automatic workspace root, absolute persisted paths, and generated workspace
   paths.
