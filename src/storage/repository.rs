@@ -21,7 +21,9 @@ use super::models::{
     OperationIntent, OperationLeaseRow, OperationRow, OriginRepositoryRow, RepoWorktreeRow,
     WorkspaceClaimRow, WorkspacePoolRepositoryRow, WorkspacePoolRow, WorkspaceRow,
 };
-use super::transaction::{with_immediate_transaction, with_short_transaction};
+use super::transaction::{
+    with_immediate_transaction, with_retrying_short_transaction, with_short_transaction,
+};
 
 #[derive(Debug, Clone)]
 pub struct TransitionMetadata {
@@ -836,7 +838,7 @@ pub fn begin_operation(
     connection: &mut SqliteConnection,
     intent: &OperationIntent,
 ) -> Result<OperationRow, OperationIntentError> {
-    with_short_transaction(connection, |connection| {
+    with_retrying_short_transaction(connection, |connection| {
         persist_operation_intent(connection, intent)
     })
     .map_err(|error| match error {
