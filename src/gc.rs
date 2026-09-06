@@ -5,9 +5,7 @@ use std::str::FromStr;
 
 use diesel::sqlite::SqliteConnection;
 
-use crate::domain::{
-    CanonicalPath, JsonDocument, OperationId, Timestamp, WorkspaceId, WorkspaceState,
-};
+use crate::domain::{CanonicalPath, JsonDocument, Timestamp, WorkspaceId, WorkspaceState};
 use crate::git;
 use crate::reconciliation;
 use crate::storage::{
@@ -327,7 +325,6 @@ pub fn execute(
             let error_text = error.to_string();
             finish_gc_failure(
                 connection,
-                &operation.id,
                 &lease_id,
                 &workspace_id,
                 details_json,
@@ -345,7 +342,6 @@ pub fn execute(
         if claim.is_some() {
             finish_gc_skip(
                 connection,
-                &operation.id,
                 &lease_id,
                 &workspace_id,
                 details_json,
@@ -362,7 +358,6 @@ pub fn execute(
         {
             finish_gc_skip(
                 connection,
-                &operation.id,
                 &lease_id,
                 &workspace_id,
                 details_json,
@@ -380,14 +375,7 @@ pub fn execute(
         let removal_plan = match prepare_removal(&workspace, &repositories, force) {
             Ok(plan) => plan,
             Err(reason) => {
-                finish_gc_skip(
-                    connection,
-                    &operation.id,
-                    &lease_id,
-                    &workspace_id,
-                    details_json,
-                    reason,
-                )?;
+                finish_gc_skip(connection, &lease_id, &workspace_id, details_json, reason)?;
                 report.skipped.push(GcSkipped {
                     workspace_path: workspace.canonical_path,
                     reason,
@@ -407,7 +395,6 @@ pub fn execute(
             );
             finish_gc_failure(
                 connection,
-                &operation.id,
                 &lease_id,
                 &workspace_id,
                 gc_details(&workspace.canonical_path, &scan, force, Some(&error_text)),
@@ -422,7 +409,6 @@ pub fn execute(
 
         if let Err(error) = record_workspace_reclaimed(
             connection,
-            &operation.id,
             &lease_id,
             &workspace_id,
             Some(gc_details(&workspace.canonical_path, &scan, force, None)),
@@ -430,7 +416,6 @@ pub fn execute(
             let error_text = error.to_string();
             finish_gc_failure(
                 connection,
-                &operation.id,
                 &lease_id,
                 &workspace_id,
                 gc_details(&workspace.canonical_path, &scan, force, Some(&error_text)),
@@ -497,7 +482,6 @@ fn gc_details(
 
 fn finish_gc_skip(
     connection: &mut SqliteConnection,
-    operation_id: &OperationId,
     lease_id: &crate::domain::LeaseId,
     workspace_id: &WorkspaceId,
     details_json: JsonDocument,
@@ -509,7 +493,6 @@ fn finish_gc_skip(
     .expect("GC skip error should serialize");
     record_workspace_gc_skipped(
         connection,
-        operation_id,
         lease_id,
         workspace_id,
         Some(details_json),
@@ -520,7 +503,6 @@ fn finish_gc_skip(
 
 fn finish_gc_failure(
     connection: &mut SqliteConnection,
-    operation_id: &OperationId,
     lease_id: &crate::domain::LeaseId,
     workspace_id: &WorkspaceId,
     details_json: JsonDocument,
@@ -532,7 +514,6 @@ fn finish_gc_failure(
     .expect("GC error should serialize");
     record_workspace_gc_failure(
         connection,
-        operation_id,
         lease_id,
         workspace_id,
         Some(details_json),

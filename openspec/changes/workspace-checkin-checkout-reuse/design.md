@@ -121,6 +121,8 @@ Operation facts and operation leases are deliberately separate:
 - Lease renewal updates only `operation_leases` and does not append a heartbeat
   event. Lease takeover replaces the lease token through an atomic
   lease-id/expiry check; `operation_id` is retained for reverse lookup.
+- Lease-owned step and terminal persistence uses only the current `lease_id` as
+  its mutable-state selector and derives `operation_id` from that lease row.
 
 The operation lease protects a mutation while Git or filesystem work runs
 outside SQLite transactions. Workspace claims remain independent and are not

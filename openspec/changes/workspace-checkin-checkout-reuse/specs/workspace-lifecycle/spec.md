@@ -179,7 +179,10 @@ operation, and at most one active operation lease SHALL exist for a workspace.
 The lease row's primary-key `id` SHALL be the opaque lease token and SHALL be
 paired with an expiration time. Lease renewal and takeover SHALL update only
 this current lease row and SHALL use an atomic lease ID and expiry check;
-`operation_id` is retained for reverse lookup and relationship integrity.
+`operation_id` is retained for reverse lookup and relationship integrity. All
+lease-owned step and terminal state persistence SHALL address the current lease
+by `lease_id` and derive the operation identity from that lease row; callers
+SHALL NOT supply a second operation identifier for current lease mutation.
 Lease changes SHALL NOT create a workspace claim or mutate the immutable
 `operations` row.
 

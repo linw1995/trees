@@ -340,11 +340,12 @@ pub fn release_workspace_claim(
 
 pub fn record_workspace_acquire(
     connection: &mut SqliteConnection,
-    operation_id: &OperationId,
+    lease_id: &LeaseId,
     claim: &WorkspaceClaim,
     details_json: Option<JsonDocument>,
 ) -> QueryResult<()> {
     with_short_transaction(connection, |connection| {
+        let operation_id = operation_id_for_lease(connection, lease_id)?;
         insert_workspace_claim(connection, &NewWorkspaceClaim::from(claim))?;
         let workspace = workspaces::table
             .find(&claim.workspace_id)
@@ -352,7 +353,7 @@ pub fn record_workspace_acquire(
             .first(connection)?;
         append_event(
             connection,
-            &workspace_access_event(operation_id, &workspace, "workspace_claimed", details_json),
+            &workspace_access_event(&operation_id, &workspace, "workspace_claimed", details_json),
         )?;
         Ok(())
     })
@@ -360,7 +361,6 @@ pub fn record_workspace_acquire(
 
 pub fn record_workspace_acquire_failure(
     connection: &mut SqliteConnection,
-    operation_id: &OperationId,
     lease_id: &LeaseId,
     workspace_id: &WorkspaceId,
     claim_id: &ClaimId,
@@ -368,6 +368,7 @@ pub fn record_workspace_acquire_failure(
     error_json: JsonDocument,
 ) -> QueryResult<()> {
     with_short_transaction(connection, |connection| {
+        let operation_id = operation_id_for_lease(connection, lease_id)?;
         let workspace = workspaces::table
             .find(workspace_id)
             .select(WorkspaceRow::as_select())
@@ -380,7 +381,6 @@ pub fn record_workspace_acquire_failure(
         .execute(connection)?;
         finish_operation_in_transaction(
             connection,
-            operation_id,
             lease_id,
             OperationState::Failed,
             TransitionMetadata::new("operation_failed", "trees")
@@ -391,7 +391,7 @@ pub fn record_workspace_acquire_failure(
         append_event(
             connection,
             &EventDraft {
-                operation_id: *operation_id,
+                operation_id,
                 entity_type: "workspace".to_owned(),
                 entity_id: workspace.id.to_string(),
                 event_type: "workspace_acquire_failed".to_owned(),
@@ -409,7 +409,6 @@ pub fn record_workspace_acquire_failure(
 
 pub fn record_workspace_release(
     connection: &mut SqliteConnection,
-    operation_id: &OperationId,
     lease_id: &LeaseId,
     workspace_id: &WorkspaceId,
     claim_id: &ClaimId,
@@ -418,6 +417,7 @@ pub fn record_workspace_release(
     // Keep claim release, idle timestamp, operation completion, and the event
     // append atomic so no reader observes a reusable workspace without history.
     with_short_transaction(connection, |connection| {
+        let operation_id = operation_id_for_lease(connection, lease_id)?;
         let workspace = workspaces::table
             .find(workspace_id)
             .select(WorkspaceRow::as_select())
@@ -434,7 +434,6 @@ pub fn record_workspace_release(
             .execute(connection)?;
         finish_operation_in_transaction(
             connection,
-            operation_id,
             lease_id,
             OperationState::Succeeded,
             TransitionMetadata::new("operation_succeeded", "trees")
@@ -443,7 +442,12 @@ pub fn record_workspace_release(
         )?;
         append_event(
             connection,
-            &workspace_access_event(operation_id, &workspace, "workspace_released", details_json),
+            &workspace_access_event(
+                &operation_id,
+                &workspace,
+                "workspace_released",
+                details_json,
+            ),
         )?;
         Ok(())
     })
@@ -451,7 +455,6 @@ pub fn record_workspace_release(
 
 pub fn record_workspace_release_rejection(
     connection: &mut SqliteConnection,
-    operation_id: &OperationId,
     lease_id: &LeaseId,
     workspace_id: &WorkspaceId,
     details_json: Option<JsonDocument>,
@@ -459,13 +462,13 @@ pub fn record_workspace_release_rejection(
 ) -> QueryResult<()> {
     // Rejection leaves the claim intact while its holder repairs the workspace.
     with_short_transaction(connection, |connection| {
+        let operation_id = operation_id_for_lease(connection, lease_id)?;
         let workspace = workspaces::table
             .find(workspace_id)
             .select(WorkspaceRow::as_select())
             .first(connection)?;
         finish_operation_in_transaction(
             connection,
-            operation_id,
             lease_id,
             OperationState::Failed,
             TransitionMetadata::new("operation_failed", "trees")
@@ -476,7 +479,7 @@ pub fn record_workspace_release_rejection(
         append_event(
             connection,
             &EventDraft {
-                operation_id: *operation_id,
+                operation_id,
                 entity_type: "workspace".to_owned(),
                 entity_id: workspace.id.to_string(),
                 event_type: "workspace_release_rejected".to_owned(),
@@ -494,12 +497,12 @@ pub fn record_workspace_release_rejection(
 
 pub fn record_workspace_reclaimed(
     connection: &mut SqliteConnection,
-    operation_id: &OperationId,
     lease_id: &LeaseId,
     workspace_id: &WorkspaceId,
     details_json: Option<JsonDocument>,
 ) -> QueryResult<()> {
     with_short_transaction(connection, |connection| {
+        let operation_id = operation_id_for_lease(connection, lease_id)?;
         let workspace = workspaces::table
             .find(workspace_id)
             .select(WorkspaceRow::as_select())
@@ -516,7 +519,7 @@ pub fn record_workspace_reclaimed(
             append_event(
                 connection,
                 &EventDraft {
-                    operation_id: *operation_id,
+                    operation_id,
                     entity_type: "repo_worktree".to_owned(),
                     entity_id: repository.id.to_string(),
                     event_type: "worktree_reclaimed".to_owned(),
@@ -539,7 +542,6 @@ pub fn record_workspace_reclaimed(
             .execute(connection)?;
         finish_operation_in_transaction(
             connection,
-            operation_id,
             lease_id,
             OperationState::Succeeded,
             TransitionMetadata::new("operation_succeeded", "trees")
@@ -549,7 +551,7 @@ pub fn record_workspace_reclaimed(
         append_event(
             connection,
             &EventDraft {
-                operation_id: *operation_id,
+                operation_id,
                 entity_type: "workspace".to_owned(),
                 entity_id: workspace.id.to_string(),
                 event_type: "workspace_reclaimed".to_owned(),
@@ -567,20 +569,19 @@ pub fn record_workspace_reclaimed(
 
 pub fn record_workspace_gc_skipped(
     connection: &mut SqliteConnection,
-    operation_id: &OperationId,
     lease_id: &LeaseId,
     workspace_id: &WorkspaceId,
     details_json: Option<JsonDocument>,
     error_json: JsonDocument,
 ) -> QueryResult<()> {
     with_short_transaction(connection, |connection| {
+        let operation_id = operation_id_for_lease(connection, lease_id)?;
         let workspace = workspaces::table
             .find(workspace_id)
             .select(WorkspaceRow::as_select())
             .first(connection)?;
         finish_operation_in_transaction(
             connection,
-            operation_id,
             lease_id,
             OperationState::Failed,
             TransitionMetadata::new("operation_failed", "gc")
@@ -591,7 +592,7 @@ pub fn record_workspace_gc_skipped(
         append_event(
             connection,
             &EventDraft {
-                operation_id: *operation_id,
+                operation_id,
                 entity_type: "workspace".to_owned(),
                 entity_id: workspace.id.to_string(),
                 event_type: "workspace_gc_skipped".to_owned(),
@@ -609,13 +610,13 @@ pub fn record_workspace_gc_skipped(
 
 pub fn record_workspace_gc_failure(
     connection: &mut SqliteConnection,
-    operation_id: &OperationId,
     lease_id: &LeaseId,
     workspace_id: &WorkspaceId,
     details_json: Option<JsonDocument>,
     error_json: JsonDocument,
 ) -> QueryResult<()> {
     with_short_transaction(connection, |connection| {
+        let operation_id = operation_id_for_lease(connection, lease_id)?;
         let workspace = workspaces::table
             .find(workspace_id)
             .select(WorkspaceRow::as_select())
@@ -630,7 +631,6 @@ pub fn record_workspace_gc_failure(
             .execute(connection)?;
         finish_operation_in_transaction(
             connection,
-            operation_id,
             lease_id,
             OperationState::Failed,
             TransitionMetadata::new("operation_failed", "gc")
@@ -641,7 +641,7 @@ pub fn record_workspace_gc_failure(
         append_event(
             connection,
             &EventDraft {
-                operation_id: *operation_id,
+                operation_id,
                 entity_type: "workspace".to_owned(),
                 entity_id: workspace.id.to_string(),
                 event_type: "workspace_gc_failed".to_owned(),
@@ -762,6 +762,17 @@ pub fn find_operation_lease(
         .select(OperationLeaseRow::as_select())
         .first(connection)
         .optional()
+}
+
+/// Resolves the immutable operation identity owned by the current lease token.
+fn operation_id_for_lease(
+    connection: &mut SqliteConnection,
+    lease_id: &LeaseId,
+) -> QueryResult<OperationId> {
+    operation_leases::table
+        .find(lease_id)
+        .select(operation_leases::operation_id)
+        .first(connection)
 }
 
 pub fn persist_operation_intent(
@@ -1097,25 +1108,24 @@ pub fn record_repo_worktree_transition(
 
 pub fn record_operation_transition(
     connection: &mut SqliteConnection,
-    operation_id: &OperationId,
     lease_id: &LeaseId,
     state: OperationState,
     metadata: TransitionMetadata,
 ) -> QueryResult<()> {
     with_short_transaction(connection, |connection| {
-        finish_operation_in_transaction(connection, operation_id, lease_id, state, metadata)
+        finish_operation_in_transaction(connection, lease_id, state, metadata)
     })
 }
 
 fn finish_operation_in_transaction(
     connection: &mut SqliteConnection,
-    operation_id: &OperationId,
     lease_id: &LeaseId,
     state: OperationState,
     metadata: TransitionMetadata,
 ) -> QueryResult<()> {
+    let operation_id = operation_id_for_lease(connection, lease_id)?;
     let previous_state =
-        operation_state(connection, operation_id)?.unwrap_or(OperationState::Running);
+        operation_state(connection, &operation_id)?.unwrap_or(OperationState::Running);
     let updated = diesel::delete(operation_leases::table.filter(operation_leases::id.eq(lease_id)))
         .execute(connection)?;
     if updated != 1 {
@@ -1123,7 +1133,7 @@ fn finish_operation_in_transaction(
     }
     append_operation_event(
         connection,
-        *operation_id,
+        operation_id,
         Some(previous_state),
         state,
         metadata,
@@ -1133,13 +1143,13 @@ fn finish_operation_in_transaction(
 
 pub fn persist_operation_step_intent(
     connection: &mut SqliteConnection,
-    operation_id: &OperationId,
     lease_id: &LeaseId,
     pending_step: impl Into<String>,
     intent_json: JsonDocument,
 ) -> QueryResult<()> {
     let pending_step = pending_step.into();
     with_short_transaction(connection, |connection| {
+        let operation_id = operation_id_for_lease(connection, lease_id)?;
         let updated =
             diesel::update(operation_leases::table.filter(operation_leases::id.eq(lease_id)))
                 .set(operation_leases::lease_expires_at.eq(Timestamp::after_seconds(300)))
@@ -1148,10 +1158,10 @@ pub fn persist_operation_step_intent(
             return Err(Error::NotFound);
         }
         let previous_state =
-            operation_state(connection, operation_id)?.unwrap_or(OperationState::Running);
+            operation_state(connection, &operation_id)?.unwrap_or(OperationState::Running);
         append_operation_event(
             connection,
-            *operation_id,
+            operation_id,
             Some(previous_state),
             OperationState::Running,
             TransitionMetadata::new("operation_step_started", "trees")
@@ -1165,19 +1175,19 @@ pub fn persist_operation_step_intent(
 pub fn record_worktree_step_result(
     connection: &mut SqliteConnection,
     worktree_id: &RepoWorktreeId,
-    operation_id: &OperationId,
     lease_id: &LeaseId,
     state: RepoWorktreeState,
     last_head: Option<String>,
     metadata: TransitionMetadata,
 ) -> QueryResult<()> {
     with_short_transaction(connection, |connection| {
+        let operation_id = operation_id_for_lease(connection, lease_id)?;
         let previous_state = repo_worktrees::table
             .find(worktree_id)
             .select(repo_worktrees::state)
             .first::<RepoWorktreeState>(connection)?;
         let operation_state =
-            operation_state(connection, operation_id)?.unwrap_or(OperationState::Running);
+            operation_state(connection, &operation_id)?.unwrap_or(OperationState::Running);
         let lease_expires_at = Timestamp::after_seconds(300);
         let updated =
             diesel::update(operation_leases::table.filter(operation_leases::id.eq(lease_id)))
@@ -1198,7 +1208,7 @@ pub fn record_worktree_step_result(
         append_event(
             connection,
             &EventDraft {
-                operation_id: *operation_id,
+                operation_id,
                 entity_type: "repo_worktree".to_owned(),
                 entity_id: worktree_id.to_string(),
                 event_type: metadata.event_type.clone(),
@@ -1219,7 +1229,7 @@ pub fn record_worktree_step_result(
         };
         append_operation_event(
             connection,
-            *operation_id,
+            operation_id,
             Some(operation_state),
             OperationState::Running,
             operation_metadata,
@@ -1231,10 +1241,10 @@ pub fn record_worktree_step_result(
 pub fn finalize_creation(
     connection: &mut SqliteConnection,
     workspace_id: &WorkspaceId,
-    operation_id: &OperationId,
     lease_id: &LeaseId,
 ) -> QueryResult<()> {
     with_short_transaction(connection, |connection| {
+        let operation_id = operation_id_for_lease(connection, lease_id)?;
         let workspace = workspaces::table
             .find(workspace_id)
             .select(WorkspaceRow::as_select())
@@ -1243,7 +1253,6 @@ pub fn finalize_creation(
 
         finish_operation_in_transaction(
             connection,
-            operation_id,
             lease_id,
             OperationState::Succeeded,
             TransitionMetadata::new("operation_succeeded", "trees").with_pending_step("complete"),
@@ -1258,7 +1267,7 @@ pub fn finalize_creation(
         append_event(
             connection,
             &EventDraft {
-                operation_id: *operation_id,
+                operation_id,
                 entity_type: "workspace".to_owned(),
                 entity_id: workspace.id.to_string(),
                 event_type: "workspace_ready".to_owned(),
@@ -1277,12 +1286,12 @@ pub fn finalize_creation(
 pub fn finalize_automatic_creation(
     connection: &mut SqliteConnection,
     workspace_id: &WorkspaceId,
-    operation_id: &OperationId,
     lease_id: &LeaseId,
     claim: &WorkspaceClaim,
     details_json: Option<JsonDocument>,
 ) -> QueryResult<()> {
     with_short_transaction(connection, |connection| {
+        let operation_id = operation_id_for_lease(connection, lease_id)?;
         let workspace = workspaces::table
             .find(workspace_id)
             .select(WorkspaceRow::as_select())
@@ -1298,7 +1307,6 @@ pub fn finalize_automatic_creation(
         let occurred_at = Timestamp::now();
         finish_operation_in_transaction(
             connection,
-            operation_id,
             lease_id,
             OperationState::Succeeded,
             TransitionMetadata::new("operation_succeeded", "trees")
@@ -1315,7 +1323,7 @@ pub fn finalize_automatic_creation(
         append_event(
             connection,
             &EventDraft {
-                operation_id: *operation_id,
+                operation_id,
                 entity_type: "workspace".to_owned(),
                 entity_id: workspace.id.to_string(),
                 event_type: "workspace_ready".to_owned(),
@@ -1333,7 +1341,7 @@ pub fn finalize_automatic_creation(
             .first(connection)?;
         append_event(
             connection,
-            &workspace_access_event(operation_id, &workspace, "workspace_claimed", details_json),
+            &workspace_access_event(&operation_id, &workspace, "workspace_claimed", details_json),
         )?;
         Ok(())
     })
@@ -1684,7 +1692,7 @@ mod tests {
         let claim = WorkspaceClaim::new(workspace_id);
         record_workspace_acquire(
             &mut connection,
-            &acquire_operation.id,
+            &acquire_intent.lease_id,
             &claim,
             Some(JsonDocument::parse(r#"{"acquire":true}"#).unwrap()),
         )
@@ -1704,7 +1712,6 @@ mod tests {
         );
         record_operation_transition(
             &mut connection,
-            &acquire_operation.id,
             &acquire_intent.lease_id,
             OperationState::Succeeded,
             TransitionMetadata::new("operation_succeeded", "trees")
@@ -1723,7 +1730,6 @@ mod tests {
             .expect("release operation should start");
         record_workspace_release(
             &mut connection,
-            &release_operation.id,
             &release_intent.lease_id,
             &workspace_id,
             &claim.id,
@@ -1810,7 +1816,6 @@ mod tests {
 
         record_workspace_reclaimed(
             &mut connection,
-            &operation.id,
             &intent.lease_id,
             &workspace_id,
             Some(JsonDocument::parse(r#"{"forced":false}"#).unwrap()),
@@ -2122,7 +2127,6 @@ mod tests {
         .expect("worktree transition should be recorded");
         record_operation_transition(
             &mut connection,
-            &operation.id,
             &lease_id,
             OperationState::Succeeded,
             TransitionMetadata::new("operation_succeeded", "trees").with_pending_step("complete"),

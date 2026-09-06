@@ -55,22 +55,12 @@ pub fn prepare(
     ) {
         Ok(summary) => summary,
         Err(error) => {
-            let _ = finish_reconciliation_operation(
-                connection,
-                &operation_id,
-                &lease_id,
-                OperationState::Failed,
-            );
+            let _ = finish_reconciliation_operation(connection, &lease_id, OperationState::Failed);
             return Err(WorkspacePreparationError::Reconciliation(error));
         }
     };
-    finish_reconciliation_operation(
-        connection,
-        &operation_id,
-        &lease_id,
-        OperationState::Succeeded,
-    )
-    .map_err(WorkspacePreparationError::Database)?;
+    finish_reconciliation_operation(connection, &lease_id, OperationState::Succeeded)
+        .map_err(WorkspacePreparationError::Database)?;
 
     if summary.workspace_state != WorkspaceState::Ready {
         return Err(WorkspacePreparationError::NotReady {
@@ -124,13 +114,11 @@ fn start_reconciliation_operation(
 
 fn finish_reconciliation_operation(
     connection: &mut SqliteConnection,
-    operation_id: &OperationId,
     lease_id: &LeaseId,
     state: OperationState,
 ) -> Result<(), DieselError> {
     record_operation_transition(
         connection,
-        operation_id,
         lease_id,
         state,
         TransitionMetadata::new("codex_reconciliation_finished", "trees")

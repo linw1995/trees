@@ -549,8 +549,7 @@ fn recover_completed_operation(
             .map_err(ReconciliationError::Database)?;
         }
     }
-    finalize_creation(connection, workspace_id, &operation.id, lease_id)
-        .map_err(ReconciliationError::Database)?;
+    finalize_creation(connection, workspace_id, lease_id).map_err(ReconciliationError::Database)?;
     append_recovery_event(
         connection,
         &operation.id,
@@ -620,7 +619,6 @@ fn recover_incomplete_operation(
     };
     if let Err(error) = record_operation_transition(
         connection,
-        &operation.id,
         lease_id,
         operation_state,
         TransitionMetadata::new("operation_recovered", "recovery")
@@ -880,7 +878,6 @@ mod tests {
         crate::storage::finalize_creation(
             &mut connection,
             &context.workspace_id,
-            &context.operation_id,
             &context.lease_id,
         )
         .expect("creation should finalize");
@@ -938,7 +935,6 @@ mod tests {
         crate::storage::finalize_creation(
             &mut connection,
             &context.workspace_id,
-            &context.operation_id,
             &context.lease_id,
         )
         .expect("creation should finalize");
@@ -995,7 +991,6 @@ mod tests {
         crate::storage::finalize_creation(
             &mut connection,
             &context.workspace_id,
-            &context.operation_id,
             &context.lease_id,
         )
         .expect("creation should finalize");
@@ -1041,7 +1036,6 @@ mod tests {
         crate::storage::finalize_creation(
             &mut connection,
             &context.workspace_id,
-            &context.operation_id,
             &context.lease_id,
         )
         .expect("creation should finalize");
@@ -1083,7 +1077,6 @@ mod tests {
         crate::storage::finalize_creation(
             &mut connection,
             &context.workspace_id,
-            &context.operation_id,
             &context.lease_id,
         )
         .expect("creation should finalize");
@@ -1129,7 +1122,6 @@ mod tests {
         crate::storage::finalize_creation(
             &mut connection,
             &context.workspace_id,
-            &context.operation_id,
             &context.lease_id,
         )
         .expect("creation should finalize");

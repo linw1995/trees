@@ -246,42 +246,38 @@ where
         Ok(boundary) => boundary,
         Err(error) => {
             let primary = WorkspaceError::Reconciliation(error);
-            fail_operation(connection, &operation.id, &lease_id, &primary);
+            fail_operation(connection, &lease_id, &primary);
             return Err(primary);
         }
     };
     if boundary.workspace.management_mode != crate::domain::WorkspaceManagementMode::Automatic {
         let primary = WorkspaceError::NotAutomatic(candidate.canonical_path.clone());
-        fail_operation(connection, &operation.id, &lease_id, &primary);
+        fail_operation(connection, &lease_id, &primary);
         return Err(primary);
     }
     let Some(pool_id) = boundary.workspace.pool_id else {
         let primary = WorkspaceError::RepositorySetMismatch(candidate.id);
-        fail_operation(connection, &operation.id, &lease_id, &primary);
+        fail_operation(connection, &lease_id, &primary);
         return Err(primary);
     };
     if boundary.claim.is_some() {
         let primary = WorkspaceError::ClaimActive(candidate.id);
-        fail_operation(connection, &operation.id, &lease_id, &primary);
+        fail_operation(connection, &lease_id, &primary);
         return Err(primary);
     }
     if boundary.summary.workspace_state != WorkspaceState::Ready {
         let primary = WorkspaceError::NotReusable(candidate.canonical_path.clone());
-        fail_operation(connection, &operation.id, &lease_id, &primary);
+        fail_operation(connection, &lease_id, &primary);
         return Err(primary);
     }
 
     let claim = WorkspaceClaim::new(candidate.id);
     let details_json = acquire_details(&claim, pool_id);
-    let record_result = record_workspace_acquire(
-        connection,
-        &operation.id,
-        &claim,
-        Some(details_json.clone()),
-    );
+    let record_result =
+        record_workspace_acquire(connection, &lease_id, &claim, Some(details_json.clone()));
     if let Err(error) = record_result {
         let primary = WorkspaceError::Database(error);
-        fail_operation(connection, &operation.id, &lease_id, &primary);
+        fail_operation(connection, &lease_id, &primary);
         return Err(primary);
     }
 
@@ -298,7 +294,6 @@ where
             let primary = WorkspaceError::Reconciliation(error);
             return Err(fail_acquire(
                 connection,
-                &operation.id,
                 &lease_id,
                 &candidate.id,
                 &claim.id,
@@ -313,7 +308,6 @@ where
         let primary = WorkspaceError::NotReusable(candidate.canonical_path.clone());
         return Err(fail_acquire(
             connection,
-            &operation.id,
             &lease_id,
             &candidate.id,
             &claim.id,
@@ -324,7 +318,6 @@ where
 
     if let Err(error) = record_operation_transition(
         connection,
-        &operation.id,
         &lease_id,
         OperationState::Succeeded,
         TransitionMetadata::new("operation_succeeded", "trees")
@@ -332,7 +325,7 @@ where
             .with_details(details_json.clone()),
     ) {
         let primary = WorkspaceError::Database(error);
-        fail_operation(connection, &operation.id, &lease_id, &primary);
+        fail_operation(connection, &lease_id, &primary);
         return Err(primary);
     }
 
@@ -360,15 +353,9 @@ fn map_operation_error(error: OperationIntentError) -> WorkspaceError {
     }
 }
 
-fn fail_operation(
-    connection: &mut SqliteConnection,
-    operation_id: &crate::domain::OperationId,
-    lease_id: &LeaseId,
-    error: &WorkspaceError,
-) {
+fn fail_operation(connection: &mut SqliteConnection, lease_id: &LeaseId, error: &WorkspaceError) {
     let _ = record_operation_transition(
         connection,
-        operation_id,
         lease_id,
         OperationState::Failed,
         TransitionMetadata::new("operation_failed", "trees")
@@ -379,7 +366,6 @@ fn fail_operation(
 
 fn fail_acquire(
     connection: &mut SqliteConnection,
-    operation_id: &crate::domain::OperationId,
     lease_id: &LeaseId,
     workspace_id: &WorkspaceId,
     claim_id: &ClaimId,
@@ -389,7 +375,6 @@ fn fail_acquire(
     let error_json = error_document(&primary);
     match record_workspace_acquire_failure(
         connection,
-        operation_id,
         lease_id,
         workspace_id,
         claim_id,
@@ -445,23 +430,23 @@ pub fn release_automatic_workspace(
         Ok(boundary) => boundary,
         Err(error) => {
             let primary = WorkspaceError::Reconciliation(error);
-            fail_operation(connection, &operation.id, &lease_id, &primary);
+            fail_operation(connection, &lease_id, &primary);
             return Err(primary);
         }
     };
     if boundary.workspace.management_mode != WorkspaceManagementMode::Automatic {
         let primary = WorkspaceError::NotAutomatic(boundary.workspace.canonical_path);
-        fail_operation(connection, &operation.id, &lease_id, &primary);
+        fail_operation(connection, &lease_id, &primary);
         return Err(primary);
     }
     let Some(active_claim) = boundary.claim.as_ref() else {
         let primary = WorkspaceError::ClaimNotFound(claim_id);
-        fail_operation(connection, &operation.id, &lease_id, &primary);
+        fail_operation(connection, &lease_id, &primary);
         return Err(primary);
     };
     if active_claim.id != claim_id {
         let primary = WorkspaceError::ClaimNotFound(claim_id);
-        fail_operation(connection, &operation.id, &lease_id, &primary);
+        fail_operation(connection, &lease_id, &primary);
         return Err(primary);
     }
     // Do not release the claim until live reconciliation proves the slot is
@@ -471,7 +456,6 @@ pub fn release_automatic_workspace(
         let primary = WorkspaceError::NotReusable(workspace.canonical_path.clone());
         return Err(fail_release(
             connection,
-            &operation.id,
             &lease_id,
             &workspace.id,
             primary,
@@ -480,14 +464,13 @@ pub fn release_automatic_workspace(
     }
     if let Err(error) = record_workspace_release(
         connection,
-        &operation.id,
         &lease_id,
         &workspace.id,
         &claim_id,
         Some(details_json),
     ) {
         let primary = WorkspaceError::Database(error);
-        fail_operation(connection, &operation.id, &lease_id, &primary);
+        fail_operation(connection, &lease_id, &primary);
         return Err(primary);
     }
     let released_workspace =
@@ -512,7 +495,6 @@ fn release_details(workspace_path: &CanonicalPath, claim_id: ClaimId) -> JsonDoc
 
 fn fail_release(
     connection: &mut SqliteConnection,
-    operation_id: &crate::domain::OperationId,
     lease_id: &LeaseId,
     workspace_id: &WorkspaceId,
     primary: WorkspaceError,
@@ -521,7 +503,6 @@ fn fail_release(
     let error_json = error_document(&primary);
     match record_workspace_release_rejection(
         connection,
-        operation_id,
         lease_id,
         workspace_id,
         details_json,
@@ -645,7 +626,6 @@ fn provision_automatic_new(
     if let Err(error) = finalize_automatic_creation(
         connection,
         &context.workspace_id,
-        &context.operation_id,
         &context.lease_id,
         &claim,
         Some(details_json),
@@ -972,13 +952,8 @@ pub fn create_with_connection(
         &context.lease_id,
     )
     .map_err(WorkspaceError::Reconciliation)?;
-    finalize_persisted_creation(
-        connection,
-        &context.workspace_id,
-        &context.operation_id,
-        &context.lease_id,
-    )
-    .map_err(WorkspaceError::Database)?;
+    finalize_persisted_creation(connection, &context.workspace_id, &context.lease_id)
+        .map_err(WorkspaceError::Database)?;
     Ok(CreationResult {
         workspace_path: context.plan.workspace_path,
         worktree_paths: context
@@ -1021,7 +996,6 @@ fn execute_repository_step(
         JsonDocument::from_serializable(&repository.plan).map_err(WorkspaceError::Json)?;
     persist_operation_step_intent(
         connection,
-        &context.operation_id,
         &context.lease_id,
         format!("attach {}", repository.plan.source_path),
         intent_json,
@@ -1046,7 +1020,6 @@ fn execute_repository_step(
     record_worktree_step_result(
         connection,
         &repository.id,
-        &context.operation_id,
         &context.lease_id,
         RepoWorktreeState::Attached,
         worktree.head,
@@ -1165,7 +1138,6 @@ fn rollback_creation(
     };
     if let Err(error) = record_operation_transition(
         connection,
-        &context.operation_id,
         &context.lease_id,
         operation_state,
         TransitionMetadata::new(operation_event, "trees")
@@ -1408,13 +1380,8 @@ mod tests {
         let context =
             initialize_creation(&mut connection, plan).expect("creation should initialize");
         execute_creation(&mut connection, &context).expect("creation should execute");
-        finalize_persisted_creation(
-            &mut connection,
-            &context.workspace_id,
-            &context.operation_id,
-            &context.lease_id,
-        )
-        .expect("creation should finalize");
+        finalize_persisted_creation(&mut connection, &context.workspace_id, &context.lease_id)
+            .expect("creation should finalize");
         assert!(context.plan.workspace_path.as_path().exists());
         assert!(context
             .repositories
