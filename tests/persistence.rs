@@ -59,6 +59,9 @@ fn workspace_claim_migration_preserves_claim_metadata() {
     let mut connection = database::connect(&path).expect("database should open");
     connection
         .revert_last_migration(database::MIGRATIONS)
+        .expect("release timestamp migration should revert");
+    connection
+        .revert_last_migration(database::MIGRATIONS)
         .expect("claim migration should revert");
 
     let workspace_id = WorkspaceId::new();
@@ -102,10 +105,13 @@ fn workspace_claim_migration_preserves_claim_metadata() {
 
     connection
         .revert_last_migration(database::MIGRATIONS)
+        .expect("release timestamp migration should downgrade");
+    connection
+        .revert_last_migration(database::MIGRATIONS)
         .expect("claim migration should downgrade");
     connection
         .run_pending_migrations(database::MIGRATIONS)
-        .expect("claim migration should rerun");
+        .expect("claim and release timestamp migrations should rerun");
     let rerun = trees::storage::find_workspace_claim_by_id(&mut connection, &claim_id)
         .expect("rerun claim should be queryable");
     assert_eq!(rerun.claimed_at, claimed_at);
@@ -355,10 +361,16 @@ fn migration_three_normalizes_a_database_already_at_migration_two() {
 
     connection
         .revert_last_migration(database::MIGRATIONS)
+        .expect("release timestamp migration should revert");
+    connection
+        .revert_last_migration(database::MIGRATIONS)
+        .expect("claim migration should revert");
+    connection
+        .revert_last_migration(database::MIGRATIONS)
         .expect("pool registry migration should revert");
     connection
         .run_pending_migrations(database::MIGRATIONS)
-        .expect("pool registry migration should rerun");
+        .expect("pool, claim, and release timestamp migrations should rerun");
 
     drop(connection);
     fs::remove_file(path).expect("migration database should be removable");
@@ -471,7 +483,7 @@ fn legacy_workspace_rows_default_to_manual_without_pool_metadata() {
 
     assert_eq!(stored.management_mode, WorkspaceManagementMode::Manual);
     assert_eq!(stored.pool_key, None);
-    assert_eq!(stored.last_checked_in_at, None);
+    assert_eq!(stored.last_released_at, None);
     assert_eq!(stored.reclaimed_at, None);
     assert!(workspace_path.as_path().exists());
 
@@ -503,7 +515,7 @@ fn automatic_workspace_metadata_and_timestamps_round_trip_as_absolute_values() {
         .set((
             trees::schema::workspaces::management_mode.eq(WorkspaceManagementMode::Automatic),
             trees::schema::workspaces::pool_key.eq(Some(pool.id)),
-            trees::schema::workspaces::last_checked_in_at.eq(Some(now.clone())),
+            trees::schema::workspaces::last_released_at.eq(Some(now.clone())),
             trees::schema::workspaces::reclaimed_at.eq::<Option<Timestamp>>(None),
         ))
         .execute(&mut connection)
@@ -513,7 +525,7 @@ fn automatic_workspace_metadata_and_timestamps_round_trip_as_absolute_values() {
         .expect("workspace should be queryable");
     assert_eq!(stored.management_mode, WorkspaceManagementMode::Automatic);
     assert_eq!(stored.pool_key, Some(pool.id));
-    assert_eq!(stored.last_checked_in_at, Some(now));
+    assert_eq!(stored.last_released_at, Some(now));
     assert!(stored.canonical_path.as_path().is_absolute());
 
     drop(connection);

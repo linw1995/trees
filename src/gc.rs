@@ -109,8 +109,8 @@ impl std::error::Error for GcDurationError {}
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Default)]
 pub struct GcCounts {
     pub automatic: usize,
-    pub not_checked_out: usize,
-    pub checked_out: usize,
+    pub unclaimed: usize,
+    pub claimed: usize,
     pub age_eligible: usize,
     pub safe_to_reclaim: usize,
 }
@@ -119,7 +119,7 @@ pub struct GcCounts {
 pub enum GcCandidateReason {
     Eligible,
     Young,
-    CheckedOut,
+    Claimed,
     ActiveOperation,
     Unhealthy,
     UnsafeRoot,
@@ -135,7 +135,7 @@ impl fmt::Display for GcCandidateReason {
         let value = match self {
             Self::Eligible => "eligible",
             Self::Young => "young",
-            Self::CheckedOut => "checked_out",
+            Self::Claimed => "claimed",
             Self::ActiveOperation => "active_operation",
             Self::Unhealthy => "unhealthy",
             Self::UnsafeRoot => "unsafe_root",
@@ -154,7 +154,7 @@ pub struct GcCandidate {
     pub workspace: crate::storage::WorkspaceRow,
     pub idle_since: Timestamp,
     pub age_eligible: bool,
-    pub checked_out: bool,
+    pub claimed: bool,
     pub active_operation: bool,
 }
 
@@ -162,8 +162,8 @@ impl GcCandidate {
     pub fn reason(&self) -> GcCandidateReason {
         if !self.age_eligible {
             GcCandidateReason::Young
-        } else if self.checked_out {
-            GcCandidateReason::CheckedOut
+        } else if self.claimed {
+            GcCandidateReason::Claimed
         } else if self.active_operation {
             GcCandidateReason::ActiveOperation
         } else if self.workspace.state != WorkspaceState::Ready {
@@ -227,14 +227,14 @@ pub fn scan(
     let mut candidates = Vec::with_capacity(workspaces.len());
     for workspace in workspaces {
         let claim = find_workspace_claim(connection, &workspace.id).map_err(GcError::Database)?;
-        let checked_out = claim.is_some();
-        if checked_out {
-            counts.checked_out += 1;
+        let claimed = claim.is_some();
+        if claimed {
+            counts.claimed += 1;
         } else {
-            counts.not_checked_out += 1;
+            counts.unclaimed += 1;
         }
         let idle_since = workspace
-            .last_checked_in_at
+            .last_released_at
             .clone()
             .unwrap_or_else(|| workspace.created_at.clone());
         let age_eligible = idle_since < cutoff;
@@ -248,7 +248,7 @@ pub fn scan(
             workspace,
             idle_since,
             age_eligible,
-            checked_out,
+            claimed,
             active_operation,
         };
         if candidate.reason() == GcCandidateReason::Eligible {
@@ -323,11 +323,11 @@ pub fn execute(
                 &operation.id,
                 &workspace_id,
                 details_json,
-                GcCandidateReason::CheckedOut,
+                GcCandidateReason::Claimed,
             )?;
             report.skipped.push(GcSkipped {
                 workspace_path: workspace.canonical_path,
-                reason: GcCandidateReason::CheckedOut,
+                reason: GcCandidateReason::Claimed,
             });
             continue;
         }
@@ -413,8 +413,8 @@ fn execution_skip_reason(candidate: &GcCandidate, force: bool) -> Option<GcCandi
     if !candidate.age_eligible {
         return Some(GcCandidateReason::Young);
     }
-    if candidate.checked_out {
-        return Some(GcCandidateReason::CheckedOut);
+    if candidate.claimed {
+        return Some(GcCandidateReason::Claimed);
     }
     if candidate.active_operation {
         return Some(GcCandidateReason::ActiveOperation);
@@ -462,8 +462,8 @@ fn gc_details(
         "forced": force,
         "counts": {
             "automatic": scan.counts.automatic,
-            "not_checked_out": scan.counts.not_checked_out,
-            "checked_out": scan.counts.checked_out,
+            "unclaimed": scan.counts.unclaimed,
+            "claimed": scan.counts.claimed,
             "age_eligible": scan.counts.age_eligible,
             "safe_to_reclaim": scan.counts.safe_to_reclaim,
         },
@@ -825,19 +825,19 @@ mod tests {
         .expect("automatic allocation plan should be prepared");
         plan.workspace_root = CanonicalPath::from_absolute(root.join("managed"))
             .expect("workspace root should be absolute");
-        let checkout = provision_automatic(&mut connection, &plan)
+        let acquire = provision_automatic(&mut connection, &plan)
             .expect("automatic workspace should be provisioned");
-        release_automatic_workspace(&mut connection, &checkout.workspace_path, checkout.claim_id)
-            .expect("workspace should be checked in");
+        release_automatic_workspace(&mut connection, &acquire.workspace_path, acquire.claim_id)
+            .expect("workspace should be released");
         let mut workspace =
-            crate::storage::find_workspace_by_path(&mut connection, &checkout.workspace_path)
+            crate::storage::find_workspace_by_path(&mut connection, &acquire.workspace_path)
                 .expect("workspace lookup should succeed")
                 .expect("workspace should exist");
         let old = timestamp("2020-01-01T00:00:00Z");
         diesel::update(crate::schema::workspaces::table.find(workspace.id))
             .set((
                 crate::schema::workspaces::created_at.eq(old.clone()),
-                crate::schema::workspaces::last_checked_in_at.eq(Some(old)),
+                crate::schema::workspaces::last_released_at.eq(Some(old)),
             ))
             .execute(&mut connection)
             .expect("workspace should be aged");
@@ -879,7 +879,7 @@ mod tests {
     }
 
     #[test]
-    fn scans_idle_and_checked_out_automatic_workspaces_by_root() {
+    fn scans_idle_and_claimed_automatic_workspaces_by_root() {
         let root = test_root();
         let database_path = root.join("state.sqlite");
         let workspace_root = CanonicalPath::from_absolute(root.join("managed"))
@@ -923,7 +923,7 @@ mod tests {
                     last_reconciled_at: None,
                     management_mode: WorkspaceManagementMode::Automatic,
                     pool_key,
-                    last_checked_in_at: Some(idle_since),
+                    last_released_at: Some(idle_since),
                     reclaimed_at: None,
                 },
             )
@@ -947,7 +947,7 @@ mod tests {
                 last_reconciled_at: None,
                 management_mode: WorkspaceManagementMode::Manual,
                 pool_key: None,
-                last_checked_in_at: Some(old.clone()),
+                last_released_at: Some(old.clone()),
                 reclaimed_at: None,
             },
         )
@@ -960,8 +960,8 @@ mod tests {
         )
         .expect("GC scan should succeed");
         assert_eq!(result.counts.automatic, 4);
-        assert_eq!(result.counts.not_checked_out, 3);
-        assert_eq!(result.counts.checked_out, 1);
+        assert_eq!(result.counts.unclaimed, 3);
+        assert_eq!(result.counts.claimed, 1);
         assert_eq!(result.counts.age_eligible, 3);
         assert_eq!(result.counts.safe_to_reclaim, 1);
         assert_eq!(workspace_ids.len(), 4);

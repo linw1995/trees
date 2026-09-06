@@ -439,7 +439,7 @@ pub fn record_workspace_release(
         let occurred_at = Timestamp::now();
         diesel::update(workspaces::table.find(workspace_id))
             .set((
-                workspaces::last_checked_in_at.eq(&occurred_at),
+                workspaces::last_released_at.eq(&occurred_at),
                 workspaces::updated_at.eq(&occurred_at),
             ))
             .execute(connection)?;
@@ -467,7 +467,7 @@ pub fn record_workspace_release_rejection(
     details_json: Option<JsonDocument>,
     error_json: JsonDocument,
 ) -> QueryResult<()> {
-    // Rejection leaves the claim intact while the owner repairs the workspace.
+    // Rejection leaves the claim intact while its holder repairs the workspace.
     with_short_transaction(connection, |connection| {
         let workspace = workspaces::table
             .find(workspace_id)
@@ -1702,7 +1702,7 @@ mod tests {
             .is_none());
         assert!(find_workspace(&mut connection, &workspace_id)
             .unwrap()
-            .last_checked_in_at
+            .last_released_at
             .is_some());
         assert_eq!(
             find_operation(&mut connection, &release_operation.id)

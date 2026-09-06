@@ -4,7 +4,7 @@
 
 The workspace snapshot SHALL persist a management mode with the values
 `automatic` and `manual`, an optional UUID-backed repository-set pool key, the
-last successful checkin time, and, when applicable, the reclamation time. An
+last successful release time, and, when applicable, the reclamation time. An
 automatic workspace SHALL reference a pool registry row whose absolute
 workspace-root namespace, indexed hash, and canonical repository JSON identify
 the allocation scope and sorted Git common-directory identities; a manual
@@ -17,9 +17,9 @@ workspace rows SHALL be filled in as `manual` when this schema is introduced.
 
 #### Scenario: Track an Automatic Workspace Idle Time
 
-- **WHEN** an automatic workspace is successfully checked in
-- **THEN** its last successful checkin timestamp is updated atomically with
-  the claim release and checkin lifecycle event
+- **WHEN** an automatic workspace is successfully released
+- **THEN** its last successful release timestamp is updated atomically with
+  the claim release and release lifecycle event
 
 #### Scenario: Preserve Manual Retention Policy
 
@@ -80,9 +80,9 @@ In addition to the workspace health snapshot, the system SHALL persist the
 current usage claim in a `workspace_claims` table. The table SHALL contain at
 most one row for each workspace, with a UUID v7 claim identifier, workspace
 foreign key, and claim timestamp. A workspace with no active
-claim is unclaimed; a workspace with an active claim is checked out. The claim
+claim is unclaimed; a workspace with an active claim is claimed. The claim
 records persistent usage state for the workspace. It is not a database
-transaction or a database lock and remains until its owner releases it. Access
+transaction or a database lock and remains until the caller releases it. Access
 availability SHALL remain independent from
 `WorkspaceState` so a degraded workspace cannot become an eligible reusable
 workspace merely by having no claim.
@@ -95,7 +95,7 @@ workspace merely by having no claim.
 
 #### Scenario: Release an Active Claim
 
-- **WHEN** its owning claim identifier successfully releases a workspace
+- **WHEN** the supplied claim identifier successfully releases its workspace
 - **THEN** the active claim row is removed atomically with the terminal
   operation and release event, while workspace and repo-worktree identities
   remain intact
@@ -128,8 +128,8 @@ outside those transactions.
 
 #### Scenario: Reject Access During an Active Operation
 
-- **WHEN** a workspace has a non-terminal operation or an active claim owned by
-  another claim identifier
+- **WHEN** a workspace has a non-terminal operation or an active claim with a
+  different claim identifier
 - **THEN** the access request fails without changing Git or the active claim
 
 ### Requirement: Keep SQLite Critical Sections Short
@@ -175,7 +175,7 @@ append-only under the existing immutable event constraints.
 
 #### Scenario: Preserve Access History Across Reuse
 
-- **WHEN** the same workspace is checked out, checked in, and checked out
+- **WHEN** the same workspace is claimed, released, and claimed
   again
 - **THEN** the event log contains the ordered access transitions and no prior
   event or workspace identity is overwritten

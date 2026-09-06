@@ -4,13 +4,13 @@ This change defines a safe reuse lifecycle for Trees workspaces. An automatic
 `create` request is keyed by repository directories, first reuses an idle
 workspace from the matching pool, and provisions a new workspace under the
 Trees-managed root only when no safe slot is available. The allocated
-workspace is immediately held by an active claim and returned with `checkin`.
+workspace is immediately held by an active claim and returned with `release`.
 The claim is a persistent usage state, not a long-lived SQLite transaction or a
 database lock. It remains until the caller releases it; operation leases are
 the separate mechanism for short-lived concurrency and failure recovery.
 Automatically managed workspaces can later be reclaimed by an explicit
 time-bounded `gc` command. Normal GC reports how many automatic workspaces are
-currently not checked out and asks for confirmation. `--yes` skips that
+currently not claimed and asks for confirmation. `--yes` skips that
 confirmation while keeping normal safety checks; `--force` also skips
 confirmation and explicitly enables destructive cleanup of otherwise unsafe
 automatic slots, without overriding active claims.
@@ -22,7 +22,7 @@ trees gc --older-than 30d --yes
 trees gc --older-than 30d --force
 ```
 
-The normal command reports automatic, not-checked-out, checked-out, and
+The normal command reports automatic, unclaimed, claimed, and
 reclaimable counts before confirmation. `--yes` bypasses confirmation without
 relaxing safety checks. `--force` implies `--yes` and may delete local changes
 in age-qualified automatic workspaces.

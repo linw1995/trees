@@ -53,7 +53,7 @@ short-transaction, and boundary-reconciliation discipline.
 The workspace row stores a `management_mode` of `automatic` or `manual`, while
 `WorkspaceState` continues to represent physical and Git health. Access
 availability is derived from an active row in a new `workspace_claims` table:
-no row means unclaimed, and one row means checked out. A degraded workspace
+no row means unclaimed, and one row means claimed. A degraded workspace
 can therefore be unclaimed without being eligible for acquisition, and a
 manual workspace can remain healthy without becoming a GC candidate. This
 keeps management policy, health, and access as three independent dimensions.
@@ -99,7 +99,7 @@ The workspace claim table stores the current usage claim only:
 
 The claim remains while the caller uses the workspace, but it does not hold a
 database transaction or database lock. It is released explicitly by the
-checkin/release operation; this model does not infer abandonment from process
+release operation; this model does not infer abandonment from process
 liveness or expire a claim. Operation rows retain their own expiry and
 heartbeat fields for short-lived operation recovery. The workspace and
 repo-worktree IDs never change when a claim is reused.
@@ -148,11 +148,11 @@ The command contract separates automatic allocation from manual provisioning:
 ```text
 trees create --repo <repository-path>...
 trees create <workspace-path> --repo <repository-path>...
-trees checkin <workspace-path> --claim-id <claim-id>
+trees release <workspace-path> --claim-id <claim-id>
 ```
 
 The existing `--checkout-id` spelling may remain as a compatibility alias while
-the claim terminology is introduced. The claim identifier applies to checkin,
+the claim terminology is introduced. The claim identifier applies to release,
 not automatic creation.
 
 The automatic form does not accept a concrete workspace path. It canonicalizes
@@ -163,7 +163,7 @@ that pool. It filters out rows that are not `ready`, have an active operation
 or claim, or fail the live reusable-worktree predicate.
 
 If multiple candidates remain, Trees selects the least-recently-used slot by
-`last_checked_in_at`, falls back to `created_at` for a never-used slot, and
+`last_released_at`, falls back to `created_at` for a never-used slot, and
 uses the workspace UUID as a deterministic tiebreaker. Claim acquisition is
 the final atomic race check; if another process wins, allocation retries the
 next candidate.
@@ -176,15 +176,15 @@ as part of the creation intent. A failed provisioning attempt is rolled back at
 the filesystem level where possible and remains a failed lifecycle record for
 diagnostics; it is never returned as an allocated workspace.
 
-The automatic result returns the claim identifier for later checkin. Checkin
-releases the claim only after reconciliation confirms that the workspace is
-safe to reuse. Manual provisioning requires an explicit path and bypasses pool
-allocation, automated claiming, and GC; manual callers continue using the
+The automatic result returns the claim identifier for later release. The
+release operation releases the claim only after reconciliation confirms that
+the workspace is safe to reuse. Manual provisioning requires an explicit path
+and bypasses pool allocation, automated claiming, and GC; manual callers continue using the
 existing workspace/Codex paths without automated claims.
 
 The automatic command prints the allocated workspace path, repository-set
 pool key, and claim identifier so an orchestrator can persist the allocation
-and pass the identifier to later checkin calls. The
+and pass the identifier to later release calls. The
 identifier is a coordination token, not a security boundary; local filesystem
 and database permissions remain authoritative.
 
@@ -210,9 +210,9 @@ association error is not hidden by the cleanliness result.
 
 This policy intentionally rejects committed changes made in a detached
 worktree as well: a changed `HEAD` is `diverged` relative to the recorded
-checkout baseline. The caller must repair or intentionally preserve such work
+acquire baseline. The caller must repair or intentionally preserve such work
 outside this change; Trees never runs `reset --hard`, `clean`, or worktree
-removal as part of checkin.
+removal as part of release.
 
 ### Acquire and Release Workspace Claims
 
@@ -236,7 +236,7 @@ safety check.
 
 ### Release Without Destructive Cleanup
 
-Checkin requires the workspace path and the active claim identifier. Trees
+Release requires the workspace path and the active claim identifier. Trees
 holds the claim while it reconciles the worktrees. If the snapshot is clean and
 matches the recorded detached revisions, a short transaction deletes the
 active claim, completes the operation, and appends `workspace_released`. The
@@ -244,11 +244,11 @@ physical workspace directory, Git worktrees, files, branches, and source
 repositories remain untouched.
 
 If reconciliation observes dirty, missing, prunable, diverged, or failed
-worktrees, checkin records `workspace_release_rejected`, marks the workspace
+worktrees, release records `workspace_release_rejected`, marks the workspace
 degraded through the existing lifecycle transition, fails the release
-operation, and keeps the active claim. Keeping the claim lets its owner fix the
-workspace without exposing it to the next caller. A repeated checkin can
-succeed after the owner has repaired the state externally and reconciliation
+operation, and keeps the active claim. Keeping the claim lets its holder fix
+the workspace without exposing it to the next caller. A repeated release can
+succeed after the claim holder has repaired the state externally and reconciliation
 sees the original baseline again.
 
 ### Recover Expired Operation Leases
@@ -265,14 +265,14 @@ extend a workspace claim.
 
 `trees gc --older-than <duration> [--dry-run] [--yes] [--force]` calculates a
 cutoff from the current UTC time. A workspace is idle when its
-`last_checked_in_at`, or `created_at` when it has never been checked in, is
+`last_released_at`, or `created_at` when it has never been released, is
 strictly older than the cutoff. GC considers only `automatic` workspaces in
 the current resolved workspace-root namespace. An active claim or operation
 always skips the candidate. GC does not infer claim abandonment from process
 liveness or override an active claim.
 
 Before a non-dry-run GC starts, it prints a summary with the automatic,
-not-checked-out, checked-out, age-qualified, and safe-to-reclaim counts. It
+unclaimed, claimed, age-qualified, and safe-to-reclaim counts. It
 then asks for confirmation such as `Reclaim N workspaces? [y/N]`. `--yes`
 skips this confirmation but keeps the normal safety filter. `--force` implies
 `--yes` and uses the forced safety policy below. A noninteractive invocation
@@ -341,7 +341,7 @@ coupled to this claim in this change.
 - [A caller forgets to release] → Keep the active claim and require an
   explicit recovery action; do not infer abandonment from process liveness or
   silently hand the workspace to another caller.
-- [A caller leaves edits in a worktree] → Reject checkin, persist `dirty` or
+- [A caller leaves edits in a worktree] → Reject release, persist `dirty` or
   `degraded` state, and keep the claim so no data is discarded or shared.
 - [The workspace changes between preflight and final verification] → Keep the
   claim held through the final reconciliation and roll back the claim when
@@ -370,9 +370,11 @@ coupled to this claim in this change.
 1. Keep migrations `00000000000002` and `00000000000003` for the existing
    management, pool, origin, and workspace reuse data. Add follow-up migration
    `00000000000004` to convert `workspace_leases` into `workspace_claims`,
-   preserving active workspace IDs, owners, and acquisition timestamps. Existing
-   explicit-path workspace rows remain `manual` with no active claim; the
-   migrations do not touch Git or delete files.
+   preserving active workspace IDs and acquisition timestamps while dropping
+   workspace-claim owner, expiry, and heartbeat metadata. Add migration
+   `00000000000005` to rename the idle timestamp to `last_released_at`.
+   Existing explicit-path workspace rows remain `manual` with no active claim;
+   the migrations do not touch Git or delete files.
 2. Extend the repository and domain layers without changing existing
    workspace or repo-worktree identifiers.
 3. Make reconciliation understand `dirty` worktrees before enabling pool

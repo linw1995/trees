@@ -47,15 +47,15 @@ generated path below its managed workspace directory:
 
 ```sh
 trees create --repo /path/to/api --repo /path/to/web
-trees checkin /absolute/path/to/workspace --claim-id CLAIM_ID
+trees release /absolute/path/to/workspace --claim-id CLAIM_ID
 ```
 
 The automatic command prints Bash assignments that can be captured by a shell:
 `WORKSPACE_PATH`, `POOL_KEY`, and `CLAIM_ID`. Use `--json` for a single JSON
 object instead. Keep the claim ID with the caller that owns the workspace and
-pass it to check in. The legacy `--checkout-id` spelling remains accepted as an
-alias. Checkin retains the claim when Git reports dirty, missing, prunable,
-diverged, or failed worktrees, so the owner can repair the workspace before
+pass it to release. The legacy `--checkout-id` spelling remains accepted as an
+alias. Release retains the claim when Git reports dirty, missing, prunable,
+diverged, or failed worktrees, so the claim holder can repair the workspace before
 returning it.
 `POOL_KEY` is the stable UUID of the repository-set pool; its BLAKE3 hash and
 canonical repository JSON are stored internally for indexed lookup and exact
@@ -83,7 +83,7 @@ trees gc --older-than 30d --yes
 trees gc --older-than 30d --force
 ```
 
-Normal GC reports automatic, not-checked-out, checked-out, age-eligible, and
+Normal GC reports automatic, unclaimed, claimed, age-eligible, and
 candidate counts before asking for confirmation. `--yes` skips confirmation
 while keeping normal safety checks. `--force` also skips confirmation and may
 remove dirty worktrees or unexpected content, but never bypasses manual,
@@ -162,6 +162,6 @@ See the [contributing guide](CONTRIBUTING.md) for the development workflow and t
 ## Current Scope
 
 The current CLI provides manual and automatic workspace creation, explicit
-claim release and checkin, configured automatic workspace roots, and
-time-bounded automatic GC. Branch selection, repair, and user-facing status
-or history commands are not part of the current command surface.
+acquire and release, configured automatic workspace roots, and time-bounded
+automatic GC. Branch selection, repair, and user-facing status or history
+commands are not part of the current command surface.

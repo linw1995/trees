@@ -61,10 +61,10 @@ pub struct AutomaticClaimResult {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct CheckinResult {
+pub struct ReleaseResult {
     pub workspace_path: CanonicalPath,
     pub claim_id: ClaimId,
-    pub checked_in_at: Timestamp,
+    pub released_at: Timestamp,
 }
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
@@ -167,11 +167,8 @@ fn list_idle_automatic_candidates(
     }
     let mut candidates = idle_candidates;
     candidates.sort_by(|left, right| {
-        let left_idle = left.last_checked_in_at.as_ref().unwrap_or(&left.created_at);
-        let right_idle = right
-            .last_checked_in_at
-            .as_ref()
-            .unwrap_or(&right.created_at);
+        let left_idle = left.last_released_at.as_ref().unwrap_or(&left.created_at);
+        let right_idle = right.last_released_at.as_ref().unwrap_or(&right.created_at);
         left_idle
             .cmp(right_idle)
             .then_with(|| left.id.to_string().cmp(&right.id.to_string()))
@@ -377,7 +374,7 @@ pub fn release_automatic_workspace(
     connection: &mut SqliteConnection,
     workspace_path: &CanonicalPath,
     claim_id: ClaimId,
-) -> Result<CheckinResult, WorkspaceError> {
+) -> Result<ReleaseResult, WorkspaceError> {
     let workspace = find_workspace_by_path(connection, workspace_path)
         .map_err(WorkspaceError::Database)?
         .ok_or_else(|| WorkspaceError::WorkspaceNotFound(workspace_path.clone()))?;
@@ -433,7 +430,7 @@ pub fn release_automatic_workspace(
         return Err(primary);
     }
     // Do not release the claim until live reconciliation proves the slot is
-    // safe to reuse; a rejected checkin intentionally keeps the claim.
+    // safe to reuse; a rejected release intentionally keeps the claim.
     let details_json = release_details(workspace_path, claim_id);
     if boundary.summary.workspace_state != WorkspaceState::Ready {
         let primary = WorkspaceError::NotReusable(workspace.canonical_path.clone());
@@ -456,15 +453,15 @@ pub fn release_automatic_workspace(
         fail_operation(connection, &operation.id, &primary);
         return Err(primary);
     }
-    let checked_in_workspace =
+    let released_workspace =
         find_workspace(connection, &workspace.id).map_err(WorkspaceError::Database)?;
-    let checked_in_at = checked_in_workspace
-        .last_checked_in_at
+    let released_at = released_workspace
+        .last_released_at
         .ok_or_else(|| WorkspaceError::Database(diesel::result::Error::NotFound))?;
-    Ok(CheckinResult {
-        workspace_path: checked_in_workspace.canonical_path,
+    Ok(ReleaseResult {
+        workspace_path: released_workspace.canonical_path,
         claim_id,
-        checked_in_at,
+        released_at,
     })
 }
 
@@ -796,7 +793,7 @@ fn initialize_creation_with_metadata(
                 last_reconciled_at: None,
                 management_mode: management.mode,
                 pool_key: management.pool_key,
-                last_checked_in_at: None,
+                last_released_at: None,
                 reclaimed_at: None,
             },
         )?;
@@ -1458,7 +1455,7 @@ mod tests {
         let now = Timestamp::parse("2026-01-01T00:00:00Z").unwrap();
         let older = WorkspaceId::new();
         let newer = WorkspaceId::new();
-        for (id, name, checked_in_at) in [
+        for (id, name, released_at) in [
             (older, "older", "2026-01-01T00:00:00Z"),
             (newer, "newer", "2026-02-01T00:00:00Z"),
         ] {
@@ -1481,8 +1478,8 @@ mod tests {
                     crate::schema::workspaces::management_mode
                         .eq(crate::domain::WorkspaceManagementMode::Automatic),
                     crate::schema::workspaces::pool_key.eq(Some(pool.id)),
-                    crate::schema::workspaces::last_checked_in_at
-                        .eq(Some(Timestamp::parse(checked_in_at).unwrap())),
+                    crate::schema::workspaces::last_released_at
+                        .eq(Some(Timestamp::parse(released_at).unwrap())),
                 ))
                 .execute(&mut connection)
                 .expect("candidate metadata should be updated");
@@ -1514,12 +1511,12 @@ mod tests {
         );
         assert!(
             crate::storage::find_workspace_claim(&mut connection, &candidate.id)
-                .expect("lease lookup should succeed")
+                .expect("claim lookup should succeed")
                 .is_some()
         );
 
         crate::storage::release_workspace_claim(&mut connection, &candidate.id, &result.claim_id)
-            .expect("allocated lease should be releasable");
+            .expect("allocated claim should be releasable");
         crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
             .expect("test worktree should be removable");
         drop(connection);
@@ -1597,42 +1594,42 @@ mod tests {
     }
 
     #[test]
-    fn checks_out_an_idle_automatic_candidate_and_records_its_lease() {
+    fn acquires_an_idle_automatic_candidate_and_records_its_claim() {
         let (root, database_path, mut connection, plan, candidate, worktree_path) =
             automatic_candidate_fixture();
         let result = acquire_automatic_candidate(&mut connection, &plan, &candidate)
-            .expect("automatic checkout should succeed");
+            .expect("automatic acquire should succeed");
 
         assert_eq!(result.workspace_path, candidate.canonical_path);
         assert_eq!(
             result.pool_key,
             candidate.pool_key.expect("candidate pool should exist")
         );
-        let lease = crate::storage::find_workspace_claim(&mut connection, &candidate.id)
-            .expect("lease lookup should succeed")
-            .expect("checkout lease should exist");
-        assert_eq!(lease.id, result.claim_id);
+        let claim = crate::storage::find_workspace_claim(&mut connection, &candidate.id)
+            .expect("claim lookup should succeed")
+            .expect("acquire claim should exist");
+        assert_eq!(claim.id, result.claim_id);
         assert_eq!(
             crate::storage::find_workspace(&mut connection, &candidate.id)
                 .expect("workspace lookup should succeed")
                 .state,
             WorkspaceState::Ready
         );
-        let checkout_event = crate::schema::lifecycle_events::table
+        let acquire_event = crate::schema::lifecycle_events::table
             .filter(crate::schema::lifecycle_events::entity_id.eq(candidate.id.to_string()))
             .filter(crate::schema::lifecycle_events::event_type.eq("workspace_claimed"))
             .select(crate::storage::EventRow::as_select())
             .first(&mut connection)
-            .expect("checkout event should exist");
+            .expect("acquire event should exist");
         assert_eq!(
-            crate::storage::find_operation(&mut connection, &checkout_event.operation_id)
-                .expect("checkout operation should exist")
+            crate::storage::find_operation(&mut connection, &acquire_event.operation_id)
+                .expect("acquire operation should exist")
                 .state,
             OperationState::Succeeded
         );
 
         crate::storage::release_workspace_claim(&mut connection, &candidate.id, &result.claim_id)
-            .expect("checkout lease should be releasable");
+            .expect("acquire claim should be releasable");
         crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
             .expect("test worktree should be removable");
         drop(connection);
@@ -1641,7 +1638,7 @@ mod tests {
     }
 
     #[test]
-    fn releases_a_checkout_lease_when_final_reconciliation_fails() {
+    fn removes_a_claim_when_final_reconciliation_fails() {
         let (root, database_path, mut connection, plan, candidate, worktree_path) =
             automatic_candidate_fixture();
         let dirty_path = worktree_path.join("local-change");
@@ -1653,12 +1650,12 @@ mod tests {
                 fs::write(&dirty_path, "dirty\n").expect("test worktree should become dirty");
             },
         )
-        .expect_err("post-check dirty state should reject checkout");
+        .expect_err("post-check dirty state should reject acquire");
 
         assert!(matches!(error, WorkspaceError::NotReusable(_)));
         assert!(
             crate::storage::find_workspace_claim(&mut connection, &candidate.id)
-                .expect("lease lookup should succeed")
+                .expect("claim lookup should succeed")
                 .is_none()
         );
         assert_eq!(
@@ -1673,15 +1670,15 @@ mod tests {
                 .state,
             RepoWorktreeState::Dirty
         );
-        let checkout_event = crate::schema::lifecycle_events::table
+        let acquire_event = crate::schema::lifecycle_events::table
             .filter(crate::schema::lifecycle_events::entity_id.eq(candidate.id.to_string()))
             .filter(crate::schema::lifecycle_events::event_type.eq("workspace_acquire_failed"))
             .select(crate::storage::EventRow::as_select())
             .first(&mut connection)
-            .expect("checkout failure event should exist");
+            .expect("acquire failure event should exist");
         assert_eq!(
-            crate::storage::find_operation(&mut connection, &checkout_event.operation_id)
-                .expect("checkout operation should exist")
+            crate::storage::find_operation(&mut connection, &acquire_event.operation_id)
+                .expect("acquire operation should exist")
                 .state,
             OperationState::Failed
         );
@@ -1694,11 +1691,11 @@ mod tests {
     }
 
     #[test]
-    fn protects_an_unexpired_checkout_from_reclamation() {
+    fn protects_a_claimed_workspace_from_reclamation() {
         let (root, database_path, mut connection, plan, candidate, worktree_path) =
             automatic_candidate_fixture();
-        let checkout = acquire_automatic_candidate(&mut connection, &plan, &candidate)
-            .expect("initial automatic checkout should succeed");
+        let acquire = acquire_automatic_candidate(&mut connection, &plan, &candidate)
+            .expect("initial automatic acquire should succeed");
 
         assert!(matches!(
             acquire_automatic_candidate(&mut connection, &plan, &candidate),
@@ -1706,14 +1703,14 @@ mod tests {
         ));
         assert_eq!(
             crate::storage::find_workspace_claim(&mut connection, &candidate.id)
-                .expect("lease lookup should succeed")
-                .expect("original lease should remain active")
+                .expect("claim lookup should succeed")
+                .expect("original claim should remain active")
                 .id,
-            checkout.claim_id
+            acquire.claim_id
         );
 
-        crate::storage::release_workspace_claim(&mut connection, &candidate.id, &checkout.claim_id)
-            .expect("original lease should be releasable");
+        crate::storage::release_workspace_claim(&mut connection, &candidate.id, &acquire.claim_id)
+            .expect("original claim should be releasable");
         crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
             .expect("test worktree should be removable");
         drop(connection);
@@ -1722,44 +1719,44 @@ mod tests {
     }
 
     #[test]
-    fn checks_in_a_reusable_automatic_workspace_and_updates_its_idle_timestamp() {
+    fn releases_a_reusable_automatic_workspace_and_updates_its_idle_timestamp() {
         let (root, database_path, mut connection, plan, candidate, worktree_path) =
             automatic_candidate_fixture();
-        let checkout = acquire_automatic_candidate(&mut connection, &plan, &candidate)
-            .expect("automatic checkout should succeed");
+        let acquire = acquire_automatic_candidate(&mut connection, &plan, &candidate)
+            .expect("automatic acquire should succeed");
 
         let result = release_automatic_workspace(
             &mut connection,
             &candidate.canonical_path,
-            checkout.claim_id,
+            acquire.claim_id,
         )
-        .expect("automatic checkin should succeed");
+        .expect("automatic release should succeed");
         assert_eq!(result.workspace_path, candidate.canonical_path);
-        assert_eq!(result.claim_id, checkout.claim_id);
+        assert_eq!(result.claim_id, acquire.claim_id);
         assert!(
             crate::storage::find_workspace_claim(&mut connection, &candidate.id)
-                .expect("lease lookup should succeed")
+                .expect("claim lookup should succeed")
                 .is_none()
         );
         let workspace = crate::storage::find_workspace(&mut connection, &candidate.id)
             .expect("workspace lookup should succeed");
         assert_eq!(workspace.state, WorkspaceState::Ready);
-        assert_eq!(workspace.last_checked_in_at, Some(result.checked_in_at));
+        assert_eq!(workspace.last_released_at, Some(result.released_at));
         assert_eq!(
             crate::storage::list_repo_worktrees(&mut connection, &candidate.id)
                 .expect("worktree lookup should succeed")[0]
                 .state,
             RepoWorktreeState::Attached
         );
-        let checkin_event = crate::schema::lifecycle_events::table
+        let release_event = crate::schema::lifecycle_events::table
             .filter(crate::schema::lifecycle_events::entity_id.eq(candidate.id.to_string()))
             .filter(crate::schema::lifecycle_events::event_type.eq("workspace_released"))
             .select(crate::storage::EventRow::as_select())
             .first(&mut connection)
-            .expect("checkin event should exist");
+            .expect("release event should exist");
         let operation =
-            crate::storage::find_operation(&mut connection, &checkin_event.operation_id)
-                .expect("checkin operation should exist");
+            crate::storage::find_operation(&mut connection, &release_event.operation_id)
+                .expect("release operation should exist");
         assert_eq!(operation.kind, "release");
         assert_eq!(operation.state, OperationState::Succeeded);
         assert!(worktree_path.exists());
@@ -1772,27 +1769,27 @@ mod tests {
     }
 
     #[test]
-    fn rejects_dirty_checkin_and_retains_the_owning_lease() {
+    fn rejects_dirty_release_and_retains_the_active_claim() {
         let (root, database_path, mut connection, plan, candidate, worktree_path) =
             automatic_candidate_fixture();
-        let checkout = acquire_automatic_candidate(&mut connection, &plan, &candidate)
-            .expect("automatic checkout should succeed");
+        let acquire = acquire_automatic_candidate(&mut connection, &plan, &candidate)
+            .expect("automatic acquire should succeed");
         fs::write(worktree_path.join("local-change"), "dirty\n")
             .expect("worktree should become dirty");
 
         let error = release_automatic_workspace(
             &mut connection,
             &candidate.canonical_path,
-            checkout.claim_id,
+            acquire.claim_id,
         )
-        .expect_err("dirty checkin should be rejected");
+        .expect_err("dirty release should be rejected");
         assert!(matches!(error, WorkspaceError::NotReusable(_)));
         assert_eq!(
             crate::storage::find_workspace_claim(&mut connection, &candidate.id)
-                .expect("lease lookup should succeed")
-                .expect("owning lease should remain active")
+                .expect("claim lookup should succeed")
+                .expect("active claim should remain")
                 .id,
-            checkout.claim_id
+            acquire.claim_id
         );
         assert_eq!(
             crate::storage::find_workspace(&mut connection, &candidate.id)
@@ -1805,16 +1802,16 @@ mod tests {
             .filter(crate::schema::lifecycle_events::event_type.eq("workspace_release_rejected"))
             .select(crate::storage::EventRow::as_select())
             .first(&mut connection)
-            .expect("checkin rejection event should exist");
+            .expect("release rejection event should exist");
         assert_eq!(
             crate::storage::find_operation(&mut connection, &rejected_event.operation_id)
-                .expect("checkin operation should exist")
+                .expect("release operation should exist")
                 .state,
             OperationState::Failed
         );
 
-        crate::storage::release_workspace_claim(&mut connection, &candidate.id, &checkout.claim_id)
-            .expect("dirty lease should be releasable for test cleanup");
+        crate::storage::release_workspace_claim(&mut connection, &candidate.id, &acquire.claim_id)
+            .expect("active claim should be releasable for test cleanup");
         crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
             .expect("dirty test worktree should be removable");
         drop(connection);
@@ -1823,11 +1820,11 @@ mod tests {
     }
 
     #[test]
-    fn rejects_checkin_with_a_wrong_claim_identifier() {
+    fn rejects_release_with_a_wrong_claim_identifier() {
         let (root, database_path, mut connection, plan, candidate, worktree_path) =
             automatic_candidate_fixture();
-        let checkout = acquire_automatic_candidate(&mut connection, &plan, &candidate)
-            .expect("automatic checkout should succeed");
+        let acquire = acquire_automatic_candidate(&mut connection, &plan, &candidate)
+            .expect("automatic acquire should succeed");
         let wrong_claim_id = ClaimId::new();
 
         assert!(matches!(
@@ -1836,14 +1833,14 @@ mod tests {
         ));
         assert_eq!(
             crate::storage::find_workspace_claim(&mut connection, &candidate.id)
-                .expect("lease lookup should succeed")
-                .expect("original lease should remain active")
+                .expect("claim lookup should succeed")
+                .expect("original claim should remain active")
                 .id,
-            checkout.claim_id
+            acquire.claim_id
         );
 
-        crate::storage::release_workspace_claim(&mut connection, &candidate.id, &checkout.claim_id)
-            .expect("original lease should be releasable");
+        crate::storage::release_workspace_claim(&mut connection, &candidate.id, &acquire.claim_id)
+            .expect("original claim should be releasable");
         crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
             .expect("test worktree should be removable");
         drop(connection);
@@ -1912,10 +1909,10 @@ mod tests {
         assert_eq!(repositories[0].state, RepoWorktreeState::Attached);
         assert!(repositories[0].worktree_path.as_path().is_dir());
 
-        let lease = crate::storage::find_workspace_claim(&mut connection, &workspace.id)
-            .expect("lease lookup should succeed")
-            .expect("provisioned workspace should be checked out");
-        assert_eq!(lease.id, result.claim_id);
+        let claim = crate::storage::find_workspace_claim(&mut connection, &workspace.id)
+            .expect("claim lookup should succeed")
+            .expect("provisioned workspace should be acquired");
+        assert_eq!(claim.id, result.claim_id);
         let operation = crate::schema::operations::table
             .filter(crate::schema::operations::workspace_id.eq(workspace.id))
             .select(crate::storage::OperationRow::as_select())
@@ -1930,7 +1927,7 @@ mod tests {
         );
 
         crate::storage::release_workspace_claim(&mut connection, &workspace.id, &result.claim_id)
-            .expect("provisioning lease should be releasable");
+            .expect("provisioning claim should be releasable");
         crate::git::remove_worktree(
             &CanonicalPath::resolve(&source).expect("source repository should resolve"),
             repositories[0].worktree_path.as_path(),
@@ -1983,7 +1980,7 @@ mod tests {
         assert_eq!(workspace.state, WorkspaceState::Failed);
         assert!(
             crate::storage::find_workspace_claim(&mut connection, &workspace.id)
-                .expect("lease lookup should succeed")
+                .expect("claim lookup should succeed")
                 .is_none()
         );
         assert!(

@@ -69,18 +69,18 @@ fn automatic_fixture() -> AutomaticFixture {
     .expect("automatic plan should be prepared");
     plan.workspace_root = CanonicalPath::from_absolute(root.join("managed"))
         .expect("workspace root should be absolute");
-    let checkout = provision_automatic(&mut connection, &plan)
+    let acquire = provision_automatic(&mut connection, &plan)
         .expect("automatic workspace should be provisioned");
-    release_automatic_workspace(&mut connection, &checkout.workspace_path, checkout.claim_id)
-        .expect("automatic workspace should be checked in");
-    let mut workspace = find_workspace_by_path(&mut connection, &checkout.workspace_path)
+    release_automatic_workspace(&mut connection, &acquire.workspace_path, acquire.claim_id)
+        .expect("automatic workspace should be released");
+    let mut workspace = find_workspace_by_path(&mut connection, &acquire.workspace_path)
         .expect("workspace lookup should succeed")
         .expect("workspace should exist");
     let old = Timestamp::parse("2020-01-01T00:00:00Z").expect("timestamp should parse");
     diesel::update(trees::schema::workspaces::table.find(workspace.id))
         .set((
             trees::schema::workspaces::created_at.eq(old.clone()),
-            trees::schema::workspaces::last_checked_in_at.eq(Some(old)),
+            trees::schema::workspaces::last_released_at.eq(Some(old)),
         ))
         .execute(&mut connection)
         .expect("workspace should be aged");
@@ -120,7 +120,7 @@ fn cleanup_fixture(fixture: AutomaticFixture) {
 }
 
 #[test]
-fn reuses_the_same_automatic_slot_across_checkin_cycles() {
+fn reuses_the_same_automatic_slot_across_acquire_release_cycles() {
     let mut fixture = automatic_fixture();
     let first = allocate_automatic_workspace(&mut fixture.connection, &fixture.plan)
         .expect("first allocation should succeed");
@@ -129,7 +129,7 @@ fn reuses_the_same_automatic_slot_across_checkin_cycles() {
         &first.workspace_path,
         first.claim_id,
     )
-    .expect("first allocation should check in");
+    .expect("first allocation should be released");
     let second = allocate_automatic_workspace(&mut fixture.connection, &fixture.plan)
         .expect("second allocation should succeed");
 
@@ -152,7 +152,7 @@ fn reuses_the_same_automatic_slot_across_checkin_cycles() {
         &second.workspace_path,
         second.claim_id,
     )
-    .expect("second allocation should check in");
+    .expect("second allocation should be released");
     cleanup_fixture(fixture);
 }
 
@@ -193,7 +193,7 @@ fn persists_origin_repositories_once_and_links_them_to_pool() {
 }
 
 #[test]
-fn selects_the_oldest_checked_in_slot_for_an_exact_repository_set() {
+fn selects_the_oldest_released_slot_for_an_exact_repository_set() {
     let root = test_root();
     let first_source = root.join("first");
     let second_source = root.join("second");
@@ -209,7 +209,7 @@ fn selects_the_oldest_checked_in_slot_for_an_exact_repository_set() {
         .expect("workspace root should be absolute");
     let first = provision_automatic(&mut connection, &plan).expect("first slot should provision");
     release_automatic_workspace(&mut connection, &first.workspace_path, first.claim_id)
-        .expect("first slot should check in");
+        .expect("first slot should be released");
     let first_workspace = find_workspace_by_path(&mut connection, &first.workspace_path)
         .expect("workspace lookup should succeed")
         .expect("first workspace should exist");
@@ -223,7 +223,7 @@ fn selects_the_oldest_checked_in_slot_for_an_exact_repository_set() {
     .workspace_root;
     let second = provision_automatic(&mut connection, &plan).expect("second slot should provision");
     release_automatic_workspace(&mut connection, &second.workspace_path, second.claim_id)
-        .expect("second slot should check in");
+        .expect("second slot should be released");
     let old = Timestamp::parse("2020-01-01T00:00:00Z").expect("timestamp should parse");
     let newer = Timestamp::parse("2021-01-01T00:00:00Z").expect("timestamp should parse");
     let first_workspace = find_workspace_by_path(&mut connection, &first.workspace_path)
@@ -233,11 +233,11 @@ fn selects_the_oldest_checked_in_slot_for_an_exact_repository_set() {
         .expect("workspace lookup should succeed")
         .expect("second workspace should exist");
     diesel::update(trees::schema::workspaces::table.find(first_workspace.id))
-        .set(trees::schema::workspaces::last_checked_in_at.eq(Some(old)))
+        .set(trees::schema::workspaces::last_released_at.eq(Some(old)))
         .execute(&mut connection)
         .expect("first workspace should be aged");
     diesel::update(trees::schema::workspaces::table.find(second_workspace.id))
-        .set(trees::schema::workspaces::last_checked_in_at.eq(Some(newer)))
+        .set(trees::schema::workspaces::last_released_at.eq(Some(newer)))
         .execute(&mut connection)
         .expect("second workspace should be aged");
 
@@ -245,10 +245,10 @@ fn selects_the_oldest_checked_in_slot_for_an_exact_repository_set() {
         .expect("pool allocation should succeed");
     assert_eq!(selected.workspace_path, first.workspace_path);
     release_automatic_workspace(&mut connection, &selected.workspace_path, selected.claim_id)
-        .expect("selected workspace should check in");
+        .expect("selected workspace should be released");
 
-    for checkout in [first, second] {
-        let workspace = find_workspace_by_path(&mut connection, &checkout.workspace_path)
+    for allocation in [first, second] {
+        let workspace = find_workspace_by_path(&mut connection, &allocation.workspace_path)
             .expect("workspace lookup should succeed")
             .expect("workspace should exist");
         for worktree in list_repo_worktrees(&mut connection, &workspace.id)
@@ -307,7 +307,7 @@ fn concurrent_allocation_never_returns_the_same_workspace() {
     let mut connection = trees::database::connect(&database_path).expect("database should open");
     for (workspace_path, claim_id) in [first, second] {
         release_automatic_workspace(&mut connection, &workspace_path, claim_id)
-            .expect("concurrent allocation should check in");
+            .expect("concurrent allocation should be released");
         let workspace = find_workspace_by_path(&mut connection, &workspace_path)
             .expect("workspace lookup should succeed")
             .expect("workspace should exist");
@@ -368,7 +368,7 @@ fn keeps_manual_workspaces_out_of_automatic_allocation() {
         &automatic.workspace_path,
         automatic.claim_id,
     )
-    .expect("automatic workspace should check in");
+    .expect("automatic workspace should be released");
 
     for workspace in [manual_workspace, automatic_workspace] {
         for worktree in list_repo_worktrees(&mut connection, &workspace.id)
@@ -471,9 +471,9 @@ fn force_gc_reclaims_diverged_worktrees_and_extra_content() {
 }
 
 #[test]
-fn force_gc_keeps_an_unexpired_checkout_lease() {
+fn force_gc_keeps_a_claimed_workspace() {
     let mut fixture = automatic_fixture();
-    let checkout = allocate_automatic_workspace(&mut fixture.connection, &fixture.plan)
+    let acquire = allocate_automatic_workspace(&mut fixture.connection, &fixture.plan)
         .expect("allocation should succeed");
 
     let report = gc::execute(
@@ -485,22 +485,22 @@ fn force_gc_keeps_an_unexpired_checkout_lease() {
     .expect("forced GC should complete with a skip");
     assert!(report.reclaimed.is_empty());
     assert_eq!(report.skipped.len(), 1);
-    assert_eq!(report.skipped[0].reason, gc::GcCandidateReason::CheckedOut);
+    assert_eq!(report.skipped[0].reason, gc::GcCandidateReason::Claimed);
     assert!(fixture.workspace.canonical_path.as_path().exists());
     assert_eq!(
         trees::storage::find_workspace_claim(&mut fixture.connection, &fixture.workspace.id)
-            .expect("lease lookup should succeed")
-            .expect("checkout lease should remain active")
+            .expect("claim lookup should succeed")
+            .expect("claim should remain active")
             .id,
-        checkout.claim_id
+        acquire.claim_id
     );
 
     release_automatic_workspace(
         &mut fixture.connection,
-        &checkout.workspace_path,
-        checkout.claim_id,
+        &acquire.workspace_path,
+        acquire.claim_id,
     )
-    .expect("checkout should be released");
+    .expect("workspace should be released");
     cleanup_fixture(fixture);
 }
 

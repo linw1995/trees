@@ -10,7 +10,7 @@ fn main() -> ExitCode {
 fn run(cli: trees::cli::Cli) -> ExitCode {
     match cli.command {
         trees::cli::Command::Create(arguments) => run_create(arguments),
-        trees::cli::Command::Checkin(arguments) => run_checkin(arguments),
+        trees::cli::Command::Release(arguments) => run_release(arguments),
         trees::cli::Command::Config(arguments) => run_config(arguments),
         trees::cli::Command::Gc(arguments) => run_gc(arguments),
         trees::cli::Command::Codex(arguments) => run_codex(arguments),
@@ -83,7 +83,7 @@ fn run_automatic_create(repositories: Vec<std::path::PathBuf>, json: bool) -> Ex
     }
 }
 
-fn run_checkin(arguments: trees::cli::CheckinArgs) -> ExitCode {
+fn run_release(arguments: trees::cli::ReleaseArgs) -> ExitCode {
     let claim_id = match arguments.claim_id.parse::<trees::domain::ClaimId>() {
         Ok(claim_id) => claim_id,
         Err(error) => {
@@ -111,7 +111,7 @@ fn run_checkin(arguments: trees::cli::CheckinArgs) -> ExitCode {
         Ok(result) => {
             println!("workspace_path={}", result.workspace_path);
             println!("claim_id={}", result.claim_id);
-            println!("checked_in_at={}", result.checked_in_at);
+            println!("released_at={}", result.released_at);
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -170,8 +170,8 @@ fn run_gc(arguments: trees::cli::GcArgs) -> ExitCode {
     };
     println!("cutoff={}", scan.cutoff);
     println!("automatic={}", scan.counts.automatic);
-    println!("not_checked_out={}", scan.counts.not_checked_out);
-    println!("checked_out={}", scan.counts.checked_out);
+    println!("unclaimed={}", scan.counts.unclaimed);
+    println!("claimed={}", scan.counts.claimed);
     println!("age_eligible={}", scan.counts.age_eligible);
     println!("safe_to_reclaim={}", scan.counts.safe_to_reclaim);
     println!(
@@ -234,8 +234,8 @@ fn run_gc(arguments: trees::cli::GcArgs) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    println!("not_checked_out={}", report.scan.counts.not_checked_out);
-    println!("checked_out={}", report.scan.counts.checked_out);
+    println!("unclaimed={}", report.scan.counts.unclaimed);
+    println!("claimed={}", report.scan.counts.claimed);
     println!("reclaimed={}", report.reclaimed.len());
     println!("skipped={}", report.skipped.len());
     println!("failed={}", report.failed.len());

@@ -64,7 +64,7 @@ pub struct WorkspaceRow {
     pub last_reconciled_at: Option<Timestamp>,
     pub management_mode: WorkspaceManagementMode,
     pub pool_key: Option<PoolId>,
-    pub last_checked_in_at: Option<Timestamp>,
+    pub last_released_at: Option<Timestamp>,
     pub reclaimed_at: Option<Timestamp>,
 }
 
@@ -90,7 +90,7 @@ pub struct NewManagedWorkspace {
     pub last_reconciled_at: Option<Timestamp>,
     pub management_mode: WorkspaceManagementMode,
     pub pool_key: Option<PoolId>,
-    pub last_checked_in_at: Option<Timestamp>,
+    pub last_released_at: Option<Timestamp>,
     pub reclaimed_at: Option<Timestamp>,
 }
 

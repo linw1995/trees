@@ -102,8 +102,8 @@ result SHALL include the allocated workspace path and claim identifier.
 
 - **WHEN** multiple safe automatic workspaces have the exact repository-set
   pool key
-- **THEN** allocation selects the oldest `last_checked_in_at`, falls back to
-  `created_at` for never-checked-in workspaces, and uses workspace UUID order
+- **THEN** allocation selects the oldest `last_released_at`, falls back to
+  `created_at` for never-released workspaces, and uses workspace UUID order
   as the deterministic tiebreaker
 
 #### Scenario: Provision a New Slot
@@ -111,7 +111,7 @@ result SHALL include the allocated workspace path and claim identifier.
 - **WHEN** no idle automatic workspace matches the exact repository set
 - **THEN** Trees generates a path below its managed workspace root, creates
   direct-child detached worktrees from each repository's current `HEAD`,
-  records the pool UUID, and returns the new workspace already checked out
+  records the pool UUID, and returns the new workspace already claimed
 
 #### Scenario: Retry a Pool Race
 
@@ -136,7 +136,7 @@ ID, and a claim timestamp. The workspace ID SHALL be unique
 in the active claim table. A workspace with no active claim is unclaimed; a
 workspace with an active claim is unavailable for another acquisition. The
 claim records persistent usage state for the workspace. It is not a database
-transaction or a database lock and SHALL remain until its owner releases it.
+transaction or a database lock and SHALL remain until the caller releases it.
 The claim identifier SHALL be required to release the claim and SHALL be
 treated as a local coordination token rather than a security credential. This
 capability SHALL NOT infer an abandoned claim from process liveness or replace
@@ -171,7 +171,7 @@ before returning success.
 
 - **WHEN** a managed worktree contains staged, unstaged, or untracked changes
 - **THEN** reconciliation records the worktree as `dirty`, marks the workspace
-  `degraded`, and checkout or checkin does not make the workspace available
+  `degraded`, and acquire or release does not make the workspace available
 
 #### Scenario: Reject a Changed Detached Revision
 
@@ -180,20 +180,20 @@ before returning success.
 - **THEN** reconciliation records the worktree as `diverged`, marks the
   workspace `degraded`, and no new workspace claim is issued
 
-#### Scenario: Leave External Changes for the Current Owner
+#### Scenario: Leave External Changes for the Current Claim Holder
 
-- **WHEN** checkin finds a dirty, missing, prunable, diverged, or failed
+- **WHEN** release finds a dirty, missing, prunable, diverged, or failed
   worktree
-- **THEN** checkin records a rejection, retains the current workspace claim,
+- **THEN** release records a rejection, retains the current workspace claim,
   and performs no reset, clean, branch change, or worktree removal
 
 ### Requirement: Release Without Destroying Git State
 
-The CLI SHALL provide `trees checkin <workspace-path> --claim-id <claim-id>`.
-Existing `--checkout-id` spellings MAY remain as compatibility aliases. Checkin
+The CLI SHALL provide `trees release <workspace-path> --claim-id <claim-id>`.
+Existing `--checkout-id` spellings MAY remain as compatibility aliases. Release
 SHALL require the active claim identifier, reconcile the workspace while
 retaining the claim, and release the claim only when all managed worktrees
-satisfy the reusable snapshot requirement. A successful checkin SHALL leave the
+satisfy the reusable snapshot requirement. A successful release SHALL leave the
 workspace directory, worktree files, source repositories, and worktree
 associations unchanged.
 
@@ -209,7 +209,7 @@ associations unchanged.
 
 - **WHEN** the path has no active claim or the supplied identifier does not
   match the active claim
-- **THEN** checkin fails without releasing another caller's claim or changing
+- **THEN** release fails without releasing another caller's claim or changing
   Git state
 
 ### Requirement: Reclaim Idle Automatic Workspaces
@@ -218,9 +218,9 @@ The CLI SHALL provide `trees gc --older-than <duration> [--dry-run] [--yes]
 [--force]`. GC SHALL calculate a UTC cutoff from the current time minus the
 supplied duration and consider only `automatic` workspaces in the current
 workspace-root namespace. The idle timestamp SHALL be the last successful
-checkin time, or `created_at` when the workspace has never been checked in.
+release time, or `created_at` when the workspace has never been released.
 GC SHALL report the total automatic workspaces, the number currently not
-checked out, the number currently checked out, the number older than the
+claimed, the number currently claimed, the number older than the
 cutoff, and the number selected for reclamation. A normal non-dry-run SHALL
 request confirmation before mutation unless `--yes` or `--force` is supplied.
 `--yes` SHALL skip only the confirmation and SHALL retain the normal safety
@@ -238,7 +238,7 @@ cannot be verified. Forced cleanup SHALL record that it was forced.
 #### Scenario: Preview GC Candidates Safely
 
 - **WHEN** a caller runs `trees gc --older-than 30d --dry-run`
-- **THEN** the command reports automatic, not-checked-out, checked-out,
+- **THEN** the command reports automatic, unclaimed, claimed,
   age-qualified, selected, and skipped counts with workspace paths and
   reasons, without removing worktrees, directories, claims, rows, or events
 
@@ -246,9 +246,9 @@ cannot be verified. Forced cleanup SHALL record that it was forced.
 
 - **WHEN** a caller runs a non-dry-run GC without `--yes` or `--force` and the
   scan finds reclaimable automatic workspaces
-- **THEN** the command displays how many workspaces are currently not checked
-  out and how many will be reclaimed, and performs no mutation until the
-  caller confirms
+- **THEN** the command displays how many workspaces are currently unclaimed
+  and how many will be reclaimed, and performs no mutation until the caller
+  confirms
 
 #### Scenario: Skip Confirmation Without Forcing Cleanup
 
@@ -320,17 +320,17 @@ reaches a per-workspace operation SHALL be
 represented by an operation and an immutable lifecycle event. A `--dry-run` GC
 inspection and a read-only candidate skip SHALL NOT create operations or
 events. Access and GC events SHALL use the stable workspace entity identity
-and SHALL include management mode, claim identifiers, owner identities,
-timestamps, age cutoff, not-checked-out/checked-out counts, and relevant
+and SHALL include management mode, claim identifiers, operation owner
+context, timestamps, age cutoff, unclaimed/claimed counts, and relevant
 reconciliation or failure details as canonical JSON. Forced GC events SHALL
 include `forced: true`. Claim or filesystem snapshot changes and terminal
 operation state SHALL be committed atomically with their event in a short
 SQLite transaction; physical GC removal SHALL be completed before a workspace
 is marked `reclaimed`.
 
-#### Scenario: Audit a Checkin Rejection
+#### Scenario: Audit a Release Rejection
 
-- **WHEN** checkin is rejected because a worktree is dirty or diverged
+- **WHEN** release is rejected because a worktree is dirty or diverged
 - **THEN** the operation is failed, the workspace and worktree snapshot
   reflects the observed health, the active claim remains, and the event log
   contains the rejection reason and claim identifier

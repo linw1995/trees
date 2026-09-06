@@ -17,7 +17,7 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     Create(CreateArgs),
-    Checkin(CheckinArgs),
+    Release(ReleaseArgs),
     Config(ConfigArgs),
     Gc(GcArgs),
     Codex(CodexArgs),
@@ -36,13 +36,13 @@ pub struct CreateArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct CheckinArgs {
+pub struct ReleaseArgs {
     #[arg(value_name = "WORKSPACE_PATH")]
     pub workspace_path: PathBuf,
 
     #[arg(
         long = "claim-id",
-        visible_alias = "checkout-id",
+        alias = "checkout-id",
         required = true,
         value_name = "CLAIM_ID"
     )]
@@ -188,21 +188,21 @@ mod tests {
     }
 
     #[test]
-    fn parses_checkin_with_a_claim_id() {
+    fn parses_release_with_a_claim_id() {
         let cli = Cli::try_parse_from([
             "trees",
-            "checkin",
+            "release",
             "/tmp/workspace",
-            "--checkout-id",
-            "checkout-id",
+            "--claim-id",
+            "claim-id",
         ])
-        .expect("checkin command should parse");
+        .expect("release command should parse");
 
-        let Command::Checkin(arguments) = cli.command else {
-            panic!("expected checkin command");
+        let Command::Release(arguments) = cli.command else {
+            panic!("expected release command");
         };
         assert_eq!(arguments.workspace_path, PathBuf::from("/tmp/workspace"));
-        assert_eq!(arguments.claim_id, "checkout-id");
+        assert_eq!(arguments.claim_id, "claim-id");
     }
 
     #[test]

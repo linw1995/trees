@@ -30,18 +30,18 @@ manual responsibility.
   directory only as the default while keeping SQLite state separate.
 - Add configuration read/write support for `workspaces_dir` without making a
   concrete workspace path part of automatic allocation.
-- Add `trees checkin <workspace-path> --claim-id <claim-id>` to release the
+- Add `trees release <workspace-path> --claim-id <claim-id>` to release the
   claim after reconciliation. Existing `--checkout-id` spellings may remain as
   compatibility aliases while the claim terminology is introduced.
 - Add `trees gc --older-than <duration> [--dry-run] [--yes] [--force]` to
   reclaim idle automatic workspaces while never selecting manual workspaces;
-  report the number not currently checked out and confirm the normal
+  report the number currently unclaimed and confirm the normal
   destructive run. `--yes` skips only confirmation, while `--force` implies
   `--yes` and explicitly permits destructive cleanup of age-qualified unsafe
   automatic slots.
 - Persist an `automatic` or `manual` workspace management mode inferred from
   the automatic repository-only or manual path-based command shape, together
-  with the last successful checkin time used by GC.
+  with the last successful release time used by GC.
 - Persist at most one active workspace claim per workspace, with a claim
   identifier and timestamp, while keeping workspace health separate from access
   state.
@@ -83,9 +83,10 @@ manual responsibility.
 - Extends the Clap command surface and dispatch in `src/cli.rs` and
   `src/main.rs`.
 - Adds a follow-up lifecycle migration that converts the existing workspace
-  lease table into active workspace claims while preserving workspace IDs,
-  owners, and acquisition timestamps; operation expiry and heartbeat metadata
-  remain on the existing operations table.
+  lease table into active workspace claims. It preserves workspace IDs and
+  acquisition timestamps while dropping workspace-claim owner metadata.
+  Operation expiry and heartbeat metadata remain on the existing operations
+  table.
 - Extends the path/configuration layers with a configurable platform-specific
   automatic workspace root, absolute persisted paths, and generated workspace
   paths.
