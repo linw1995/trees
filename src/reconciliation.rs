@@ -266,8 +266,7 @@ pub fn recover_expired_operation(
     let recovery_lease = Timestamp::after_seconds(300);
     if !claim_expired_operation(
         connection,
-        &operation.id,
-        &lease.lease_id,
+        &lease.id,
         &lease.lease_expires_at,
         &recovery_lease_id,
         &recovery_lease,
@@ -723,7 +722,10 @@ mod tests {
         connection: &mut diesel::sqlite::SqliteConnection,
         operation_id: &OperationId,
     ) {
-        diesel::update(crate::schema::operation_leases::table.find(operation_id))
+        let lease = crate::storage::find_operation_lease(connection, operation_id)
+            .expect("operation lease should be queryable")
+            .expect("operation lease should exist");
+        diesel::update(crate::schema::operation_leases::table.find(lease.id))
             .set(crate::schema::operation_leases::lease_expires_at.eq(Timestamp::now()))
             .execute(connection)
             .expect("operation lease should be updated");

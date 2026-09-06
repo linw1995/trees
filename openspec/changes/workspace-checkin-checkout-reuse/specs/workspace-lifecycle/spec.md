@@ -173,13 +173,15 @@ state.
 
 The system SHALL persist current operation lease state in an
 `operation_leases` table. Each lease SHALL reference exactly one operation
-through `operation_id`, and SHALL carry a uniquely constrained
-`workspace_id`; at most one active lease SHALL exist for an operation, and at
-most one active operation lease SHALL exist for a workspace. The lease row
-SHALL contain an opaque lease token and an expiration time. Lease renewal and
-takeover SHALL update only this current lease row and SHALL use an atomic
-operation ID, token, and expiry check. Lease changes SHALL NOT create a
-workspace claim or mutate the immutable `operations` row.
+through a unique `operation_id` relation, and SHALL carry a uniquely
+constrained `workspace_id`; at most one active lease SHALL exist for an
+operation, and at most one active operation lease SHALL exist for a workspace.
+The lease row's primary-key `id` SHALL be the opaque lease token and SHALL be
+paired with an expiration time. Lease renewal and takeover SHALL update only
+this current lease row and SHALL use an atomic lease ID and expiry check;
+`operation_id` is retained for reverse lookup and relationship integrity.
+Lease changes SHALL NOT create a workspace claim or mutate the immutable
+`operations` row.
 
 #### Scenario: Renew the Current Operation Lease
 
@@ -191,7 +193,7 @@ workspace claim or mutate the immutable `operations` row.
 
 - **WHEN** a lease has expired and a later invocation provides the current
   lease token
-- **THEN** the lease token is atomically replaced, external state is observed,
+- **THEN** the lease row ID is atomically replaced, external state is observed,
   and the recovery transition is appended to `lifecycle_events`
 
 ### Requirement: Renew Operation Leases During External Work

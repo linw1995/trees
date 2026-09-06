@@ -58,10 +58,10 @@ diesel::table! {
 }
 
 diesel::table! {
-    operation_leases (operation_id) {
+    operation_leases (id) {
+        id -> Text,
         operation_id -> Text,
         workspace_id -> Text,
-        lease_id -> Text,
         lease_expires_at -> Text,
     }
 }

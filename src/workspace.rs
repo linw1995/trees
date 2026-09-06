@@ -1014,12 +1014,11 @@ fn execute_repository_step(
     .map_err(WorkspaceError::Database)?;
     // The subprocess and lease-renewal callback run outside SQLite
     // transactions; each renewal is an independent short operation update.
-    let operation_id = context.operation_id;
     let lease_id = context.lease_id;
     git::add_detached_worktree_with_heartbeat(
         &repository.plan.source_path,
         &repository.plan.worktree_path,
-        || match crate::storage::renew_operation_lease(connection, &operation_id, &lease_id) {
+        || match crate::storage::renew_operation_lease(connection, &lease_id) {
             Ok(true) => Ok(()),
             Ok(false) => Err(GitError::Heartbeat(
                 "operation lease is no longer owned".to_owned(),
@@ -2130,7 +2129,10 @@ mod tests {
         let context = initialize_creation(&mut connection, plan)
             .expect("initial operation should be persisted");
         execute_creation(&mut connection, &context).expect("Git steps should complete");
-        diesel::update(crate::schema::operation_leases::table.find(&context.operation_id))
+        let lease = crate::storage::find_operation_lease(&mut connection, &context.operation_id)
+            .expect("operation lease should be queryable")
+            .expect("operation lease should exist");
+        diesel::update(crate::schema::operation_leases::table.find(lease.id))
             .set(crate::schema::operation_leases::lease_expires_at.eq(Timestamp::now()))
             .execute(&mut connection)
             .expect("operation lease should expire");

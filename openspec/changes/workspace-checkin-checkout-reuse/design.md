@@ -113,13 +113,14 @@ Operation facts and operation leases are deliberately separate:
 - `operations` is append-only and stores the immutable operation identity,
   workspace, kind, intent, and start time;
 - `operation_leases` stores at most one current lease per operation, references
-  `operations.id` through `operation_id`, carries the workspace ID with a
-  uniqueness constraint, and stores the mutable lease token and expiry time;
+  `operations.id` through a unique `operation_id` relation, carries the
+  workspace ID with a uniqueness constraint, and uses its own `id` as the
+  mutable lease token together with the expiry time;
 - `lifecycle_events` stores append-only operation starts, steps, recoveries, and
   terminal transitions. The latest operation event is the operation state;
 - Lease renewal updates only `operation_leases` and does not append a heartbeat
   event. Lease takeover replaces the lease token through an atomic
-  operation-id/token/expiry check.
+  lease-id/expiry check; `operation_id` is retained for reverse lookup.
 
 The operation lease protects a mutation while Git or filesystem work runs
 outside SQLite transactions. Workspace claims remain independent and are not
@@ -276,7 +277,7 @@ Workspace claims remain active until explicit release and are never replaced by
 automatic allocation. Operation leases independently protect a mutation while
 Git or filesystem work runs outside SQLite transactions. When an operation
 lease expires, a later invocation may claim the operation through an atomic
-`operation_id`/lease-token/expiry check, observe external state, and either
+lease-id/expiry check, observe external state, and either
 finish or roll back the incomplete operation. Operation lease recovery does not
 create, release, or extend a workspace claim.
 

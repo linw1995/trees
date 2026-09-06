@@ -210,22 +210,22 @@ DROP TABLE operations;
 ALTER TABLE operations_v2 RENAME TO operations;
 
 CREATE TABLE operation_leases (
-    operation_id TEXT NOT NULL PRIMARY KEY REFERENCES operations(id),
+    id TEXT NOT NULL PRIMARY KEY CHECK (length(id) = 36),
+    operation_id TEXT NOT NULL UNIQUE REFERENCES operations(id),
     workspace_id TEXT NOT NULL UNIQUE REFERENCES workspaces(id),
-    lease_id TEXT NOT NULL CHECK (length(lease_id) = 36),
     lease_expires_at TEXT NOT NULL
 );
 
 INSERT INTO operation_leases (
+    id,
     operation_id,
     workspace_id,
-    lease_id,
     lease_expires_at
 )
 SELECT
     id,
-    workspace_id,
     id,
+    workspace_id,
     lease_expires_at
 FROM operations_legacy
 WHERE state = 'running';

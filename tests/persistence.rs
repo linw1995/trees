@@ -178,7 +178,7 @@ fn combined_feature_migration_preserves_legacy_operation_lease() {
         .expect("running legacy operation should retain its lease");
     assert_eq!(lease.operation_id, operation_id);
     assert_eq!(lease.workspace_id, workspace_id);
-    assert_eq!(lease.lease_id.to_string(), operation_id.to_string());
+    assert_eq!(lease.id.to_string(), operation_id.to_string());
     assert_eq!(lease.lease_expires_at, lease_expires_at);
 
     drop(connection);

@@ -57,7 +57,7 @@ SELECT
     operation.workspace_id,
     operation.kind,
     COALESCE(latest.current_state, 'failed'),
-    COALESCE(lease.lease_id, 'migration'),
+    COALESCE(lease.id, 'migration'),
     COALESCE(lease.lease_expires_at, latest.occurred_at, operation.started_at),
     COALESCE(latest.occurred_at, operation.started_at),
     operation.started_at,

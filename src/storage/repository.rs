@@ -748,7 +748,7 @@ pub fn insert_operation_lease(
         .values(value)
         .execute(connection)?;
     operation_leases::table
-        .find(&value.operation_id)
+        .find(&value.id)
         .select(OperationLeaseRow::as_select())
         .first(connection)
 }
@@ -758,7 +758,7 @@ pub fn find_operation_lease(
     operation_id: &OperationId,
 ) -> QueryResult<Option<OperationLeaseRow>> {
     operation_leases::table
-        .find(operation_id)
+        .filter(operation_leases::operation_id.eq(operation_id))
         .select(OperationLeaseRow::as_select())
         .first(connection)
         .optional()
@@ -781,9 +781,9 @@ pub fn persist_operation_intent(
     insert_operation_lease(
         connection,
         &NewOperationLease {
+            id: intent.lease_id,
             operation_id: intent.id,
             workspace_id: intent.workspace_id,
-            lease_id: intent.lease_id,
             lease_expires_at: intent.lease_expires_at.clone(),
         },
     )?;
@@ -911,7 +911,6 @@ pub fn find_running_operation(
 
 pub fn claim_expired_operation(
     connection: &mut SqliteConnection,
-    operation_id: &OperationId,
     lease_id: &LeaseId,
     lease_expires_at: &Timestamp,
     new_lease_id: &LeaseId,
@@ -920,13 +919,12 @@ pub fn claim_expired_operation(
     let now = Timestamp::now();
     let updated = diesel::update(
         operation_leases::table
-            .filter(operation_leases::operation_id.eq(operation_id))
-            .filter(operation_leases::lease_id.eq(lease_id))
+            .filter(operation_leases::id.eq(lease_id))
             .filter(operation_leases::lease_expires_at.eq(lease_expires_at))
             .filter(operation_leases::lease_expires_at.le(&now)),
     )
     .set((
-        operation_leases::lease_id.eq(new_lease_id),
+        operation_leases::id.eq(new_lease_id),
         operation_leases::lease_expires_at.eq(new_lease_expires_at),
     ))
     .execute(connection)?;
@@ -936,7 +934,6 @@ pub fn claim_expired_operation(
 
 pub fn renew_operation_lease(
     connection: &mut SqliteConnection,
-    operation_id: &OperationId,
     lease_id: &LeaseId,
 ) -> QueryResult<bool> {
     // Lease renewals run while external work is in progress, so each update
@@ -946,8 +943,7 @@ pub fn renew_operation_lease(
         let now = Timestamp::now();
         let updated = diesel::update(
             operation_leases::table
-                .filter(operation_leases::operation_id.eq(operation_id))
-                .filter(operation_leases::lease_id.eq(lease_id))
+                .filter(operation_leases::id.eq(lease_id))
                 .filter(operation_leases::lease_expires_at.gt(&now)),
         )
         .set(operation_leases::lease_expires_at.eq(&lease_expires_at))
@@ -1120,12 +1116,8 @@ fn finish_operation_in_transaction(
 ) -> QueryResult<()> {
     let previous_state =
         operation_state(connection, operation_id)?.unwrap_or(OperationState::Running);
-    let updated = diesel::delete(
-        operation_leases::table
-            .filter(operation_leases::operation_id.eq(operation_id))
-            .filter(operation_leases::lease_id.eq(lease_id)),
-    )
-    .execute(connection)?;
+    let updated = diesel::delete(operation_leases::table.filter(operation_leases::id.eq(lease_id)))
+        .execute(connection)?;
     if updated != 1 {
         return Err(Error::NotFound);
     }
@@ -1148,13 +1140,10 @@ pub fn persist_operation_step_intent(
 ) -> QueryResult<()> {
     let pending_step = pending_step.into();
     with_short_transaction(connection, |connection| {
-        let updated = diesel::update(
-            operation_leases::table
-                .filter(operation_leases::operation_id.eq(operation_id))
-                .filter(operation_leases::lease_id.eq(lease_id)),
-        )
-        .set(operation_leases::lease_expires_at.eq(Timestamp::after_seconds(300)))
-        .execute(connection)?;
+        let updated =
+            diesel::update(operation_leases::table.filter(operation_leases::id.eq(lease_id)))
+                .set(operation_leases::lease_expires_at.eq(Timestamp::after_seconds(300)))
+                .execute(connection)?;
         if updated != 1 {
             return Err(Error::NotFound);
         }
@@ -1190,13 +1179,10 @@ pub fn record_worktree_step_result(
         let operation_state =
             operation_state(connection, operation_id)?.unwrap_or(OperationState::Running);
         let lease_expires_at = Timestamp::after_seconds(300);
-        let updated = diesel::update(
-            operation_leases::table
-                .filter(operation_leases::operation_id.eq(operation_id))
-                .filter(operation_leases::lease_id.eq(lease_id)),
-        )
-        .set(operation_leases::lease_expires_at.eq(&lease_expires_at))
-        .execute(connection)?;
+        let updated =
+            diesel::update(operation_leases::table.filter(operation_leases::id.eq(lease_id)))
+                .set(operation_leases::lease_expires_at.eq(&lease_expires_at))
+                .execute(connection)?;
         if updated != 1 {
             return Err(Error::NotFound);
         }
@@ -1894,7 +1880,7 @@ mod tests {
             find_operation_lease(&mut connection, &operation.id)
                 .unwrap()
                 .unwrap()
-                .lease_id,
+                .id,
             intent.lease_id
         );
 
@@ -1994,7 +1980,6 @@ mod tests {
         let new_lease_id = LeaseId::new();
         assert!(claim_expired_operation(
             &mut connection,
-            &operation_id,
             &intent.lease_id,
             &now,
             &new_lease_id,
@@ -2003,7 +1988,6 @@ mod tests {
         .expect("expired operation should be claimable"));
         assert!(!claim_expired_operation(
             &mut connection,
-            &operation_id,
             &intent.lease_id,
             &now,
             &LeaseId::new(),
@@ -2014,7 +1998,7 @@ mod tests {
         let lease = find_operation_lease(&mut connection, &operation_id)
             .expect("claimed operation lease should be readable")
             .expect("claimed operation lease should exist");
-        assert_eq!(lease.lease_id, new_lease_id);
+        assert_eq!(lease.id, new_lease_id);
         assert_eq!(lease.lease_expires_at, new_lease);
 
         drop(connection);
@@ -2053,14 +2037,10 @@ mod tests {
             .expect("operation should be inserted");
         let operation_id = operation.id;
 
-        assert!(
-            renew_operation_lease(&mut connection, &operation_id, &intent.lease_id)
-                .expect("owner should renew the lease")
-        );
-        assert!(
-            !renew_operation_lease(&mut connection, &operation_id, &LeaseId::new())
-                .expect("a different owner should not renew the lease")
-        );
+        assert!(renew_operation_lease(&mut connection, &intent.lease_id)
+            .expect("owner should renew the lease"));
+        assert!(!renew_operation_lease(&mut connection, &LeaseId::new())
+            .expect("a different owner should not renew the lease"));
         let lease = find_operation_lease(&mut connection, &operation_id)
             .expect("renewed operation lease should be readable")
             .expect("renewed operation lease should exist");
@@ -2105,7 +2085,7 @@ mod tests {
         let lease_id = find_operation_lease(&mut connection, &operation.id)
             .unwrap()
             .unwrap()
-            .lease_id;
+            .id;
         let origin_repository_id = origin_id(&mut connection, &workspace_path);
         let worktree = insert_repo_worktree(
             &mut connection,

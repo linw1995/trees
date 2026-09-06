@@ -238,21 +238,21 @@ pub struct NewOperation {
 /// The current lease for an in-flight operation.
 #[derive(Debug, Clone, Queryable, Selectable, Identifiable)]
 #[diesel(table_name = operation_leases)]
-#[diesel(primary_key(operation_id))]
+#[diesel(primary_key(id))]
 #[diesel(check_for_backend(Sqlite))]
 pub struct OperationLeaseRow {
+    pub id: LeaseId,
     pub operation_id: OperationId,
     pub workspace_id: WorkspaceId,
-    pub lease_id: LeaseId,
     pub lease_expires_at: Timestamp,
 }
 
 #[derive(Debug, Insertable)]
 #[diesel(table_name = operation_leases)]
 pub struct NewOperationLease {
+    pub id: LeaseId,
     pub operation_id: OperationId,
     pub workspace_id: WorkspaceId,
-    pub lease_id: LeaseId,
     pub lease_expires_at: Timestamp,
 }
 
