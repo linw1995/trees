@@ -852,7 +852,7 @@ mod tests {
         let workspace_root = crate::storage::find_workspace_pool_by_id(
             &mut connection,
             &workspace
-                .pool_key
+                .pool_id
                 .expect("automatic workspace should reference a pool"),
         )
         .expect("workspace pool lookup should succeed")
@@ -888,7 +888,7 @@ mod tests {
         let mut connection = database::connect(&database_path).expect("database should open");
         let old = timestamp("2020-01-01T00:00:00Z");
         let young = timestamp("2099-01-01T00:00:00Z");
-        let pool_key = Some(
+        let pool_id = Some(
             ensure_workspace_pool(
                 &mut connection,
                 &workspace_root,
@@ -922,7 +922,7 @@ mod tests {
                     updated_at: old.clone(),
                     last_reconciled_at: None,
                     management_mode: WorkspaceManagementMode::Automatic,
-                    pool_key,
+                    pool_id,
                     last_released_at: Some(idle_since),
                     reclaimed_at: None,
                 },
@@ -946,7 +946,7 @@ mod tests {
                 updated_at: old.clone(),
                 last_reconciled_at: None,
                 management_mode: WorkspaceManagementMode::Manual,
-                pool_key: None,
+                pool_id: None,
                 last_released_at: Some(old.clone()),
                 reclaimed_at: None,
             },

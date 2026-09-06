@@ -332,7 +332,7 @@ fn migration_three_normalizes_a_database_already_at_migration_two() {
     let workspace = trees::storage::find_workspace(&mut connection, &workspace_id)
         .expect("workspace should be queryable");
     let pool_id = workspace
-        .pool_key
+        .pool_id
         .expect("automatic workspace should reference a pool");
     let pool = trees::storage::find_workspace_pool_by_id(&mut connection, &pool_id)
         .expect("pool should be queryable");
@@ -349,7 +349,7 @@ fn migration_three_normalizes_a_database_already_at_migration_two() {
     assert_eq!(
         trees::storage::find_workspace(&mut connection, &second_workspace_id)
             .expect("second workspace should be queryable")
-            .pool_key,
+            .pool_id,
         Some(pool_id)
     );
 
@@ -473,7 +473,7 @@ fn legacy_workspace_rows_default_to_manual_without_pool_metadata() {
         .expect("workspace should be queryable");
 
     assert_eq!(stored.management_mode, WorkspaceManagementMode::Manual);
-    assert_eq!(stored.pool_key, None);
+    assert_eq!(stored.pool_id, None);
     assert_eq!(stored.last_released_at, None);
     assert_eq!(stored.reclaimed_at, None);
     assert!(workspace_path.as_path().exists());
@@ -505,7 +505,7 @@ fn automatic_workspace_metadata_and_timestamps_round_trip_as_absolute_values() {
     diesel::update(trees::schema::workspaces::table.find(&workspace_id))
         .set((
             trees::schema::workspaces::management_mode.eq(WorkspaceManagementMode::Automatic),
-            trees::schema::workspaces::pool_key.eq(Some(pool.id)),
+            trees::schema::workspaces::pool_id.eq(Some(pool.id)),
             trees::schema::workspaces::last_released_at.eq(Some(now.clone())),
             trees::schema::workspaces::reclaimed_at.eq::<Option<Timestamp>>(None),
         ))
@@ -515,7 +515,7 @@ fn automatic_workspace_metadata_and_timestamps_round_trip_as_absolute_values() {
     let stored = trees::storage::find_workspace(&mut connection, &workspace_id)
         .expect("workspace should be queryable");
     assert_eq!(stored.management_mode, WorkspaceManagementMode::Automatic);
-    assert_eq!(stored.pool_key, Some(pool.id));
+    assert_eq!(stored.pool_id, Some(pool.id));
     assert_eq!(stored.last_released_at, Some(now));
     assert!(stored.canonical_path.as_path().is_absolute());
 

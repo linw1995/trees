@@ -86,7 +86,7 @@ diesel::table! {
         updated_at -> Text,
         last_reconciled_at -> Nullable<Text>,
         management_mode -> Text,
-        pool_key -> Nullable<Text>,
+        pool_id -> Nullable<Text>,
         last_released_at -> Nullable<Text>,
         reclaimed_at -> Nullable<Text>,
     }
@@ -99,7 +99,7 @@ diesel::joinable!(repo_worktrees -> origin_repositories (origin_repository_id));
 diesel::joinable!(workspace_claims -> workspaces (workspace_id));
 diesel::joinable!(workspace_pool_repositories -> workspace_pools (pool_id));
 diesel::joinable!(workspace_pool_repositories -> origin_repositories (repository_id));
-diesel::joinable!(workspaces -> workspace_pools (pool_key));
+diesel::joinable!(workspaces -> workspace_pools (pool_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
     lifecycle_events,

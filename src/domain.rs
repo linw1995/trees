@@ -126,7 +126,7 @@ impl FromStr for WorkspaceManagementMode {
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct WorkspaceManagementMetadata {
     pub mode: WorkspaceManagementMode,
-    pub pool_key: Option<PoolId>,
+    pub pool_id: Option<PoolId>,
 }
 
 #[derive(Debug)]

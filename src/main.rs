@@ -254,9 +254,9 @@ fn print_automatic_claim_result(result: &trees::workspace::AutomaticClaimResult)
 
 fn automatic_claim_shell_output(result: &trees::workspace::AutomaticClaimResult) -> String {
     format!(
-        "WORKSPACE_PATH={}\nPOOL_KEY={}\nCLAIM_ID={}",
+        "WORKSPACE_PATH={}\nPOOL_ID={}\nCLAIM_ID={}",
         bash_quote(&result.workspace_path.to_string()),
-        bash_quote(&result.pool_key.to_string()),
+        bash_quote(&result.pool_id.to_string()),
         bash_quote(&result.claim_id.to_string()),
     )
 }
@@ -366,13 +366,13 @@ mod tests {
         let result = trees::workspace::AutomaticClaimResult {
             workspace_path: trees::domain::CanonicalPath::from_absolute("/tmp/workspace")
                 .expect("workspace path should be absolute"),
-            pool_key: trees::domain::PoolId::new(),
+            pool_id: trees::domain::PoolId::new(),
             claim_id: trees::domain::ClaimId::new(),
         };
 
         let output = automatic_claim_shell_output(&result);
 
-        assert!(output.starts_with("WORKSPACE_PATH='/tmp/workspace'\nPOOL_KEY='"));
+        assert!(output.starts_with("WORKSPACE_PATH='/tmp/workspace'\nPOOL_ID='"));
         assert!(output.contains("\nCLAIM_ID='"));
     }
 
@@ -381,7 +381,7 @@ mod tests {
         let result = trees::workspace::AutomaticClaimResult {
             workspace_path: trees::domain::CanonicalPath::from_absolute("/tmp/workspace")
                 .expect("workspace path should be absolute"),
-            pool_key: trees::domain::PoolId::new(),
+            pool_id: trees::domain::PoolId::new(),
             claim_id: trees::domain::ClaimId::new(),
         };
         let output = serde_json::to_string(&result).expect("claim should serialize as JSON");
@@ -389,10 +389,10 @@ mod tests {
             serde_json::from_str(&output).expect("claim JSON should be valid");
 
         assert_eq!(value["workspace_path"], "/tmp/workspace");
-        let pool_key = value["pool_key"]
+        let pool_id = value["pool_id"]
             .as_str()
-            .expect("pool key should be a string");
-        assert!(pool_key.parse::<trees::domain::PoolId>().is_ok());
+            .expect("pool ID should be a string");
+        assert!(pool_id.parse::<trees::domain::PoolId>().is_ok());
         assert!(value["claim_id"].is_string());
     }
 }

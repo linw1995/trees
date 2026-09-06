@@ -77,7 +77,7 @@ invocation and requires an explicit age threshold.
 The pool registry stores repository-set identity separately from workspace
 slots:
 
-- `workspace_pools.id`: the stable UUID used as `pool_key` by workspace rows;
+- `workspace_pools.id`: the stable UUID referenced as `pool_id` by workspace rows;
 - `workspace_pools.workspace_root`: the absolute resolved `workspaces_dir`
   namespace; pool uniqueness is scoped by this root and the repository JSON;
 - `workspace_pools.hash_key`: a BLAKE3 fingerprint used for indexed lookup;
@@ -183,7 +183,7 @@ and bypasses pool allocation, automated claiming, and GC; manual callers continu
 existing workspace/Codex paths without automated claims.
 
 The automatic command prints the allocated workspace path, repository-set
-pool key, and claim identifier so an orchestrator can persist the allocation
+pool ID, and claim identifier so an orchestrator can persist the allocation
 and pass the identifier to later release calls. The
 identifier is a coordination token, not a security boundary; local filesystem
 and database permissions remain authoritative.

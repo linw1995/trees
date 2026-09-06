@@ -16,7 +16,7 @@
   expiry, heartbeat, and renewal on operation leases only, and define
   explicit mode/access/health separation
 - [x] 1.5 Extend lifecycle states with `dirty` and `reclaimed`, plus
-  `last_released_at`, pool-key, pool-scoped absolute workspace-root, and
+  `last_released_at`, pool ID, pool-scoped absolute workspace-root, and
   reclamation timestamps; update claim parsing, serialization, workspace-state
   aggregation, and affected validation paths
 
@@ -58,7 +58,7 @@
 ## 4. Pool Allocation and Claim Workflow
 
 - [x] 4.1 Implement automatic repository-set allocation that searches exact
-  pool-key matches, filters reusable idle candidates, selects least-recently
+  pool ID matches, filters reusable idle candidates, selects least-recently
   released workspaces, and retries after an acquisition race
 - [x] 4.2 Persist allocation intent and acquire the workspace claim atomically,
   then run final reconciliation and release the claim with a failure event if
@@ -77,7 +77,7 @@
   missing, prunable, diverged, or failed worktrees and releases it only after
   a successful reusable-state check
 - [x] 5.2 Wire Clap parsing and `main` dispatch for automatic create and
-  release; print stable shell variables for workspace, pool key, and claim ID
+  release; print stable shell variables for workspace, pool ID, and claim ID
   while keeping human-readable errors
 - [x] 5.3 Add `trees config set workspaces-dir <path>` and configuration
   loading, resolving configured paths to absolute values before persistence;

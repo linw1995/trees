@@ -56,7 +56,7 @@ pub struct AutomaticRepositoryPlan {
 #[derive(Debug, Clone, Serialize)]
 pub struct AutomaticClaimResult {
     pub workspace_path: CanonicalPath,
-    pub pool_key: PoolId,
+    pub pool_id: PoolId,
     pub claim_id: ClaimId,
 }
 
@@ -236,7 +236,7 @@ where
         fail_operation(connection, &operation.id, &primary);
         return Err(primary);
     }
-    let Some(pool_id) = boundary.workspace.pool_key else {
+    let Some(pool_id) = boundary.workspace.pool_id else {
         let primary = WorkspaceError::RepositorySetMismatch(candidate.id);
         fail_operation(connection, &operation.id, &primary);
         return Err(primary);
@@ -302,7 +302,7 @@ where
 
     Ok(AutomaticClaimResult {
         workspace_path: candidate.canonical_path.clone(),
-        pool_key: pool_id,
+        pool_id,
         claim_id: claim.id,
     })
 }
@@ -313,7 +313,7 @@ fn acquire_details(
     pool_id: PoolId,
 ) -> JsonDocument {
     JsonDocument::from_serializable(&serde_json::json!({
-        "pool_key": pool_id,
+        "pool_id": pool_id,
         "hash_key": plan.repository_set.hash_key(),
         "workspace_root": plan.workspace_root,
         "claim": claim,
@@ -545,7 +545,7 @@ fn provision_automatic_new(
     let claim = WorkspaceClaim::new(workspace_id);
     let management = WorkspaceManagementMetadata {
         mode: WorkspaceManagementMode::Automatic,
-        pool_key: Some(pool.id),
+        pool_id: Some(pool.id),
     };
     let intent_json = JsonDocument::from_serializable(&serde_json::json!({
         "allocation": normalized_plan,
@@ -629,7 +629,7 @@ fn provision_automatic_new(
 
     Ok(AutomaticClaimResult {
         workspace_path: context.plan.workspace_path.clone(),
-        pool_key: pool.id,
+        pool_id: pool.id,
         claim_id: claim.id,
     })
 }
@@ -721,7 +721,7 @@ pub fn initialize_creation(
         plan,
         WorkspaceManagementMetadata {
             mode: WorkspaceManagementMode::Manual,
-            pool_key: None,
+            pool_id: None,
         },
         None,
         intent_json,
@@ -762,7 +762,7 @@ fn initialize_creation_with_metadata(
                 &repository.source_path,
             )
             .map_err(WorkspaceError::Database)?;
-            if let Some(pool_id) = management.pool_key {
+            if let Some(pool_id) = management.pool_id {
                 insert_workspace_pool_repositories(
                     connection,
                     &[NewWorkspacePoolRepository {
@@ -792,7 +792,7 @@ fn initialize_creation_with_metadata(
                 updated_at: now.clone(),
                 last_reconciled_at: None,
                 management_mode: management.mode,
-                pool_key: management.pool_key,
+                pool_id: management.pool_id,
                 last_released_at: None,
                 reclaimed_at: None,
             },
@@ -1435,7 +1435,7 @@ mod tests {
     }
 
     #[test]
-    fn selects_the_oldest_idle_automatic_candidate_for_a_pool_key() {
+    fn selects_the_oldest_idle_automatic_candidate_for_a_pool_id() {
         let root = test_root();
         let source = root.join("source");
         repository(&source);
@@ -1477,7 +1477,7 @@ mod tests {
                 .set((
                     crate::schema::workspaces::management_mode
                         .eq(crate::domain::WorkspaceManagementMode::Automatic),
-                    crate::schema::workspaces::pool_key.eq(Some(pool.id)),
+                    crate::schema::workspaces::pool_id.eq(Some(pool.id)),
                     crate::schema::workspaces::last_released_at
                         .eq(Some(Timestamp::parse(released_at).unwrap())),
                 ))
@@ -1506,8 +1506,8 @@ mod tests {
             .expect("automatic allocation should succeed");
         assert_eq!(result.workspace_path, candidate.canonical_path);
         assert_eq!(
-            result.pool_key,
-            candidate.pool_key.expect("candidate pool should exist")
+            result.pool_id,
+            candidate.pool_id.expect("candidate pool should exist")
         );
         assert!(
             crate::storage::find_workspace_claim(&mut connection, &candidate.id)
@@ -1567,7 +1567,7 @@ mod tests {
             .set((
                 crate::schema::workspaces::management_mode
                     .eq(crate::domain::WorkspaceManagementMode::Automatic),
-                crate::schema::workspaces::pool_key.eq(Some(pool.id)),
+                crate::schema::workspaces::pool_id.eq(Some(pool.id)),
             ))
             .execute(&mut connection)
             .expect("workspace metadata should be updated");
@@ -1602,8 +1602,8 @@ mod tests {
 
         assert_eq!(result.workspace_path, candidate.canonical_path);
         assert_eq!(
-            result.pool_key,
-            candidate.pool_key.expect("candidate pool should exist")
+            result.pool_id,
+            candidate.pool_id.expect("candidate pool should exist")
         );
         let claim = crate::storage::find_workspace_claim(&mut connection, &candidate.id)
             .expect("claim lookup should succeed")
@@ -1893,11 +1893,11 @@ mod tests {
             workspace.management_mode,
             WorkspaceManagementMode::Automatic
         );
-        assert_eq!(workspace.pool_key, Some(result.pool_key));
+        assert_eq!(workspace.pool_id, Some(result.pool_id));
         let pool = crate::storage::find_workspace_pool_by_id(
             &mut connection,
             &workspace
-                .pool_key
+                .pool_id
                 .expect("automatic workspace should have a pool"),
         )
         .expect("workspace pool should be queryable");

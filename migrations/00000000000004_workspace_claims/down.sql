@@ -3,6 +3,9 @@ PRAGMA foreign_keys = OFF;
 ALTER TABLE workspaces
     RENAME COLUMN last_released_at TO last_checked_in_at;
 
+ALTER TABLE workspaces
+    RENAME COLUMN pool_id TO pool_key;
+
 CREATE TABLE workspace_leases (
     id TEXT NOT NULL PRIMARY KEY CHECK (length(id) = 36),
     workspace_id TEXT NOT NULL UNIQUE REFERENCES workspaces(id),

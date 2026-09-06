@@ -101,7 +101,7 @@ result SHALL include the allocated workspace path and claim identifier.
 #### Scenario: Select the Oldest Idle Slot
 
 - **WHEN** multiple safe automatic workspaces have the exact repository-set
-  pool key
+  pool ID
 - **THEN** allocation selects the oldest `last_released_at`, falls back to
   `created_at` for never-released workspaces, and uses workspace UUID order
   as the deterministic tiebreaker

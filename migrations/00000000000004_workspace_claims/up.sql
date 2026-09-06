@@ -22,4 +22,7 @@ DROP TABLE workspace_leases;
 ALTER TABLE workspaces
     RENAME COLUMN last_checked_in_at TO last_released_at;
 
+ALTER TABLE workspaces
+    RENAME COLUMN pool_key TO pool_id;
+
 PRAGMA foreign_keys = ON;

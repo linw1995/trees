@@ -269,7 +269,7 @@ pub fn list_automatic_workspace_candidates(
 ) -> QueryResult<Vec<WorkspaceRow>> {
     workspaces::table
         .filter(workspaces::management_mode.eq(WorkspaceManagementMode::Automatic))
-        .filter(workspaces::pool_key.eq(Some(pool_id)))
+        .filter(workspaces::pool_id.eq(Some(pool_id)))
         .filter(workspaces::state.eq(WorkspaceState::Ready))
         .order(workspaces::id.asc())
         .select(WorkspaceRow::as_select())
@@ -284,7 +284,7 @@ pub fn list_automatic_workspaces(
     // on every workspace row.
     workspaces::table
         .inner_join(
-            workspace_pools::table.on(workspaces::pool_key.eq(workspace_pools::id.nullable())),
+            workspace_pools::table.on(workspaces::pool_id.eq(workspace_pools::id.nullable())),
         )
         .filter(workspaces::management_mode.eq(WorkspaceManagementMode::Automatic))
         .filter(workspace_pools::workspace_root.eq(workspace_root))

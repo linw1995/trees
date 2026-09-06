@@ -51,13 +51,13 @@ trees release /absolute/path/to/workspace --claim-id CLAIM_ID
 ```
 
 The automatic command prints Bash assignments that can be captured by a shell:
-`WORKSPACE_PATH`, `POOL_KEY`, and `CLAIM_ID`. Use `--json` for a single JSON
+`WORKSPACE_PATH`, `POOL_ID`, and `CLAIM_ID`. Use `--json` for a single JSON
 object instead. Keep the claim ID with the caller that owns the workspace and
 pass it to release. The legacy `--checkout-id` spelling remains accepted as an
 alias. Release retains the claim when Git reports dirty, missing, prunable,
 diverged, or failed worktrees, so the claim holder can repair the workspace before
 returning it.
-`POOL_KEY` is the stable UUID of the repository-set pool; its BLAKE3 hash and
+`POOL_ID` is the stable UUID of the repository-set pool; its BLAKE3 hash and
 canonical repository JSON are stored internally for indexed lookup and exact
 matching.
 
