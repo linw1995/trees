@@ -328,11 +328,12 @@ events. Access and GC events SHALL use the stable workspace entity identity
 and SHALL include management mode, claim identifiers, operation context,
 timestamps, age cutoff, unclaimed/claimed counts, and relevant
 reconciliation or failure details as canonical JSON. Forced GC events SHALL
-include `forced: true`. Claim or filesystem snapshot changes and terminal
-operation events SHALL be committed atomically with current lease changes in a
-short SQLite transaction; physical GC removal SHALL be completed before a
-workspace is marked `reclaimed`. The operation fact itself SHALL remain
-append-only.
+include `forced: true`. Claim or filesystem snapshot changes SHALL be committed
+atomically with their access or reclamation events. Terminal operation events
+and current lease cleanup SHALL be committed atomically in a short SQLite
+transaction after the final external-state check; physical GC removal SHALL be
+completed before a workspace is marked `reclaimed`. The operation fact itself
+SHALL remain append-only.
 
 #### Scenario: Audit a Release Rejection
 

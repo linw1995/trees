@@ -236,14 +236,15 @@ removal as part of release.
 
 For an existing pool candidate, Trees reconciles and verifies that the
 workspace is automatic, `ready`, has no active operation, and has no active
-claim. The claim insert, allocation operation completion, and
-`workspace_claimed` event are committed in one short SQLite transaction. The
-transaction ends before any later Git or filesystem work. The unique
-`workspace_id` constraint is the final race check, so concurrent acquisitions
-cannot both succeed. For a newly provisioned slot, the creation intent creates
-the workspace claim while Git setup is running; each Git step is surrounded by
-short intent/result updates, and the claim is returned to the caller only after
-creation reaches `ready`.
+claim. The operation fact, current lease, and start event are committed in one
+short SQLite transaction. Claim insertion and the `workspace_claimed` event are
+then committed in another short transaction before the final reconciliation.
+The operation remains lease-protected until that final check completes, so a
+failed post-acquisition check can remove the new claim and append a terminal
+failure without reopening a completed operation. For a newly provisioned slot,
+the creation intent creates the workspace claim while Git setup is running;
+each Git step is surrounded by short intent/result updates, and the claim is
+returned to the caller only after creation reaches `ready`.
 
 The claim remains in the database while the caller uses the workspace, but it
 does not hold a database transaction or database lock. If post-acquisition

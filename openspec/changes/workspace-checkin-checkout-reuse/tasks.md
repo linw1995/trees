@@ -22,22 +22,22 @@
 
 ## 2. Persistence and Migration
 
-- [ ] 2.1 Rework migration `00000000000002` so it builds the final workspace
+- [x] 2.1 Rework migration `00000000000002` so it builds the final workspace
   reuse schema directly from the original lifecycle tables. Preserve workspace
   and repo-worktree IDs and observations, keep `operations` append-only, add
   `operation_leases` for current lease state, move operation transitions to
   lifecycle events, and keep one active lease per workspace operation.
-- [ ] 2.2 Backfill legacy explicit-path workspace records as `manual` without
+- [x] 2.2 Backfill legacy explicit-path workspace records as `manual` without
   touching Git or the filesystem, migrate operation lease state into the
   separate `operation_leases` table, and provide a reversible down migration
   for workspace claims and operation leases
 - [x] 2.3 Add Diesel schema/models and repository operations for origin
   repositories, pool relations, and acquiring, reading, and releasing claims
   without runtime raw SQL
-- [ ] 2.4 Add typed persistence helpers for append-only operation facts,
+- [x] 2.4 Add typed persistence helpers for append-only operation facts,
   current `operation_leases`, acquire/release/GC events, lease renewals, lease
   takeover, and atomic terminal-event plus lease cleanup
-- [ ] 2.5 Verify claim acquisition races, wrong-token rejection, mode,
+- [x] 2.5 Verify claim acquisition races, wrong-token rejection, mode,
   timestamp persistence, append-only operation facts, lease renewal and
   takeover races, tombstone retention, JSON detail validation, and migration
   upgrade/downgrade
@@ -50,7 +50,7 @@
 - [x] 3.2 Map dirty observations to `dirty`, preserve `missing`/`diverged`/
   `failed` precedence for association failures, and make workspace degradation
   and recovery idempotent
-- [ ] 3.3 Reconcile active claims at acquire and release boundaries while
+- [x] 3.3 Reconcile active claims at acquire and release boundaries while
   keeping Git and filesystem commands outside short database transactions;
   renew `operation_leases` while external steps run, append operation state
   transitions without mutating `operations`, and verify unchanged
@@ -63,15 +63,15 @@
 - [x] 4.1 Implement automatic repository-set allocation that searches exact
   pool ID matches, filters reusable idle candidates, selects least-recently
   released workspaces, and retries after an acquisition race
-- [ ] 4.2 Append allocation intent, create the current operation lease, and
+- [x] 4.2 Append allocation intent, create the current operation lease, and
   acquire the workspace claim atomically, then run final reconciliation and
   append a terminal event if the post-check fails
-- [ ] 4.3 Implement automatic provisioning below the managed workspace root
+- [x] 4.3 Implement automatic provisioning below the managed workspace root
   when no safe candidate exists, including an append-only creation intent,
   immediate operation lease and claim creation, and partial-creation rollback
-- [ ] 4.4 Implement `operation_leases` renewals during long external steps with
+- [x] 4.4 Implement `operation_leases` renewals during long external steps with
   lease-token validation, short transactions, and recovery-safe expiry
-- [ ] 4.5 Implement expired-operation recovery with a safe reconciliation gate
+- [x] 4.5 Implement expired-operation recovery with a safe reconciliation gate
   and an atomic operation ID, lease-token, and expiry transition
 
 ## 5. Acquire and Release Workflow with GC Integration
@@ -90,7 +90,7 @@
   with UTC cutoff calculation, `last_released_at`/`created_at` idle
   selection, automatic-mode-only candidate filtering using each slot path's
   derived parent root, and counts for unclaimed and claimed workspaces
-- [ ] 5.5 Execute GC as one serialized operation per candidate using the
+- [x] 5.5 Execute GC as one serialized operation per candidate using the
   current `operation_leases` row. Safely remove clean worktrees and the empty
   workspace root in normal mode; in `--force` mode allow explicitly authorized
   unsafe automatic-slot cleanup while retaining age, root, claim, operation,
@@ -106,15 +106,15 @@
 
 ## 6. Verification and Documentation
 
-- [ ] 6.1 Add unit tests for claim state transitions, token authorization,
+- [x] 6.1 Add unit tests for claim state transitions, token authorization,
   UUID/timestamp serialization, append-only operation facts, current lease
   renewal/takeover, reusable predicates, and dirty-state reconciliation
-- [ ] 6.2 Add integration tests for pool allocation, root resolution, generated
+- [x] 6.2 Add integration tests for pool allocation, root resolution, generated
   paths, concurrency, operation lease recovery, rejected dirty release, and
   mode isolation. Cover dry-run GC, thresholds, safe and forced reclamation,
   confirmation, partial failures, external worktree removal, and Git identity
   preservation.
-- [ ] 6.3 Run `openspec validate workspace-checkin-checkout-reuse --strict`,
+- [x] 6.3 Run `openspec validate workspace-checkin-checkout-reuse --strict`,
   the complete Rust/SQLite test suite, `prek -a`, and
   `nix flake check --no-build` after the append-only operation and separate
   lease implementation is complete; distinguish spec validation from
