@@ -1085,70 +1085,129 @@ fn rollback_creation(
     primary: &WorkspaceError,
 ) -> Result<(), WorkspaceError> {
     let error_json = error_document(primary);
-    let mut errors = Vec::new();
+    let mut errors = rollback_repositories(connection, context, completed, failed, &error_json);
+    rollback_workspace_directory(connection, context, &mut errors);
+    rollback_claim(connection, context, claim, &mut errors);
+    finish_rollback(connection, context, error_json, &mut errors);
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(WorkspaceError::RollbackFailure { errors })
+    }
+}
+
+fn rollback_repositories(
+    connection: &mut SqliteConnection,
+    context: &CreationContext,
+    completed: &[&TrackedRepository],
+    failed: Option<&TrackedRepository>,
+    error_json: &JsonDocument,
+) -> Vec<String> {
     let failed_id = failed.map(|repository| repository.id);
     let repositories = failed
         .into_iter()
         .chain(completed.iter().rev().copied())
         .collect::<Vec<_>>();
-
+    let mut errors = Vec::new();
     for repository in repositories {
-        match git::find_worktree(&repository.plan.source_path, &repository.plan.worktree_path) {
-            Ok(worktree) if worktree.detached && worktree.branch.is_none() => {
-                if let Err(error) = git::remove_worktree_with_heartbeat(
-                    &repository.plan.source_path,
-                    &repository.plan.worktree_path,
-                    || match crate::storage::renew_operation_lease(connection, &context.lease_id) {
-                        Ok(true) => Ok(()),
-                        Ok(false) => Err(GitError::Heartbeat(
-                            "operation lease is no longer owned".to_owned(),
-                        )),
-                        Err(error) => Err(GitError::Heartbeat(error.to_string())),
-                    },
-                ) {
-                    errors.push(error.to_string());
-                }
-            }
-            Ok(worktree) => errors.push(format!(
-                "refusing to remove branch-attached worktree {} ({:?})",
-                worktree.path, worktree.branch
-            )),
-            Err(GitError::WorktreeNotFound(_)) => {}
-            Err(_error) if failed_id == Some(repository.id) => {}
-            Err(error) => errors.push(error.to_string()),
-        }
-        if let Err(error) = record_repo_worktree_transition(
+        errors.extend(rollback_repository(
             connection,
-            &repository.id,
-            &context.operation_id,
-            RepoWorktreeState::Failed,
-            None,
-            TransitionMetadata::new("worktree_rollback", "trees").with_error(error_json.clone()),
-        ) {
-            errors.push(error.to_string());
-        }
+            context,
+            repository,
+            failed_id == Some(repository.id),
+            error_json,
+        ));
     }
+    errors
+}
 
-    if context.plan.workspace_path.as_path().exists() {
-        match crate::storage::renew_operation_lease(connection, &context.lease_id) {
-            Ok(true) => {
-                if let Err(error) = fs::remove_dir(&context.plan.workspace_path) {
-                    errors.push(error.to_string());
-                }
+fn rollback_repository(
+    connection: &mut SqliteConnection,
+    context: &CreationContext,
+    repository: &TrackedRepository,
+    is_failed_repository: bool,
+    error_json: &JsonDocument,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    match git::find_worktree(&repository.plan.source_path, &repository.plan.worktree_path) {
+        Ok(worktree) if worktree.detached && worktree.branch.is_none() => {
+            if let Err(error) = git::remove_worktree_with_heartbeat(
+                &repository.plan.source_path,
+                &repository.plan.worktree_path,
+                || match crate::storage::renew_operation_lease(connection, &context.lease_id) {
+                    Ok(true) => Ok(()),
+                    Ok(false) => Err(GitError::Heartbeat(
+                        "operation lease is no longer owned".to_owned(),
+                    )),
+                    Err(error) => Err(GitError::Heartbeat(error.to_string())),
+                },
+            ) {
+                errors.push(error.to_string());
             }
-            Ok(false) => errors.push("operation lease is no longer owned".to_owned()),
-            Err(error) => errors.push(error.to_string()),
         }
+        Ok(worktree) => errors.push(format!(
+            "refusing to remove branch-attached worktree {} ({:?})",
+            worktree.path, worktree.branch
+        )),
+        Err(GitError::WorktreeNotFound(_)) => {}
+        Err(_error) if is_failed_repository => {}
+        Err(error) => errors.push(error.to_string()),
     }
+    if let Err(error) = record_repo_worktree_transition(
+        connection,
+        &repository.id,
+        &context.operation_id,
+        RepoWorktreeState::Failed,
+        None,
+        TransitionMetadata::new("worktree_rollback", "trees").with_error(error_json.clone()),
+    ) {
+        errors.push(error.to_string());
+    }
+    errors
+}
 
-    if let Some(claim) = claim {
-        match release_workspace_claim(connection, &context.workspace_id, &claim.id) {
-            Ok(true) => {}
-            Ok(false) => errors.push("automatic workspace claim was not found".to_owned()),
-            Err(error) => errors.push(error.to_string()),
+fn rollback_workspace_directory(
+    connection: &mut SqliteConnection,
+    context: &CreationContext,
+    errors: &mut Vec<String>,
+) {
+    if !context.plan.workspace_path.as_path().exists() {
+        return;
+    }
+    match crate::storage::renew_operation_lease(connection, &context.lease_id) {
+        Ok(true) => {
+            if let Err(error) = fs::remove_dir(&context.plan.workspace_path) {
+                errors.push(error.to_string());
+            }
         }
+        Ok(false) => errors.push("operation lease is no longer owned".to_owned()),
+        Err(error) => errors.push(error.to_string()),
     }
+}
 
+fn rollback_claim(
+    connection: &mut SqliteConnection,
+    context: &CreationContext,
+    claim: Option<&WorkspaceClaim>,
+    errors: &mut Vec<String>,
+) {
+    let Some(claim) = claim else {
+        return;
+    };
+    match release_workspace_claim(connection, &context.workspace_id, &claim.id) {
+        Ok(true) => {}
+        Ok(false) => errors.push("automatic workspace claim was not found".to_owned()),
+        Err(error) => errors.push(error.to_string()),
+    }
+}
+
+fn finish_rollback(
+    connection: &mut SqliteConnection,
+    context: &CreationContext,
+    error_json: JsonDocument,
+    errors: &mut Vec<String>,
+) {
     let operation_state = if errors.is_empty() {
         OperationState::RolledBack
     } else {
@@ -1177,12 +1236,6 @@ fn rollback_creation(
         TransitionMetadata::new("workspace_creation_failed", "trees").with_error(error_json),
     ) {
         errors.push(error.to_string());
-    }
-
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(WorkspaceError::RollbackFailure { errors })
     }
 }
 

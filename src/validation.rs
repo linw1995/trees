@@ -418,4 +418,30 @@ mod tests {
 
         fs::remove_dir_all(root).expect("test root should be removable");
     }
+
+    #[test]
+    fn formats_workspace_root_errors() {
+        let path = PathBuf::from("/tmp/workspace");
+        let errors = [
+            WorkspaceRootError::NotAbsolute {
+                workspace: path.clone(),
+                managed_root: PathBuf::from("/tmp/managed"),
+            },
+            WorkspaceRootError::OutsideManagedRoot {
+                workspace: path.clone(),
+                managed_root: PathBuf::from("/tmp/managed"),
+            },
+            WorkspaceRootError::NotDirectory(path.clone()),
+            WorkspaceRootError::ReadDirectory {
+                path: path.clone(),
+                source: std::io::Error::other("read failed"),
+            },
+            WorkspaceRootError::UnexpectedEntry(path),
+        ];
+
+        for error in errors {
+            assert!(!error.to_string().is_empty());
+            let _ = std::error::Error::source(&error);
+        }
+    }
 }

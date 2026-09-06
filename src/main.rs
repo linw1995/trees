@@ -67,7 +67,15 @@ fn run_automatic_create(repositories: Vec<std::path::PathBuf>, json: bool) -> Ex
             return ExitCode::FAILURE;
         }
     };
-    match trees::workspace::allocate_automatic_workspace(&mut connection, &plan) {
+    run_automatic_allocation(&mut connection, &plan, json)
+}
+
+fn run_automatic_allocation(
+    connection: &mut diesel::sqlite::SqliteConnection,
+    plan: &trees::workspace::AutomaticAllocationPlan,
+    json: bool,
+) -> ExitCode {
+    match trees::workspace::allocate_automatic_workspace(connection, plan) {
         Ok(result) => {
             if json {
                 print_json(&result)
@@ -84,30 +92,7 @@ fn run_automatic_create(repositories: Vec<std::path::PathBuf>, json: bool) -> Ex
 }
 
 fn run_release(arguments: trees::cli::ReleaseArgs) -> ExitCode {
-    let claim_id = match arguments.claim_id.parse::<trees::domain::ClaimId>() {
-        Ok(claim_id) => claim_id,
-        Err(error) => {
-            eprintln!("Error: invalid claim ID: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let workspace_path = match trees::validation::resolve_workspace_path(&arguments.workspace_path)
-    {
-        Ok(path) => path,
-        Err(error) => {
-            eprintln!("Error: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let mut connection = match trees::database::open_default() {
-        Ok(connection) => connection,
-        Err(error) => {
-            eprintln!("Error: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    match trees::workspace::release_automatic_workspace(&mut connection, &workspace_path, claim_id)
-    {
+    match release_automatic(&arguments) {
         Ok(result) => {
             println!("workspace_path={}", result.workspace_path);
             println!("claim_id={}", result.claim_id);
@@ -119,6 +104,20 @@ fn run_release(arguments: trees::cli::ReleaseArgs) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn release_automatic(
+    arguments: &trees::cli::ReleaseArgs,
+) -> Result<trees::workspace::ReleaseResult, String> {
+    let claim_id = arguments
+        .claim_id
+        .parse::<trees::domain::ClaimId>()
+        .map_err(|error| format!("invalid claim ID: {error}"))?;
+    let workspace_path = trees::validation::resolve_workspace_path(&arguments.workspace_path)
+        .map_err(|error| error.to_string())?;
+    let mut connection = trees::database::open_default().map_err(|error| error.to_string())?;
+    trees::workspace::release_automatic_workspace(&mut connection, &workspace_path, claim_id)
+        .map_err(|error| error.to_string())
 }
 
 fn run_config(arguments: trees::cli::ConfigArgs) -> ExitCode {
@@ -141,31 +140,53 @@ fn run_config(arguments: trees::cli::ConfigArgs) -> ExitCode {
 }
 
 fn run_gc(arguments: trees::cli::GcArgs) -> ExitCode {
-    let mut connection = match trees::database::open_read_only() {
-        Ok(connection) => connection,
+    match run_gc_command(&arguments) {
+        Ok(exit_code) => exit_code,
         Err(error) => {
             eprintln!("Error: {error}");
-            return ExitCode::FAILURE;
+            ExitCode::FAILURE
         }
-    };
-    let scan =
-        match trees::gc::scan_with_force(&mut connection, arguments.older_than, arguments.force) {
-            Ok(scan) => scan,
-            Err(error) => {
-                eprintln!("Error: {error}");
-                return ExitCode::FAILURE;
-            }
-        };
+    }
+}
+
+fn run_gc_command(arguments: &trees::cli::GcArgs) -> Result<ExitCode, String> {
+    let scan = load_gc_scan(arguments)?;
+    print_gc_scan(&scan, arguments.force);
+    run_gc_after_scan(arguments, &scan)
+}
+
+fn run_gc_after_scan(
+    arguments: &trees::cli::GcArgs,
+    scan: &trees::gc::GcScan,
+) -> Result<ExitCode, String> {
+    if arguments.dry_run {
+        return Ok(ExitCode::SUCCESS);
+    }
+    match confirm_gc(
+        arguments.force,
+        arguments.yes,
+        scan.execution_candidate_count(arguments.force),
+    ) {
+        Ok(GcConfirmation::Proceed) => Ok(execute_gc(arguments)),
+        Ok(GcConfirmation::Cancelled) => Ok(ExitCode::SUCCESS),
+        Err(exit_code) => Ok(exit_code),
+    }
+}
+
+fn load_gc_scan(arguments: &trees::cli::GcArgs) -> Result<trees::gc::GcScan, String> {
+    let mut connection = trees::database::open_read_only().map_err(|error| error.to_string())?;
+    trees::gc::scan_with_force(&mut connection, arguments.older_than, arguments.force)
+        .map_err(|error| error.to_string())
+}
+
+fn print_gc_scan(scan: &trees::gc::GcScan, force: bool) {
     println!("cutoff={}", scan.cutoff);
     println!("automatic={}", scan.counts.automatic);
     println!("unclaimed={}", scan.counts.unclaimed);
     println!("claimed={}", scan.counts.claimed);
     println!("age_eligible={}", scan.counts.age_eligible);
     println!("safe_to_reclaim={}", scan.counts.safe_to_reclaim);
-    println!(
-        "candidates={}",
-        scan.execution_candidate_count(arguments.force)
-    );
+    println!("candidates={}", scan.execution_candidate_count(force));
     for candidate in &scan.candidates {
         println!(
             "candidate={} reason={}",
@@ -173,44 +194,50 @@ fn run_gc(arguments: trees::cli::GcArgs) -> ExitCode {
             candidate.reason()
         );
     }
-    if arguments.dry_run {
-        return ExitCode::SUCCESS;
-    }
-    let candidate_count = scan.execution_candidate_count(arguments.force);
-    if arguments.force {
-        eprintln!("Warning: --force may remove dirty worktrees and unexpected workspace content.");
-    } else if !arguments.yes && candidate_count > 0 {
-        if !io::stdin().is_terminal() {
-            eprintln!(
-                "Error: interactive confirmation is unavailable; use --dry-run, --yes, or --force"
-            );
-            return ExitCode::FAILURE;
-        }
-        print!("Reclaim {candidate_count} workspaces? [y/N] ");
-        if let Err(error) = io::stdout().flush() {
-            eprintln!("Error: failed to flush confirmation prompt: {error}");
-            return ExitCode::FAILURE;
-        }
-        let mut answer = String::new();
-        if let Err(error) = io::stdin().read_line(&mut answer) {
-            eprintln!("Error: failed to read confirmation: {error}");
-            return ExitCode::FAILURE;
-        }
-        if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-            println!("cancelled=true");
-            return ExitCode::SUCCESS;
-        }
-    }
+}
 
-    drop(connection);
-    let mut connection = match trees::database::open_default() {
-        Ok(connection) => connection,
-        Err(error) => {
-            eprintln!("Error: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let report = match trees::gc::execute(&mut connection, arguments.older_than, arguments.force) {
+enum GcConfirmation {
+    Proceed,
+    Cancelled,
+}
+
+fn confirm_gc(force: bool, yes: bool, candidate_count: usize) -> Result<GcConfirmation, ExitCode> {
+    if force {
+        eprintln!("Warning: --force may remove dirty worktrees and unexpected workspace content.");
+    } else if yes || candidate_count == 0 {
+        return Ok(GcConfirmation::Proceed);
+    } else {
+        return confirm_gc_interactively(candidate_count);
+    }
+    Ok(GcConfirmation::Proceed)
+}
+
+fn confirm_gc_interactively(candidate_count: usize) -> Result<GcConfirmation, ExitCode> {
+    if !io::stdin().is_terminal() {
+        eprintln!(
+            "Error: interactive confirmation is unavailable; use --dry-run, --yes, or --force"
+        );
+        return Err(ExitCode::FAILURE);
+    }
+    print!("Reclaim {candidate_count} workspaces? [y/N] ");
+    if let Err(error) = io::stdout().flush() {
+        eprintln!("Error: failed to flush confirmation prompt: {error}");
+        return Err(ExitCode::FAILURE);
+    }
+    let mut answer = String::new();
+    if let Err(error) = io::stdin().read_line(&mut answer) {
+        eprintln!("Error: failed to read confirmation: {error}");
+        return Err(ExitCode::FAILURE);
+    }
+    if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        println!("cancelled=true");
+        return Ok(GcConfirmation::Cancelled);
+    }
+    Ok(GcConfirmation::Proceed)
+}
+
+fn execute_gc(arguments: &trees::cli::GcArgs) -> ExitCode {
+    let report = match execute_gc_report(arguments) {
         Ok(report) => report,
         Err(error) => {
             eprintln!("Error: {error}");
@@ -229,6 +256,14 @@ fn run_gc(arguments: trees::cli::GcArgs) -> ExitCode {
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
+}
+
+fn execute_gc_report(
+    arguments: &trees::cli::GcArgs,
+) -> Result<trees::gc::GcExecutionReport, String> {
+    let mut connection = trees::database::open_default().map_err(|error| error.to_string())?;
+    trees::gc::execute(&mut connection, arguments.older_than, arguments.force)
+        .map_err(|error| error.to_string())
 }
 
 fn print_automatic_claim_result(result: &trees::workspace::AutomaticClaimResult) {

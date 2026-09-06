@@ -231,6 +231,12 @@ pub struct GcExecutionReport {
     pub failed: Vec<GcFailure>,
 }
 
+enum GcCandidateResult {
+    Reclaimed(CanonicalPath),
+    Skipped(GcSkipped),
+    Failed(GcFailure),
+}
+
 pub fn scan(connection: &mut SqliteConnection, older_than: GcDuration) -> Result<GcScan, GcError> {
     scan_with_force(connection, older_than, false)
 }
@@ -310,142 +316,195 @@ pub fn execute(
         skipped: Vec::new(),
         failed: Vec::new(),
     };
-    for candidate in scan.candidates.iter().cloned() {
-        let Some(reason) = execution_skip_reason(&candidate, force) else {
-            continue;
-        };
-        if reason != GcCandidateReason::Eligible {
-            report.skipped.push(GcSkipped {
-                workspace_path: candidate.workspace.canonical_path,
-                reason,
-            });
-            continue;
-        }
-
-        let Some((operation, lease_id)) = begin_gc_operation(connection, &candidate, &scan, force)?
-        else {
-            report.skipped.push(GcSkipped {
-                workspace_path: candidate.workspace.canonical_path,
-                reason: GcCandidateReason::ActiveOperation,
-            });
-            continue;
-        };
-        let workspace_id = candidate.workspace.id;
-        let details_json = gc_details(&candidate.workspace.canonical_path, &scan, force, None);
-        if let Err(error) = reconciliation::reconcile_workspace_with_lease(
-            connection,
-            &workspace_id,
-            &operation.id,
-            &lease_id,
-        ) {
-            let error_text = error.to_string();
-            finish_gc_failure(
-                connection,
-                &lease_id,
-                &workspace_id,
-                details_json,
-                &error_text,
-            )?;
-            report.failed.push(GcFailure {
-                workspace_path: candidate.workspace.canonical_path,
-                error: error_text,
-            });
-            break;
-        }
-
-        let workspace = find_workspace(connection, &workspace_id).map_err(GcError::Database)?;
-        let claim = find_workspace_claim(connection, &workspace_id).map_err(GcError::Database)?;
-        if claim.is_some() {
-            finish_gc_skip(
-                connection,
-                &lease_id,
-                &workspace_id,
-                details_json,
-                GcCandidateReason::Claimed,
-            )?;
-            report.skipped.push(GcSkipped {
-                workspace_path: workspace.canonical_path,
-                reason: GcCandidateReason::Claimed,
-            });
-            continue;
-        }
-        if workspace.state == WorkspaceState::Reclaimed
-            || (!force && workspace.state != WorkspaceState::Ready)
-        {
-            finish_gc_skip(
-                connection,
-                &lease_id,
-                &workspace_id,
-                details_json,
-                GcCandidateReason::Unhealthy,
-            )?;
-            report.skipped.push(GcSkipped {
-                workspace_path: workspace.canonical_path,
-                reason: GcCandidateReason::Unhealthy,
-            });
-            continue;
-        }
-
-        let repositories =
-            list_repo_worktrees(connection, &workspace_id).map_err(GcError::Database)?;
-        let removal_plan = match prepare_removal(&workspace, &repositories, force) {
-            Ok(plan) => plan,
-            Err(reason) => {
-                finish_gc_skip(connection, &lease_id, &workspace_id, details_json, reason)?;
-                report.skipped.push(GcSkipped {
-                    workspace_path: workspace.canonical_path,
-                    reason,
-                });
-                continue;
+    for candidate in &scan.candidates {
+        match execute_candidate(connection, candidate, &scan, force)? {
+            GcCandidateResult::Reclaimed(path) => report.reclaimed.push(path),
+            GcCandidateResult::Skipped(skipped) => report.skipped.push(skipped),
+            GcCandidateResult::Failed(failure) => {
+                report.failed.push(failure);
+                break;
             }
-        };
-        if let Err(error) = remove_physical_workspace(&removal_plan, force, || {
-            renew_gc_lease(connection, &lease_id)
-        }) {
-            let error_text = error.to_string();
-            let _ = reconciliation::reconcile_workspace_with_lease(
-                connection,
-                &workspace_id,
-                &operation.id,
-                &lease_id,
-            );
-            finish_gc_failure(
-                connection,
-                &lease_id,
-                &workspace_id,
-                gc_details(&workspace.canonical_path, &scan, force, Some(&error_text)),
-                &error_text,
-            )?;
-            report.failed.push(GcFailure {
-                workspace_path: workspace.canonical_path,
-                error: error_text,
-            });
-            break;
         }
-
-        if let Err(error) = record_workspace_reclaimed(
-            connection,
-            &lease_id,
-            &workspace_id,
-            Some(gc_details(&workspace.canonical_path, &scan, force, None)),
-        ) {
-            let error_text = error.to_string();
-            finish_gc_failure(
-                connection,
-                &lease_id,
-                &workspace_id,
-                gc_details(&workspace.canonical_path, &scan, force, Some(&error_text)),
-                &error_text,
-            )?;
-            report.failed.push(GcFailure {
-                workspace_path: workspace.canonical_path,
-                error: error_text,
-            });
-            break;
-        }
-        report.reclaimed.push(workspace.canonical_path);
     }
     Ok(report)
+}
+
+fn execute_candidate(
+    connection: &mut SqliteConnection,
+    candidate: &GcCandidate,
+    scan: &GcScan,
+    force: bool,
+) -> Result<GcCandidateResult, GcError> {
+    let reason = candidate.reason();
+    if reason != GcCandidateReason::Eligible {
+        return Ok(GcCandidateResult::Skipped(GcSkipped {
+            workspace_path: candidate.workspace.canonical_path.clone(),
+            reason,
+        }));
+    }
+
+    let Some((operation, lease_id)) = begin_gc_operation(connection, candidate, scan, force)?
+    else {
+        return Ok(GcCandidateResult::Skipped(GcSkipped {
+            workspace_path: candidate.workspace.canonical_path.clone(),
+            reason: GcCandidateReason::ActiveOperation,
+        }));
+    };
+    let workspace_id = candidate.workspace.id;
+    let details_json = gc_details(&candidate.workspace.canonical_path, scan, force, None);
+    if let Err(error) = reconciliation::reconcile_workspace_with_lease(
+        connection,
+        &workspace_id,
+        &operation.id,
+        &lease_id,
+    ) {
+        return finish_candidate_failure(
+            connection,
+            &lease_id,
+            &workspace_id,
+            candidate.workspace.canonical_path.clone(),
+            details_json,
+            error.to_string(),
+        );
+    }
+
+    execute_started_candidate(
+        connection,
+        &operation.id,
+        &lease_id,
+        &workspace_id,
+        scan,
+        force,
+        details_json,
+    )
+}
+
+fn execute_started_candidate(
+    connection: &mut SqliteConnection,
+    operation_id: &crate::domain::OperationId,
+    lease_id: &crate::domain::LeaseId,
+    workspace_id: &WorkspaceId,
+    scan: &GcScan,
+    force: bool,
+    details_json: JsonDocument,
+) -> Result<GcCandidateResult, GcError> {
+    let workspace = find_workspace(connection, workspace_id).map_err(GcError::Database)?;
+    let claim = find_workspace_claim(connection, workspace_id).map_err(GcError::Database)?;
+    if claim.is_some() {
+        finish_gc_skip(
+            connection,
+            lease_id,
+            workspace_id,
+            details_json,
+            GcCandidateReason::Claimed,
+        )?;
+        return Ok(GcCandidateResult::Skipped(GcSkipped {
+            workspace_path: workspace.canonical_path,
+            reason: GcCandidateReason::Claimed,
+        }));
+    }
+    if workspace_is_unhealthy(&workspace, force) {
+        finish_gc_skip(
+            connection,
+            lease_id,
+            workspace_id,
+            details_json,
+            GcCandidateReason::Unhealthy,
+        )?;
+        return Ok(GcCandidateResult::Skipped(GcSkipped {
+            workspace_path: workspace.canonical_path,
+            reason: GcCandidateReason::Unhealthy,
+        }));
+    }
+
+    let repositories = list_repo_worktrees(connection, workspace_id).map_err(GcError::Database)?;
+    let removal_plan = match prepare_removal(&workspace, &repositories, force) {
+        Ok(plan) => plan,
+        Err(reason) => {
+            finish_gc_skip(connection, lease_id, workspace_id, details_json, reason)?;
+            return Ok(GcCandidateResult::Skipped(GcSkipped {
+                workspace_path: workspace.canonical_path,
+                reason,
+            }));
+        }
+    };
+    execute_removal(
+        connection,
+        operation_id,
+        lease_id,
+        workspace,
+        removal_plan,
+        scan,
+        force,
+    )
+}
+
+fn workspace_is_unhealthy(workspace: &crate::storage::WorkspaceRow, force: bool) -> bool {
+    workspace.state == WorkspaceState::Reclaimed
+        || (!force && workspace.state != WorkspaceState::Ready)
+}
+
+fn execute_removal(
+    connection: &mut SqliteConnection,
+    operation_id: &crate::domain::OperationId,
+    lease_id: &crate::domain::LeaseId,
+    workspace: crate::storage::WorkspaceRow,
+    removal_plan: RemovalPlan,
+    scan: &GcScan,
+    force: bool,
+) -> Result<GcCandidateResult, GcError> {
+    if let Err(error) = remove_physical_workspace(&removal_plan, force, || {
+        renew_gc_lease(connection, lease_id)
+    }) {
+        let error_text = error.to_string();
+        let _ = reconciliation::reconcile_workspace_with_lease(
+            connection,
+            &workspace.id,
+            operation_id,
+            lease_id,
+        );
+        return finish_candidate_failure(
+            connection,
+            lease_id,
+            &workspace.id,
+            workspace.canonical_path.clone(),
+            gc_details(&workspace.canonical_path, scan, force, Some(&error_text)),
+            error_text,
+        );
+    }
+
+    if let Err(error) = record_workspace_reclaimed(
+        connection,
+        lease_id,
+        &workspace.id,
+        Some(gc_details(&workspace.canonical_path, scan, force, None)),
+    ) {
+        let error_text = error.to_string();
+        return finish_candidate_failure(
+            connection,
+            lease_id,
+            &workspace.id,
+            workspace.canonical_path.clone(),
+            gc_details(&workspace.canonical_path, scan, force, Some(&error_text)),
+            error_text,
+        );
+    }
+    Ok(GcCandidateResult::Reclaimed(workspace.canonical_path))
+}
+
+fn finish_candidate_failure(
+    connection: &mut SqliteConnection,
+    lease_id: &crate::domain::LeaseId,
+    workspace_id: &WorkspaceId,
+    workspace_path: CanonicalPath,
+    details_json: JsonDocument,
+    error: String,
+) -> Result<GcCandidateResult, GcError> {
+    finish_gc_failure(connection, lease_id, workspace_id, details_json, &error)?;
+    Ok(GcCandidateResult::Failed(GcFailure {
+        workspace_path,
+        error,
+    }))
 }
 
 fn recover_expired_automatic_operations(
@@ -592,6 +651,33 @@ fn prepare_removal(
     let Some(workspace_root) = workspace.canonical_path.as_path().parent() else {
         return Err(GcCandidateReason::UnsafeRoot);
     };
+    let expected_paths = repositories
+        .iter()
+        .map(|repository| repository.worktree_path.as_path().to_owned())
+        .collect::<Vec<_>>();
+    validate_repository_layout(workspace, repositories, workspace_root)?;
+    let Some(extra_entries) =
+        prepare_workspace_entries(workspace, workspace_root, &expected_paths, force)?
+    else {
+        return Ok(RemovalPlan {
+            workspace_path: workspace.canonical_path.as_path().to_owned(),
+            worktrees: Vec::new(),
+            extra_entries: Vec::new(),
+        });
+    };
+    let worktrees = prepare_worktree_removals(repositories, force)?;
+    Ok(RemovalPlan {
+        workspace_path: workspace.canonical_path.as_path().to_owned(),
+        worktrees,
+        extra_entries,
+    })
+}
+
+fn validate_repository_layout(
+    workspace: &crate::storage::WorkspaceRow,
+    repositories: &[RepoWorktreeRow],
+    workspace_root: &Path,
+) -> Result<(), GcCandidateReason> {
     for repository in repositories {
         if repository.worktree_path.as_path().parent() != Some(workspace.canonical_path.as_path())
             || !repository
@@ -607,6 +693,15 @@ fn prepare_removal(
             return Err(GcCandidateReason::RepositoryIdentity);
         }
     }
+    Ok(())
+}
+
+fn prepare_workspace_entries(
+    workspace: &crate::storage::WorkspaceRow,
+    workspace_root: &Path,
+    expected_paths: &[PathBuf],
+    force: bool,
+) -> Result<Option<Vec<PathBuf>>, GcCandidateReason> {
     let workspace_exists = match fs::symlink_metadata(workspace.canonical_path.as_path()) {
         Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => true,
         Ok(_) => return Err(GcCandidateReason::UnsafeRoot),
@@ -615,19 +710,11 @@ fn prepare_removal(
     };
     if !workspace_exists {
         if force {
-            return Ok(RemovalPlan {
-                workspace_path: workspace.canonical_path.as_path().to_owned(),
-                worktrees: Vec::new(),
-                extra_entries: Vec::new(),
-            });
+            return Ok(None);
         }
         return Err(GcCandidateReason::WorktreeMismatch);
     }
 
-    let expected_paths = repositories
-        .iter()
-        .map(|repository| repository.worktree_path.as_path().to_owned())
-        .collect::<Vec<_>>();
     let extra_entries = fs::read_dir(workspace.canonical_path.as_path())
         .map_err(|_| GcCandidateReason::UnexpectedContent)?
         .map(|entry| entry.map(|entry| entry.path()))
@@ -643,91 +730,118 @@ fn prepare_removal(
         validation::validate_workspace_root(
             workspace.canonical_path.as_path(),
             workspace_root,
-            &expected_paths,
+            expected_paths,
         )
-        .map_err(|error| match error {
-            validation::WorkspaceRootError::UnexpectedEntry(_) => {
-                GcCandidateReason::UnexpectedContent
-            }
-            validation::WorkspaceRootError::NotDirectory(_)
-            | validation::WorkspaceRootError::OutsideManagedRoot { .. }
-            | validation::WorkspaceRootError::NotAbsolute { .. } => GcCandidateReason::UnsafeRoot,
-            validation::WorkspaceRootError::ReadDirectory { .. } => {
-                GcCandidateReason::UnexpectedContent
-            }
-        })?;
+        .map_err(workspace_root_reason)?;
     }
-
-    let mut worktrees = Vec::with_capacity(repositories.len());
-    for repository in repositories {
-        let listed = git::list_worktrees(&repository.source_path)
-            .map_err(|_| GcCandidateReason::GitError)?
-            .into_iter()
-            .find(|worktree| worktree.path.as_path() == repository.worktree_path.as_path());
-        let worktree_exists = match fs::symlink_metadata(repository.worktree_path.as_path()) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(GcCandidateReason::WorktreeIdentity);
-            }
-            Ok(_) => true,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-            Err(_) => return Err(GcCandidateReason::WorktreeMismatch),
-        };
-        if let Some(worktree) = listed.as_ref() {
-            // Force removal may discard content, but it must not remove a
-            // worktree that still owns a branch.
-            if !worktree.detached || worktree.branch.is_some() {
-                return Err(GcCandidateReason::WorktreeMismatch);
-            }
-        }
-        if !force {
-            let Some(worktree) = listed.as_ref() else {
-                return Err(GcCandidateReason::WorktreeMismatch);
-            };
-            if worktree.prunable.is_some() || !worktree_exists {
-                return Err(GcCandidateReason::WorktreeMismatch);
-            }
-            let identity = git::inspect_worktree_identity(repository.worktree_path.as_path())
-                .map_err(|_| GcCandidateReason::WorktreeIdentity)?;
-            if identity != repository.repository_identity {
-                return Err(GcCandidateReason::WorktreeIdentity);
-            }
-            if !worktree.detached
-                || worktree.branch.is_some()
-                || worktree.head.as_deref() != repository.last_head.as_deref()
-                || !git::is_worktree_clean(repository.worktree_path.as_path())
-                    .map_err(|_| GcCandidateReason::GitError)?
-            {
-                return Err(GcCandidateReason::WorktreeMismatch);
-            }
-        }
-        let Some(worktree) = listed else {
-            if worktree_exists {
-                worktrees.push(WorktreeRemoval {
-                    repository: repository.source_path.clone(),
-                    path: repository.worktree_path.as_path().to_owned(),
-                    remove_from_git: false,
-                });
-            }
-            continue;
-        };
-        if force && worktree_exists {
-            let identity = git::inspect_worktree_identity(repository.worktree_path.as_path())
-                .map_err(|_| GcCandidateReason::WorktreeIdentity)?;
-            if identity != repository.repository_identity {
-                return Err(GcCandidateReason::WorktreeIdentity);
-            }
-        }
-        worktrees.push(WorktreeRemoval {
-            repository: repository.source_path.clone(),
-            path: worktree.path.into_path_buf(),
-            remove_from_git: true,
-        });
-    }
-    Ok(RemovalPlan {
-        workspace_path: workspace.canonical_path.as_path().to_owned(),
-        worktrees,
-        extra_entries: if force { extra_entries } else { Vec::new() },
+    Ok(if force {
+        Some(extra_entries)
+    } else {
+        Some(Vec::new())
     })
+}
+
+fn workspace_root_reason(error: validation::WorkspaceRootError) -> GcCandidateReason {
+    match error {
+        validation::WorkspaceRootError::UnexpectedEntry(_) => GcCandidateReason::UnexpectedContent,
+        validation::WorkspaceRootError::NotDirectory(_)
+        | validation::WorkspaceRootError::OutsideManagedRoot { .. }
+        | validation::WorkspaceRootError::NotAbsolute { .. } => GcCandidateReason::UnsafeRoot,
+        validation::WorkspaceRootError::ReadDirectory { .. } => {
+            GcCandidateReason::UnexpectedContent
+        }
+    }
+}
+
+fn prepare_worktree_removals(
+    repositories: &[RepoWorktreeRow],
+    force: bool,
+) -> Result<Vec<WorktreeRemoval>, GcCandidateReason> {
+    repositories
+        .iter()
+        .map(|repository| prepare_worktree_removal(repository, force))
+        .collect::<Result<Vec<_>, _>>()
+        .map(|removals| removals.into_iter().flatten().collect())
+}
+
+fn prepare_worktree_removal(
+    repository: &RepoWorktreeRow,
+    force: bool,
+) -> Result<Option<WorktreeRemoval>, GcCandidateReason> {
+    let listed = git::list_worktrees(&repository.source_path)
+        .map_err(|_| GcCandidateReason::GitError)?
+        .into_iter()
+        .find(|worktree| worktree.path.as_path() == repository.worktree_path.as_path());
+    let worktree_exists = worktree_path_exists(repository)?;
+    if let Some(worktree) = listed.as_ref() {
+        ensure_unbranched_worktree(worktree)?;
+    }
+    if !force {
+        validate_clean_worktree(repository, listed.as_ref(), worktree_exists)?;
+    }
+    let Some(worktree) = listed else {
+        return Ok(worktree_exists.then(|| WorktreeRemoval {
+            repository: repository.source_path.clone(),
+            path: repository.worktree_path.as_path().to_owned(),
+            remove_from_git: false,
+        }));
+    };
+    if force && worktree_exists {
+        validate_worktree_identity(repository)?;
+    }
+    Ok(Some(WorktreeRemoval {
+        repository: repository.source_path.clone(),
+        path: worktree.path.into_path_buf(),
+        remove_from_git: true,
+    }))
+}
+
+fn worktree_path_exists(repository: &RepoWorktreeRow) -> Result<bool, GcCandidateReason> {
+    match fs::symlink_metadata(repository.worktree_path.as_path()) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err(GcCandidateReason::WorktreeIdentity)
+        }
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err(GcCandidateReason::WorktreeMismatch),
+    }
+}
+
+fn ensure_unbranched_worktree(worktree: &git::WorktreeInfo) -> Result<(), GcCandidateReason> {
+    if !worktree.detached || worktree.branch.is_some() {
+        return Err(GcCandidateReason::WorktreeMismatch);
+    }
+    Ok(())
+}
+
+fn validate_clean_worktree(
+    repository: &RepoWorktreeRow,
+    worktree: Option<&git::WorktreeInfo>,
+    worktree_exists: bool,
+) -> Result<(), GcCandidateReason> {
+    let Some(worktree) = worktree else {
+        return Err(GcCandidateReason::WorktreeMismatch);
+    };
+    if worktree.prunable.is_some() || !worktree_exists {
+        return Err(GcCandidateReason::WorktreeMismatch);
+    }
+    validate_worktree_identity(repository)?;
+    if worktree.head.as_deref() != repository.last_head.as_deref()
+        || !git::is_worktree_clean(repository.worktree_path.as_path())
+            .map_err(|_| GcCandidateReason::GitError)?
+    {
+        return Err(GcCandidateReason::WorktreeMismatch);
+    }
+    Ok(())
+}
+
+fn validate_worktree_identity(repository: &RepoWorktreeRow) -> Result<(), GcCandidateReason> {
+    let identity = git::inspect_worktree_identity(repository.worktree_path.as_path())
+        .map_err(|_| GcCandidateReason::WorktreeIdentity)?;
+    if identity != repository.repository_identity {
+        return Err(GcCandidateReason::WorktreeIdentity);
+    }
+    Ok(())
 }
 
 fn remove_physical_workspace<F>(
@@ -985,6 +1099,108 @@ mod tests {
         );
         assert!("0s".parse::<GcDuration>().is_err());
         assert!("1x".parse::<GcDuration>().is_err());
+    }
+
+    #[test]
+    fn formats_gc_candidate_reasons() {
+        let reasons = [
+            (GcCandidateReason::Eligible, "eligible"),
+            (GcCandidateReason::Young, "young"),
+            (GcCandidateReason::Claimed, "claimed"),
+            (GcCandidateReason::ActiveOperation, "active_operation"),
+            (GcCandidateReason::Unhealthy, "unhealthy"),
+            (GcCandidateReason::UnsafeRoot, "unsafe_root"),
+            (GcCandidateReason::RepositoryIdentity, "repository_identity"),
+            (GcCandidateReason::WorktreeIdentity, "worktree_identity"),
+            (GcCandidateReason::WorktreeMismatch, "worktree_mismatch"),
+            (GcCandidateReason::UnexpectedContent, "unexpected_content"),
+            (GcCandidateReason::GitError, "git_error"),
+        ];
+
+        for (reason, expected) in reasons {
+            assert_eq!(reason.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn identifies_recoverable_expired_operations() {
+        let candidate =
+            |state, age_eligible, claimed, active_operation, operation_expired| GcCandidate {
+                workspace: crate::storage::WorkspaceRow {
+                    id: WorkspaceId::new(),
+                    canonical_path: CanonicalPath::from_absolute("/tmp/workspace")
+                        .expect("workspace path should be absolute"),
+                    state,
+                    created_at: timestamp("2020-01-01T00:00:00Z"),
+                    updated_at: timestamp("2020-01-01T00:00:00Z"),
+                    last_reconciled_at: None,
+                    management_mode: WorkspaceManagementMode::Automatic,
+                    pool_id: None,
+                    last_released_at: None,
+                    reclaimed_at: None,
+                },
+                idle_since: timestamp("2020-01-01T00:00:00Z"),
+                age_eligible,
+                claimed,
+                active_operation,
+                physical_reason: None,
+                operation_expired,
+                force: false,
+            };
+
+        assert!(candidate(WorkspaceState::Ready, true, false, true, true)
+            .recoverable_expired_operation(false));
+        assert!(candidate(WorkspaceState::Ready, true, false, true, true)
+            .recoverable_expired_operation(true));
+        assert!(!candidate(WorkspaceState::Ready, false, false, true, true)
+            .recoverable_expired_operation(false));
+        assert!(!candidate(WorkspaceState::Ready, true, true, true, true)
+            .recoverable_expired_operation(false));
+        assert!(!candidate(WorkspaceState::Ready, true, false, false, true)
+            .recoverable_expired_operation(false));
+        assert!(!candidate(WorkspaceState::Ready, true, false, true, false)
+            .recoverable_expired_operation(false));
+        assert!(
+            !candidate(WorkspaceState::Reclaimed, true, false, true, true)
+                .recoverable_expired_operation(true)
+        );
+        assert!(
+            !candidate(WorkspaceState::Degraded, true, false, true, true)
+                .recoverable_expired_operation(false)
+        );
+    }
+
+    #[test]
+    fn removes_nested_paths_while_renewing() {
+        let root = test_root();
+        let nested = root.join("nested");
+        fs::create_dir_all(&nested).expect("nested directory should be created");
+        fs::write(nested.join("file"), "content\n").expect("nested file should be written");
+        let mut heartbeat_count = 0;
+        remove_path_with_heartbeat(&root, &mut || {
+            heartbeat_count += 1;
+            Ok(())
+        })
+        .expect("nested path should be removed");
+
+        assert!(!root.exists());
+        assert!(heartbeat_count >= 3);
+    }
+
+    #[test]
+    fn stops_path_removal_when_heartbeat_fails() {
+        let root = test_root();
+        fs::create_dir_all(&root).expect("directory should be created");
+        let mut heartbeat_count = 0;
+        let error = remove_path_with_heartbeat(&root, &mut || {
+            heartbeat_count += 1;
+            Err(GcPhysicalError::Lease("expired".to_owned()))
+        })
+        .expect_err("failed heartbeat should stop removal");
+
+        assert!(matches!(error, GcPhysicalError::Lease(message) if message == "expired"));
+        assert_eq!(heartbeat_count, 1);
+        fs::remove_dir_all(root).expect("test directory should be removable");
     }
 
     #[test]

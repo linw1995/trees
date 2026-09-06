@@ -287,4 +287,35 @@ mod tests {
 
         fs::remove_dir_all(root).expect("configuration test root should be removable");
     }
+
+    #[test]
+    fn formats_configuration_errors() {
+        let path = PathBuf::from("/tmp/config.toml");
+        let parse_source = toml::from_str::<toml::Value>("[").expect_err("TOML should be invalid");
+        let serialize_source = toml::to_string(&f64::NAN).expect_err("NaN should not serialize");
+        let errors = [
+            ConfigError::Path("path unavailable".to_owned()),
+            ConfigError::Io {
+                path: path.clone(),
+                source: std::io::Error::other("read failed"),
+            },
+            ConfigError::Parse {
+                path: path.clone(),
+                source: parse_source,
+            },
+            ConfigError::Serialize {
+                path: path.clone(),
+                source: serialize_source,
+            },
+            ConfigError::Invalid {
+                path,
+                reason: "invalid value".to_owned(),
+            },
+        ];
+
+        for error in errors {
+            assert!(!error.to_string().is_empty());
+            let _ = std::error::Error::source(&error);
+        }
+    }
 }
