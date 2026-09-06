@@ -1,2 +1,0 @@
-# The migration replaces foreign-key parents and must disable SQLite foreign keys first.
-run_in_transaction = false

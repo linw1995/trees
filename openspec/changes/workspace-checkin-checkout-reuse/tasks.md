@@ -22,11 +22,12 @@
 
 ## 2. Persistence and Migration
 
-- [x] 2.1 Consolidate migration `00000000000003` so it converts the existing
-  `workspace_leases` table into `workspace_claims`, preserves active workspace
-  IDs and acquisition timestamps, removes workspace lease owner, expiry, and
-  heartbeat columns, renames the idle timestamp to `last_released_at`, and
-  keeps one active claim per workspace
+- [x] 2.1 Consolidate migration `00000000000002` so it builds the final
+  workspace reuse schema directly from the original lifecycle tables.
+  Preserve workspace and repo-worktree IDs and observations, remove claim
+  owner and expiry metadata, drop the operation heartbeat column, rename the
+  idle timestamp to `last_released_at`, and keep one active claim per
+  workspace
 - [x] 2.2 Backfill legacy explicit-path workspace records as `manual` without
   touching Git or the filesystem, and provide a reversible down migration for
   workspace claims

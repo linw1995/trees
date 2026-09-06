@@ -1,6 +1,10 @@
 PRAGMA foreign_keys = OFF;
 
-DROP TABLE IF EXISTS workspace_leases;
+ALTER TABLE operations
+    ADD COLUMN last_heartbeat_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z';
+
+UPDATE operations
+SET last_heartbeat_at = started_at;
 
 CREATE TABLE workspaces_v1 (
     id TEXT NOT NULL PRIMARY KEY CHECK (length(id) = 36),
@@ -52,21 +56,27 @@ INSERT INTO repo_worktrees_v1 (
     last_observed_at
 )
 SELECT
-    id,
-    workspace_id,
-    repository_identity,
-    source_path,
-    worktree_path,
+    repository.id,
+    repository.workspace_id,
+    origin.repository_identity,
+    origin.source_path,
+    repository.worktree_path,
     CASE
-        WHEN state IN ('dirty', 'reclaimed') THEN 'failed'
-        ELSE state
+        WHEN repository.state IN ('dirty', 'reclaimed') THEN 'failed'
+        ELSE repository.state
     END,
-    last_head,
-    last_observed_at
-FROM repo_worktrees;
+    repository.last_head,
+    repository.last_observed_at
+FROM repo_worktrees AS repository
+JOIN origin_repositories AS origin
+  ON origin.id = repository.origin_repository_id;
 
 DROP TABLE repo_worktrees;
 DROP TABLE workspaces;
+DROP TABLE workspace_claims;
+DROP TABLE workspace_pool_repositories;
+DROP TABLE workspace_pools;
+DROP TABLE origin_repositories;
 
 ALTER TABLE workspaces_v1 RENAME TO workspaces;
 ALTER TABLE repo_worktrees_v1 RENAME TO repo_worktrees;

@@ -370,14 +370,14 @@ coupled to this claim in this change.
 
 ## Migration Plan
 
-1. Keep migration `00000000000002` for the existing workspace reuse data and
-   consolidate the origin, pool, claim, operation, and naming changes into
-   migration `00000000000003`. The migration converts `workspace_leases` into
-   `workspace_claims`, preserves active workspace IDs and acquisition
-   timestamps, drops workspace-claim owner, expiry, and heartbeat metadata,
-   renames the idle timestamp to `last_released_at`, and derives slot roots
-   from workspace paths. Existing explicit-path workspace rows remain `manual`
-   with no active claim; the migration does not touch Git or delete files.
+1. Consolidate the workspace reuse, origin, pool, claim, operation, and naming
+   changes into migration `00000000000002`. The migration builds the final
+   schema directly from the original lifecycle tables, preserves existing
+   workspace IDs and repo-worktree observations, drops workspace-claim owner,
+   expiry, and heartbeat metadata, renames the idle timestamp to
+   `last_released_at`, and derives slot roots from workspace paths. Existing
+   explicit-path workspace rows remain `manual` with no active claim; the
+   migration does not touch Git or delete files.
 2. Extend the repository and domain layers without changing existing
    workspace or repo-worktree identifiers.
 3. Make reconciliation understand `dirty` worktrees before enabling pool

@@ -83,11 +83,12 @@ manual responsibility.
 
 - Extends the Clap command surface and dispatch in `src/cli.rs` and
   `src/main.rs`.
-- Adds a follow-up lifecycle migration that converts the existing workspace
-  lease table into active workspace claims. It preserves workspace IDs and
-  acquisition timestamps while dropping workspace-claim owner metadata.
-  Operation expiry metadata remains on the existing operations table, and its
-  expiry is renewed during long external steps.
+- Adds one lifecycle migration that builds the final workspace reuse schema
+  from the existing lifecycle tables. Legacy workspace IDs and worktree
+  observations are preserved, existing explicit-path workspaces become
+  manual, and active workspace claims are stored without claim owner or
+  expiry metadata. Operation expiry metadata remains on the existing
+  operations table, and its expiry is renewed during long external steps.
 - Extends the path/configuration layers with a configurable platform-specific
   automatic workspace root, absolute persisted paths, and generated workspace
   paths.
