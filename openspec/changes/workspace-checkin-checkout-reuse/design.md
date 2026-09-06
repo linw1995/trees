@@ -368,6 +368,10 @@ operation result is based on Git's authoritative metadata rather than a stale
 database snapshot. Existing `trees codex` behavior remains backward compatible
 and is not implicitly coupled to this claim in this change.
 
+GC execution derives the skip reason directly from the current candidate and
+the invocation context. No separate predicate is needed when it only wraps
+that reason lookup without adding a safety or persistence boundary.
+
 ## Risks / Trade-Offs
 
 - [A caller forgets to release] → Keep the active claim and require an

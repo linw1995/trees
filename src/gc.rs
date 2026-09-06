@@ -204,7 +204,7 @@ impl GcScan {
         self.candidates
             .iter()
             .filter(|candidate| {
-                execution_skip_reason(candidate, force) == Some(GcCandidateReason::Eligible)
+                candidate.reason() == GcCandidateReason::Eligible
                     || candidate.recoverable_expired_operation(force)
             })
             .count()
@@ -539,10 +539,6 @@ fn recover_expired_automatic_operations(
             .map_err(GcError::Reconciliation)?;
     }
     Ok(())
-}
-
-fn execution_skip_reason(candidate: &GcCandidate, _force: bool) -> Option<GcCandidateReason> {
-    Some(candidate.reason())
 }
 
 fn begin_gc_operation(
