@@ -338,6 +338,10 @@ active claims, active operations, young workspaces, and any path
 whose source repository identity cannot be verified. `--force` does not
 override the configured root-containment or repository-identity guards.
 
+`force` is an invocation-scoped GC context flag. It is passed to scan and
+execution decisions and is not stored as a property of an individual
+candidate or workspace snapshot.
+
 A GC run creates one `gc` operation per candidate. It removes each
 worktree with a non-forced `git worktree remove` in normal mode or the forced
 variant when `--force` is set, then removes the empty workspace directory (or

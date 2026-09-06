@@ -237,6 +237,9 @@ request confirmation before mutation unless `--yes` or `--force` is supplied.
 filter. A dry run SHALL perform read-only inspection and SHALL NOT modify Git,
 SQLite, or the filesystem.
 
+The `--force` policy SHALL be scoped to the current GC invocation and SHALL
+not be persisted as candidate or workspace snapshot state.
+
 Without `--force`, GC SHALL select only workspaces with no active operation,
 no claim, `ready` health, clean reusable worktrees, and no unexpected root
 content. `--force` SHALL imply `--yes` and permit cleanup of age-qualified

@@ -132,3 +132,5 @@
   review.
 - [x] 7.5 Retry transient SQLite busy results within bounded metadata
   transactions without extending a transaction across external work.
+- [x] 7.6 Keep the GC force flag in invocation context rather than on a
+  candidate item.

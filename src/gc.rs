@@ -156,7 +156,6 @@ pub struct GcCandidate {
     pub active_operation: bool,
     pub physical_reason: Option<GcCandidateReason>,
     pub operation_expired: bool,
-    force: bool,
 }
 
 impl GcCandidate {
@@ -169,7 +168,7 @@ impl GcCandidate {
             && (force || self.workspace.state == WorkspaceState::Ready)
     }
 
-    fn database_reason(&self) -> Option<GcCandidateReason> {
+    fn database_reason(&self, force: bool) -> Option<GcCandidateReason> {
         if !self.age_eligible {
             Some(GcCandidateReason::Young)
         } else if self.claimed {
@@ -177,7 +176,7 @@ impl GcCandidate {
         } else if self.active_operation {
             Some(GcCandidateReason::ActiveOperation)
         } else if self.workspace.state == WorkspaceState::Reclaimed
-            || (!self.force && self.workspace.state != WorkspaceState::Ready)
+            || (!force && self.workspace.state != WorkspaceState::Ready)
         {
             Some(GcCandidateReason::Unhealthy)
         } else {
@@ -185,8 +184,8 @@ impl GcCandidate {
         }
     }
 
-    pub fn reason(&self) -> GcCandidateReason {
-        self.database_reason()
+    pub fn reason(&self, force: bool) -> GcCandidateReason {
+        self.database_reason(force)
             .or(self.physical_reason)
             .unwrap_or(GcCandidateReason::Eligible)
     }
@@ -204,7 +203,7 @@ impl GcScan {
         self.candidates
             .iter()
             .filter(|candidate| {
-                candidate.reason() == GcCandidateReason::Eligible
+                candidate.reason(force) == GcCandidateReason::Eligible
                     || candidate.recoverable_expired_operation(force)
             })
             .count()
@@ -282,15 +281,14 @@ pub fn scan_with_force(
             active_operation,
             physical_reason: None,
             operation_expired,
-            force,
         };
-        if candidate.database_reason().is_none() {
+        if candidate.database_reason(force).is_none() {
             let repositories = list_repo_worktrees(connection, &candidate.workspace.id)
                 .map_err(GcError::Database)?;
             candidate.physical_reason =
                 prepare_removal(&candidate.workspace, &repositories, force).err();
         }
-        if candidate.reason() == GcCandidateReason::Eligible {
+        if candidate.reason(force) == GcCandidateReason::Eligible {
             counts.safe_to_reclaim += 1;
         }
         candidates.push(candidate);
@@ -335,7 +333,7 @@ fn execute_candidate(
     scan: &GcScan,
     force: bool,
 ) -> Result<GcCandidateResult, GcError> {
-    let reason = candidate.reason();
+    let reason = candidate.reason(force);
     if reason != GcCandidateReason::Eligible {
         return Ok(GcCandidateResult::Skipped(GcSkipped {
             workspace_path: candidate.workspace.canonical_path.clone(),
@@ -1141,7 +1139,6 @@ mod tests {
                 active_operation,
                 physical_reason: None,
                 operation_expired,
-                force: false,
             };
 
         assert!(candidate(WorkspaceState::Ready, true, false, true, true)
@@ -1164,6 +1161,10 @@ mod tests {
             !candidate(WorkspaceState::Degraded, true, false, true, true)
                 .recoverable_expired_operation(false)
         );
+
+        let unhealthy = candidate(WorkspaceState::Degraded, true, false, false, false);
+        assert_eq!(unhealthy.reason(false), GcCandidateReason::Unhealthy);
+        assert_eq!(unhealthy.reason(true), GcCandidateReason::Eligible);
     }
 
     #[test]

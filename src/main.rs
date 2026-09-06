@@ -191,7 +191,7 @@ fn print_gc_scan(scan: &trees::gc::GcScan, force: bool) {
         println!(
             "candidate={} reason={}",
             candidate.workspace.canonical_path,
-            candidate.reason()
+            candidate.reason(force)
         );
     }
 }
