@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -466,12 +467,22 @@ impl std::error::Error for JsonDocumentError {
     }
 }
 
-#[derive(
-    Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, AsExpression, FromSqlRow,
-)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, AsExpression, FromSqlRow)]
 #[diesel(sql_type = diesel::sql_types::Text)]
 #[serde(transparent)]
 pub struct Timestamp(String);
+
+impl Ord for Timestamp {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.parse_datetime().cmp(&other.parse_datetime())
+    }
+}
+
+impl PartialOrd for Timestamp {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
 impl Timestamp {
     pub fn now() -> Self {
@@ -505,9 +516,11 @@ impl Timestamp {
     }
 
     pub fn has_expired(&self) -> bool {
-        OffsetDateTime::parse(self.as_str(), &Rfc3339)
-            .map(|value| value <= OffsetDateTime::now_utc())
-            .unwrap_or(true)
+        self.parse_datetime() <= OffsetDateTime::now_utc()
+    }
+
+    fn parse_datetime(&self) -> OffsetDateTime {
+        OffsetDateTime::parse(self.as_str(), &Rfc3339).unwrap_or(OffsetDateTime::UNIX_EPOCH)
     }
 }
 
@@ -618,5 +631,13 @@ mod tests {
         assert!(Timestamp::parse("not a timestamp").is_err());
         assert!(Timestamp::before_seconds(60) < timestamp);
         assert!(Timestamp::after_seconds(60) > timestamp);
+    }
+
+    #[test]
+    fn timestamps_compare_by_time_instead_of_fraction_string_shape() {
+        let shorter_fraction = Timestamp::parse("2026-01-01T00:00:00.9Z").unwrap();
+        let longer_fraction = Timestamp::parse("2026-01-01T00:00:00.10Z").unwrap();
+
+        assert!(longer_fraction < shorter_fraction);
     }
 }

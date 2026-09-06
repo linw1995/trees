@@ -764,25 +764,22 @@ pub fn find_operation_lease(
         .optional()
 }
 
-/// Resolves the immutable operation identity owned by the current lease token.
-fn operation_id_for_lease(
+/// Loads the current unexpired lease addressed by its lease token.
+fn operation_lease_for_mutation(
     connection: &mut SqliteConnection,
     lease_id: &LeaseId,
-) -> QueryResult<OperationId> {
-    let now = Timestamp::now();
+) -> QueryResult<OperationLeaseRow> {
     let lease = operation_leases::table
         .find(lease_id)
-        .select((
-            operation_leases::operation_id,
-            operation_leases::lease_expires_at,
-        ))
-        .first::<(OperationId, Timestamp)>(connection)
+        .select(OperationLeaseRow::as_select())
+        .first(connection)
         .optional()?;
     match lease {
-        Some((operation_id, lease_expires_at)) if lease_expires_at > now => Ok(operation_id),
-        Some((_, lease_expires_at)) => {
+        Some(lease) if !lease.lease_expires_at.has_expired() => Ok(lease),
+        Some(lease) => {
             eprintln!(
-                "Warning: refusing lease-owned update for {lease_id}: lease expired at {lease_expires_at}"
+                "Warning: refusing lease-owned update for {lease_id}: lease expired at {}",
+                lease.lease_expires_at
             );
             Err(Error::NotFound)
         }
@@ -791,6 +788,14 @@ fn operation_id_for_lease(
             Err(Error::NotFound)
         }
     }
+}
+
+/// Resolves the immutable operation identity owned by the current lease token.
+fn operation_id_for_lease(
+    connection: &mut SqliteConnection,
+    lease_id: &LeaseId,
+) -> QueryResult<OperationId> {
+    operation_lease_for_mutation(connection, lease_id).map(|lease| lease.operation_id)
 }
 
 pub fn persist_operation_intent(
@@ -945,12 +950,23 @@ pub fn claim_expired_operation(
     new_lease_id: &LeaseId,
     new_lease_expires_at: &Timestamp,
 ) -> QueryResult<bool> {
-    let now = Timestamp::now();
+    let Some(current_lease) = operation_leases::table
+        .find(lease_id)
+        .select(OperationLeaseRow::as_select())
+        .first(connection)
+        .optional()?
+    else {
+        return Ok(false);
+    };
+    if current_lease.lease_expires_at != *lease_expires_at
+        || !current_lease.lease_expires_at.has_expired()
+    {
+        return Ok(false);
+    }
     let updated = diesel::update(
         operation_leases::table
             .filter(operation_leases::id.eq(lease_id))
-            .filter(operation_leases::lease_expires_at.eq(lease_expires_at))
-            .filter(operation_leases::lease_expires_at.le(&now)),
+            .filter(operation_leases::lease_expires_at.eq(&current_lease.lease_expires_at)),
     )
     .set((
         operation_leases::id.eq(new_lease_id),
@@ -969,27 +985,26 @@ pub fn renew_operation_lease(
     // gets its own short transaction and never extends the surrounding operation.
     with_short_transaction(connection, |connection| {
         let lease_expires_at = Timestamp::after_seconds(300);
-        let now = Timestamp::now();
-        let current_expiry = operation_leases::table
+        let current_lease = operation_leases::table
             .find(lease_id)
-            .select(operation_leases::lease_expires_at)
-            .first::<Timestamp>(connection)
+            .select(OperationLeaseRow::as_select())
+            .first(connection)
             .optional()?;
-        if let Some(current_expiry) = current_expiry.as_ref() {
-            if current_expiry <= &now {
-                eprintln!(
-                    "Warning: operation lease {lease_id} expired at {current_expiry}; renewal skipped"
-                );
-                return Ok(false);
-            }
-        } else {
+        let Some(current_lease) = current_lease else {
             eprintln!("Warning: operation lease {lease_id} was not found; renewal skipped");
+            return Ok(false);
+        };
+        if current_lease.lease_expires_at.has_expired() {
+            eprintln!(
+                "Warning: operation lease {lease_id} expired at {}; renewal skipped",
+                current_lease.lease_expires_at
+            );
             return Ok(false);
         }
         let updated = diesel::update(
             operation_leases::table
                 .filter(operation_leases::id.eq(lease_id))
-                .filter(operation_leases::lease_expires_at.gt(&now)),
+                .filter(operation_leases::lease_expires_at.eq(&current_lease.lease_expires_at)),
         )
         .set(operation_leases::lease_expires_at.eq(&lease_expires_at))
         .execute(connection)?;
@@ -1162,14 +1177,14 @@ fn finish_operation_in_transaction(
     state: OperationState,
     metadata: TransitionMetadata,
 ) -> QueryResult<()> {
-    let operation_id = operation_id_for_lease(connection, lease_id)?;
-    let now = Timestamp::now();
+    let lease = operation_lease_for_mutation(connection, lease_id)?;
+    let operation_id = lease.operation_id;
     let previous_state =
         operation_state(connection, &operation_id)?.unwrap_or(OperationState::Running);
     let updated = diesel::delete(
         operation_leases::table
             .filter(operation_leases::id.eq(lease_id))
-            .filter(operation_leases::lease_expires_at.gt(&now)),
+            .filter(operation_leases::lease_expires_at.eq(&lease.lease_expires_at)),
     )
     .execute(connection)?;
     if updated != 1 {
@@ -1194,12 +1209,12 @@ pub fn persist_operation_step_intent(
 ) -> QueryResult<()> {
     let pending_step = pending_step.into();
     with_short_transaction(connection, |connection| {
-        let operation_id = operation_id_for_lease(connection, lease_id)?;
-        let now = Timestamp::now();
+        let lease = operation_lease_for_mutation(connection, lease_id)?;
+        let operation_id = lease.operation_id;
         let updated = diesel::update(
             operation_leases::table
                 .filter(operation_leases::id.eq(lease_id))
-                .filter(operation_leases::lease_expires_at.gt(&now)),
+                .filter(operation_leases::lease_expires_at.eq(&lease.lease_expires_at)),
         )
         .set(operation_leases::lease_expires_at.eq(Timestamp::after_seconds(300)))
         .execute(connection)?;
@@ -1233,7 +1248,8 @@ pub fn record_worktree_step_result(
     metadata: TransitionMetadata,
 ) -> QueryResult<()> {
     with_short_transaction(connection, |connection| {
-        let operation_id = operation_id_for_lease(connection, lease_id)?;
+        let lease = operation_lease_for_mutation(connection, lease_id)?;
+        let operation_id = lease.operation_id;
         let previous_state = repo_worktrees::table
             .find(worktree_id)
             .select(repo_worktrees::state)
@@ -1241,11 +1257,10 @@ pub fn record_worktree_step_result(
         let operation_state =
             operation_state(connection, &operation_id)?.unwrap_or(OperationState::Running);
         let lease_expires_at = Timestamp::after_seconds(300);
-        let now = Timestamp::now();
         let updated = diesel::update(
             operation_leases::table
                 .filter(operation_leases::id.eq(lease_id))
-                .filter(operation_leases::lease_expires_at.gt(&now)),
+                .filter(operation_leases::lease_expires_at.eq(&lease.lease_expires_at)),
         )
         .set(operation_leases::lease_expires_at.eq(&lease_expires_at))
         .execute(connection)?;
