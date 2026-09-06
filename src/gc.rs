@@ -301,7 +301,8 @@ pub fn execute(
     older_than: GcDuration,
     force: bool,
 ) -> Result<GcExecutionReport, GcError> {
-    recover_expired_automatic_operations(connection)?;
+    let preflight = scan_with_force(connection, older_than, force)?;
+    recover_expired_automatic_operations(connection, &preflight.cutoff, force)?;
     let scan = scan_with_force(connection, older_than, force)?;
     let mut report = GcExecutionReport {
         scan: scan.clone(),
@@ -447,8 +448,34 @@ pub fn execute(
     Ok(report)
 }
 
-fn recover_expired_automatic_operations(connection: &mut SqliteConnection) -> Result<(), GcError> {
+fn recover_expired_automatic_operations(
+    connection: &mut SqliteConnection,
+    cutoff: &Timestamp,
+    force: bool,
+) -> Result<(), GcError> {
     for workspace in list_automatic_workspaces(connection).map_err(GcError::Database)? {
+        let claim = find_workspace_claim(connection, &workspace.id).map_err(GcError::Database)?;
+        if claim.is_some() {
+            continue;
+        }
+        let idle_since = workspace
+            .last_released_at
+            .clone()
+            .unwrap_or_else(|| workspace.created_at.clone());
+        if idle_since >= *cutoff
+            || workspace.state == WorkspaceState::Reclaimed
+            || (!force && workspace.state != WorkspaceState::Ready)
+        {
+            continue;
+        }
+        let Some(running_operation) =
+            find_running_operation(connection, &workspace.id).map_err(GcError::Database)?
+        else {
+            continue;
+        };
+        if !running_operation.lease.lease_expires_at.has_expired() {
+            continue;
+        }
         reconciliation::recover_expired_operation(connection, &workspace.id)
             .map_err(GcError::Reconciliation)?;
     }
@@ -1151,6 +1178,112 @@ mod tests {
             1
         );
 
+        drop(connection);
+        fs::remove_file(database_path).expect("database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn gc_does_not_recover_an_expired_young_operation() {
+        let (root, database_path, mut connection, workspace, source, worktree) =
+            automatic_workspace_fixture();
+        diesel::update(crate::schema::workspaces::table.find(workspace.id))
+            .set(crate::schema::workspaces::last_released_at.eq(timestamp("2099-01-01T00:00:00Z")))
+            .execute(&mut connection)
+            .expect("workspace should be made young");
+        let stale_intent = OperationIntent::new(
+            workspace.id,
+            "create",
+            Timestamp::now(),
+            "recover stale operation",
+            JsonDocument::parse(r#"{"recovery":true}"#).unwrap(),
+        );
+        let stale_operation =
+            begin_operation(&mut connection, &stale_intent).expect("stale operation should start");
+        let stale_lease =
+            crate::storage::find_operation_lease(&mut connection, &stale_operation.id)
+                .expect("stale operation lease should be queryable")
+                .expect("stale operation lease should exist");
+        diesel::update(crate::schema::operation_leases::table.find(stale_lease.id))
+            .set(crate::schema::operation_leases::lease_expires_at.eq(Timestamp::now()))
+            .execute(&mut connection)
+            .expect("stale operation lease should expire");
+
+        let report = execute(
+            &mut connection,
+            "30d".parse().expect("duration should parse"),
+            false,
+        )
+        .expect("GC should skip the young workspace");
+        assert!(report.reclaimed.is_empty());
+        assert_eq!(report.skipped.len(), 1);
+        assert_eq!(report.skipped[0].reason, GcCandidateReason::Young);
+        assert_eq!(
+            crate::storage::operation_state(&mut connection, &stale_operation.id)
+                .expect("stale operation state should be queryable"),
+            Some(crate::domain::OperationState::Running)
+        );
+        assert!(workspace.canonical_path.as_path().exists());
+
+        crate::git::remove_worktree(&source, &worktree).expect("test worktree should be removable");
+        drop(connection);
+        fs::remove_file(database_path).expect("database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn gc_does_not_recover_an_expired_claimed_operation() {
+        let (root, database_path, mut connection, workspace, source, worktree) =
+            automatic_workspace_fixture();
+        let claim = crate::workspace::allocate_automatic_workspace(
+            &mut connection,
+            &prepare_automatic(&AutomaticCreateRequest {
+                repositories: vec![source.as_path().to_owned()],
+            })
+            .expect("automatic allocation plan should be prepared"),
+        )
+        .expect("workspace should be claimed");
+        let stale_intent = OperationIntent::new(
+            workspace.id,
+            "create",
+            Timestamp::now(),
+            "recover stale operation",
+            JsonDocument::parse(r#"{"recovery":true}"#).unwrap(),
+        );
+        let stale_operation =
+            begin_operation(&mut connection, &stale_intent).expect("stale operation should start");
+        let stale_lease =
+            crate::storage::find_operation_lease(&mut connection, &stale_operation.id)
+                .expect("stale operation lease should be queryable")
+                .expect("stale operation lease should exist");
+        diesel::update(crate::schema::operation_leases::table.find(stale_lease.id))
+            .set(crate::schema::operation_leases::lease_expires_at.eq(Timestamp::now()))
+            .execute(&mut connection)
+            .expect("stale operation lease should expire");
+
+        let report = execute(
+            &mut connection,
+            "30d".parse().expect("duration should parse"),
+            true,
+        )
+        .expect("GC should skip the claimed workspace");
+        assert!(report.reclaimed.is_empty());
+        assert_eq!(report.skipped.len(), 1);
+        assert_eq!(report.skipped[0].reason, GcCandidateReason::Claimed);
+        assert_eq!(
+            crate::storage::operation_state(&mut connection, &stale_operation.id)
+                .expect("stale operation state should be queryable"),
+            Some(crate::domain::OperationState::Running)
+        );
+        assert_eq!(
+            crate::storage::find_workspace_claim(&mut connection, &workspace.id)
+                .expect("workspace claim should be queryable")
+                .expect("workspace claim should remain active")
+                .id,
+            claim.claim_id
+        );
+
+        crate::git::remove_worktree(&source, &worktree).expect("test worktree should be removable");
         drop(connection);
         fs::remove_file(database_path).expect("database should be removable");
         fs::remove_dir_all(root).expect("test root should be removable");
