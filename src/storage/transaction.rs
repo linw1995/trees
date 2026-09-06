@@ -1,6 +1,5 @@
 use diesel::result::QueryResult;
 use diesel::sqlite::SqliteConnection;
-use diesel::Connection;
 use std::thread;
 use std::time::Duration;
 
@@ -18,7 +17,7 @@ pub fn with_short_transaction<T, F>(
 where
     F: FnOnce(&mut SqliteConnection) -> QueryResult<T>,
 {
-    connection.transaction(operation)
+    connection.immediate_transaction(operation)
 }
 
 /// Runs immediate metadata work with bounded retries for transient SQLite busy errors.
@@ -43,7 +42,7 @@ where
     F: FnMut(&mut SqliteConnection) -> QueryResult<T>,
 {
     retry_sqlite_transaction(connection, |connection| {
-        connection.transaction(&mut operation)
+        connection.immediate_transaction(&mut operation)
     })
 }
 

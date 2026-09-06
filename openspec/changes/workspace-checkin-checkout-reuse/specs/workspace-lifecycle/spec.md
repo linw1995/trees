@@ -143,10 +143,11 @@ appending operation facts, changing claims or current operation leases,
 updating snapshots, and appending lifecycle events. They MUST NOT invoke Git
 commands or filesystem operations from inside those transactions. Automatic
 creation SHALL append each step intent before the external Git operation and
-append its result afterward. A transient SQLite `busy` or `locked` result MAY
-be retried within a bounded short transaction, but retries SHALL NOT span
-external work. Operation lease renewal SHALL be one short `operation_leases`
-update and SHALL NOT span external work.
+append its result afterward. Short metadata transactions SHALL acquire their
+SQLite write boundary before metadata reads; a transient `busy` or `locked`
+result MAY be retried within a bounded short transaction, but waiting and
+retries SHALL NOT span external work. Operation lease renewal SHALL be one
+short `operation_leases` update and SHALL NOT span external work.
 
 #### Scenario: Run External Work Outside SQLite Transactions
 
