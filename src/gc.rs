@@ -928,8 +928,8 @@ mod tests {
                 },
             )
             .expect("workspace should be inserted");
-            if let Some(claim_kind) = claim_kind {
-                let claim = WorkspaceClaim::new(id, claim_kind);
+            if claim_kind.is_some() {
+                let claim = WorkspaceClaim::new(id);
                 insert_workspace_claim(&mut connection, &NewWorkspaceClaim::from(&claim))
                     .expect("claim should be inserted");
             }

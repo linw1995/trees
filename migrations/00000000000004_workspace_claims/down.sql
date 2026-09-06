@@ -20,7 +20,9 @@ INSERT INTO workspace_leases (
 SELECT
     id,
     workspace_id,
-    owner_id,
+    -- Workspace claims do not retain an owner; use a migration marker when
+    -- reconstructing the legacy lease shape.
+    'migration',
     claimed_at,
     '9999-12-31T23:59:59Z',
     claimed_at

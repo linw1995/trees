@@ -1573,14 +1573,14 @@ mod tests {
         )
         .expect("workspace should be inserted");
 
-        let claim = WorkspaceClaim::new(workspace_id, "process:test");
+        let claim = WorkspaceClaim::new(workspace_id);
         let row = insert_workspace_claim(&mut connection, &NewWorkspaceClaim::from(&claim))
             .expect("claim should be inserted");
         assert_eq!(row.id, claim.id);
         assert!(matches!(
             insert_workspace_claim(
                 &mut connection,
-                &NewWorkspaceClaim::from(&WorkspaceClaim::new(workspace_id, "other")),
+                &NewWorkspaceClaim::from(&WorkspaceClaim::new(workspace_id)),
             ),
             Err(Error::DatabaseError(DatabaseErrorKind::UniqueViolation, _))
         ));
@@ -1653,7 +1653,7 @@ mod tests {
             ),
         )
         .expect("acquire operation should start");
-        let claim = WorkspaceClaim::new(workspace_id, "process:test");
+        let claim = WorkspaceClaim::new(workspace_id);
         record_workspace_acquire(
             &mut connection,
             &acquire_operation.id,

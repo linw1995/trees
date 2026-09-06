@@ -12,8 +12,8 @@
   configurable platform-specific `workspaces_dir`, absolute root
   normalization, generated path format, and allocation retry behavior after a
   claim race
-- [x] 1.4 Define a typed workspace claim with owner and acquisition timestamp;
-  keep expiry, heartbeat, and renewal on operation leases only, and define
+- [x] 1.4 Define a typed workspace claim with an acquisition timestamp; keep
+  expiry, heartbeat, and renewal on operation leases only, and define
   explicit mode/access/health separation
 - [x] 1.5 Extend lifecycle states with `dirty` and `reclaimed`, plus
   `last_checked_in_at`, pool-key, pool-scoped absolute workspace-root, and
@@ -24,7 +24,7 @@
 
 - [x] 2.1 Add follow-up migration `00000000000004` that converts the existing
   `workspace_leases` table into `workspace_claims`, preserves active workspace
-  IDs, owners, and acquisition timestamps, removes workspace lease expiry and
+  IDs and acquisition timestamps, removes workspace lease owner, expiry, and
   heartbeat columns, and keeps one active claim per workspace
 - [x] 2.2 Backfill legacy explicit-path workspace records as `manual` without
   touching Git or the filesystem, and provide a reversible down migration for

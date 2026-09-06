@@ -132,7 +132,7 @@ result SHALL include the allocated workspace path and claim identifier.
 
 The system SHALL persist at most one active workspace claim for each
 workspace. The claim SHALL contain a UUID v7 claim identifier, the workspace
-ID, an owner identity, and a claim timestamp. The workspace ID SHALL be unique
+ID, and a claim timestamp. The workspace ID SHALL be unique
 in the active claim table. A workspace with no active claim is unclaimed; a
 workspace with an active claim is unavailable for another acquisition. The
 claim records persistent usage state for the workspace. It is not a database

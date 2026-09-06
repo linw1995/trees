@@ -255,7 +255,7 @@ where
         return Err(primary);
     }
 
-    let claim = WorkspaceClaim::new(candidate.id, format!("process:{}", std::process::id()));
+    let claim = WorkspaceClaim::new(candidate.id);
     let details_json = acquire_details(plan, &claim, pool_id);
     let record_result = record_workspace_acquire(
         connection,
@@ -545,7 +545,7 @@ fn provision_automatic_new(
     let (workspace_id, workspace_path) =
         next_generated_workspace(connection, normalized_plan.workspace_root.as_path())?;
     let creation_plan = automatic_creation_plan(&normalized_plan, workspace_path.clone())?;
-    let claim = WorkspaceClaim::new(workspace_id, format!("process:{}", std::process::id()));
+    let claim = WorkspaceClaim::new(workspace_id);
     let management = WorkspaceManagementMetadata {
         mode: WorkspaceManagementMode::Automatic,
         pool_key: Some(pool.id),

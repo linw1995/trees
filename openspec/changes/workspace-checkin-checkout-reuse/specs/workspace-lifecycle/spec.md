@@ -79,7 +79,7 @@ SHALL not be eligible for acquisition or ordinary workspace launch.
 In addition to the workspace health snapshot, the system SHALL persist the
 current usage claim in a `workspace_claims` table. The table SHALL contain at
 most one row for each workspace, with a UUID v7 claim identifier, workspace
-foreign key, owner identity, and claim timestamp. A workspace with no active
+foreign key, and claim timestamp. A workspace with no active
 claim is unclaimed; a workspace with an active claim is checked out. The claim
 records persistent usage state for the workspace. It is not a database
 transaction or a database lock and remains until its owner releases it. Access

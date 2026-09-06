@@ -95,7 +95,6 @@ The workspace claim table stores the current usage claim only:
 
 - `id`: the UUID v7 claim identifier;
 - `workspace_id`: the unique workspace foreign key;
-- `owner_id`: a local invocation identity for diagnostics;
 - `claimed_at`: the acquisition time.
 
 The claim remains while the caller uses the workspace, but it does not hold a

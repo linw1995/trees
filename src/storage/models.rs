@@ -157,7 +157,6 @@ pub struct NewOriginRepository {
 pub struct WorkspaceClaimRow {
     pub id: ClaimId,
     pub workspace_id: WorkspaceId,
-    pub owner_id: String,
     pub claimed_at: Timestamp,
 }
 
@@ -166,7 +165,6 @@ pub struct WorkspaceClaimRow {
 pub struct NewWorkspaceClaim {
     pub id: ClaimId,
     pub workspace_id: WorkspaceId,
-    pub owner_id: String,
     pub claimed_at: Timestamp,
 }
 
@@ -175,7 +173,6 @@ impl From<&WorkspaceClaim> for NewWorkspaceClaim {
         Self {
             id: value.id,
             workspace_id: value.workspace_id,
-            owner_id: value.owner_id.clone(),
             claimed_at: value.claimed_at.clone(),
         }
     }
@@ -186,7 +183,6 @@ impl From<WorkspaceClaimRow> for WorkspaceClaim {
         Self {
             id: value.id,
             workspace_id: value.workspace_id,
-            owner_id: value.owner_id,
             claimed_at: value.claimed_at,
         }
     }

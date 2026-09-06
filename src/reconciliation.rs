@@ -881,7 +881,7 @@ mod tests {
         assert_eq!(boundary.workspace.state, WorkspaceState::Ready);
         assert!(boundary.claim.is_none());
 
-        let claim = crate::claim::WorkspaceClaim::new(context.workspace_id, "process:test");
+        let claim = crate::claim::WorkspaceClaim::new(context.workspace_id);
         crate::storage::insert_workspace_claim(
             &mut connection,
             &crate::storage::NewWorkspaceClaim::from(&claim),

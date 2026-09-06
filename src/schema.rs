@@ -29,7 +29,6 @@ diesel::table! {
     workspace_claims (id) {
         id -> Text,
         workspace_id -> Text,
-        owner_id -> Text,
         claimed_at -> Text,
     }
 }

@@ -42,8 +42,9 @@ manual responsibility.
 - Persist an `automatic` or `manual` workspace management mode inferred from
   the automatic repository-only or manual path-based command shape, together
   with the last successful checkin time used by GC.
-- Persist at most one active workspace claim per workspace, with an owner and
-  claim timestamp, while keeping workspace health separate from access state.
+- Persist at most one active workspace claim per workspace, with a claim
+  identifier and timestamp, while keeping workspace health separate from access
+  state.
   Claim and operation updates SHALL use short SQLite transactions; Git and
   filesystem work SHALL never hold those transactions open.
 - Require every managed worktree to be present, attached, detached, clean,
