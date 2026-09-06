@@ -117,6 +117,7 @@ pub struct NewWorkspacePool {
 #[diesel(table_name = workspace_pool_repositories)]
 #[diesel(primary_key(pool_id, repository_id))]
 #[diesel(check_for_backend(Sqlite))]
+/// Explicit pool-to-origin relationship used for pool-scoped repository queries.
 pub struct WorkspacePoolRepositoryRow {
     pub pool_id: PoolId,
     pub repository_id: OriginRepositoryId,
@@ -124,6 +125,7 @@ pub struct WorkspacePoolRepositoryRow {
 
 #[derive(Debug, Insertable)]
 #[diesel(table_name = workspace_pool_repositories)]
+/// Inserts one explicit pool-to-origin relationship.
 pub struct NewWorkspacePoolRepository {
     pub pool_id: PoolId,
     pub repository_id: OriginRepositoryId,
