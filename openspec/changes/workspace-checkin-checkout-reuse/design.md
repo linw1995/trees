@@ -285,6 +285,10 @@ lease expires, a later invocation may claim the operation through an atomic
 lease-id/expiry check, observe external state, and either
 finish or roll back the incomplete operation. Operation lease recovery does not
 create, release, or extend a workspace claim.
+Only a `create` operation may remove detached worktrees that it created during
+an incomplete setup. Recovery of access, GC, or integration operations is
+non-destructive: it reconciles current state and records a terminal recovery
+event without removing a managed worktree.
 
 ### Reclaim Only Idle Automatic Workspaces
 

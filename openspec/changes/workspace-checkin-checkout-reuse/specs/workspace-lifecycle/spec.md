@@ -200,7 +200,9 @@ Lease changes SHALL NOT create a workspace claim or mutate the immutable
   and the recovery transition is appended to `lifecycle_events`. When external
   state proves creation completed, the recovery terminal event and lease
   cleanup SHALL be committed together with the ready snapshot in one short
-  transaction.
+  transaction. Recovery of a non-creation operation SHALL not remove an
+  a managed worktree; it SHALL reconcile the current state and append a
+  terminal recovery event instead.
 
 ### Requirement: Renew Operation Leases During External Work
 
