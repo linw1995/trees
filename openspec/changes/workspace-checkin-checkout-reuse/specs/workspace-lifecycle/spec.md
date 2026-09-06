@@ -3,12 +3,13 @@
 ### Requirement: Persist Workspace Management and GC Timestamps
 
 The workspace snapshot SHALL persist a management mode with the values
-`automatic` and `manual`, an absolute `workspace_root` slot location, an
-optional UUID-backed repository-set pool ID, the last successful release time,
-and, when applicable, the reclamation time. An automatic workspace SHALL
+`automatic` and `manual`, an absolute canonical workspace path, an optional
+UUID-backed repository-set pool ID, the last successful release time, and, when
+applicable, the reclamation time. A workspace slot root SHALL be derived from
+`canonical_path.parent()` and SHALL NOT be persisted. An automatic workspace SHALL
 reference a pool registry row whose non-unique indexed hash and exact sorted
 `repository_ids` identify the repository set; pool identity SHALL be
-independent of `workspace_root`. A manual workspace MAY leave the pool ID
+independent of the derived slot root. A manual workspace MAY leave the pool ID
 null. The pool registry SHALL maintain explicit relations to origin
 repositories, and the source path SHALL be stored on the origin repository
 record rather than copied into each pool relation or worktree row. The

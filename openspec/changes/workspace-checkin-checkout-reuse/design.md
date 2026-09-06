@@ -135,14 +135,13 @@ and SHALL generate each automatic workspace as
 does not encode repository paths or user input. A per-request concrete
 workspace path is not part of automatic allocation.
 
-Every persisted automatic workspace path and every workspace's
-`workspace_root` SHALL be absolute. The root is placement metadata for a
-workspace slot, not part of repository-set identity. A configured root change
-SHALL affect only future slot creation; existing workspace rows retain their
-absolute paths and roots and are not moved or rewritten automatically. An idle
-workspace from a previous configured root remains reusable when its repository
-set matches. GC uses each workspace's persisted root and path for containment
-checks.
+Every persisted automatic workspace path SHALL be absolute. A workspace slot's
+root is derived as `canonical_path.parent()` and is not stored separately or
+part of repository-set identity. A configured root change SHALL affect only
+future slot creation; existing workspace rows retain their absolute paths and
+are not moved or rewritten automatically. An idle workspace from a previous
+configured root remains reusable when its repository set matches. GC derives
+the slot root from each workspace path for containment checks.
 
 ### Allocate Automatic Workspaces by Repository Set
 
@@ -271,7 +270,7 @@ extend a workspace claim.
 cutoff from the current UTC time. A workspace is idle when its
 `last_released_at`, or `created_at` when it has never been released, is
 strictly older than the cutoff. GC considers all `automatic` workspaces and
-uses each workspace's persisted root and path for containment checks. An
+uses each workspace path's derived parent root for containment checks. An
 active claim or operation always skips the candidate. GC does not infer claim
 abandonment from process liveness or override an active claim.
 
@@ -288,7 +287,7 @@ filesystem.
 Before any deletion, GC performs a final read-only safety check for every
 managed worktree. Both modes must verify the source repository identity when
 possible, the expected direct-child path, and that the target is within the
-stored automatic workspace root. Without `--force`, the worktree must also be
+workspace path's derived parent root. Without `--force`, the worktree must also be
 detached, at the recorded `HEAD`, clean, present, and non-prunable; dirty,
 missing, diverged, failed, manual, claimed, young, or unexpected-content
 workspaces are skipped and preserved.
@@ -296,8 +295,8 @@ workspaces are skipped and preserved.
 `--force` bypasses the confirmation and permits removal of automatic
 workspaces whose idle time is past the threshold, even when they are dirty,
 diverged, missing, prunable, or contain unexpected files. It may use forced
-Git worktree removal and remove
-unexpected content below the target automatic workspace root, so uncommitted
+Git worktree removal and remove unexpected content below the target workspace
+path's derived parent root, so uncommitted
 or untracked data can be destroyed. It SHALL still refuse manual workspaces,
 active claims, active operations, young workspaces, and any path
 whose source repository identity cannot be verified. `--force` does not
@@ -371,14 +370,14 @@ coupled to this claim in this change.
 
 ## Migration Plan
 
-1. Keep migrations `00000000000002` and `00000000000003` for the existing
-   management, pool, origin, and workspace reuse data. Add follow-up migration
-   `00000000000004` to convert `workspace_leases` into `workspace_claims`,
-   preserving active workspace IDs and acquisition timestamps while dropping
-   workspace-claim owner, expiry, and heartbeat metadata, and rename the idle
-   timestamp to `last_released_at`. Existing explicit-path workspace rows remain
-   `manual` with no active claim; the migrations do not touch Git or delete
-   files.
+1. Keep migration `00000000000002` for the existing workspace reuse data and
+   consolidate the origin, pool, claim, operation, and naming changes into
+   migration `00000000000003`. The migration converts `workspace_leases` into
+   `workspace_claims`, preserves active workspace IDs and acquisition
+   timestamps, drops workspace-claim owner, expiry, and heartbeat metadata,
+   renames the idle timestamp to `last_released_at`, and derives slot roots
+   from workspace paths. Existing explicit-path workspace rows remain `manual`
+   with no active claim; the migration does not touch Git or delete files.
 2. Extend the repository and domain layers without changing existing
    workspace or repo-worktree identifiers.
 3. Make reconciliation understand `dirty` worktrees before enabling pool

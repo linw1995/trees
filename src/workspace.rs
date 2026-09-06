@@ -272,7 +272,7 @@ where
     }
 
     let claim = WorkspaceClaim::new(candidate.id);
-    let details_json = acquire_details(&claim, pool_id, boundary.workspace.workspace_root.clone());
+    let details_json = acquire_details(&claim, pool_id);
     let record_result = record_workspace_acquire(
         connection,
         &operation.id,
@@ -326,14 +326,9 @@ where
     })
 }
 
-fn acquire_details(
-    claim: &WorkspaceClaim,
-    pool_id: PoolId,
-    workspace_root: Option<CanonicalPath>,
-) -> JsonDocument {
+fn acquire_details(claim: &WorkspaceClaim, pool_id: PoolId) -> JsonDocument {
     JsonDocument::from_serializable(&serde_json::json!({
         "pool_id": pool_id,
-        "workspace_root": workspace_root,
         "claim": claim,
     }))
     .expect("acquire details should serialize")
@@ -569,7 +564,6 @@ fn provision_automatic_new(
         connection,
         creation_plan,
         WorkspaceManagementMode::Automatic,
-        Some(normalized_plan.workspace_root.clone()),
         Some(pool.id),
         Some(&claim),
         intent_json,
@@ -619,11 +613,7 @@ fn provision_automatic_new(
         .map(|_| unreachable!("automatic provisioning rollback always fails the operation"));
     }
 
-    let details_json = acquire_details(
-        &claim,
-        pool.id,
-        Some(normalized_plan.workspace_root.clone()),
-    );
+    let details_json = acquire_details(&claim, pool.id);
     if let Err(error) = finalize_automatic_creation(
         connection,
         &context.workspace_id,
@@ -733,29 +723,20 @@ pub fn initialize_creation(
     plan: CreationPlan,
 ) -> Result<CreationContext, WorkspaceError> {
     let intent_json = JsonDocument::from_serializable(&plan).map_err(WorkspaceError::Json)?;
-    let workspace_root = workspace_parent(&plan.workspace_path)?;
     initialize_creation_with_mode(
         connection,
         plan,
         WorkspaceManagementMode::Manual,
-        Some(workspace_root),
         None,
         None,
         intent_json,
     )
 }
 
-fn workspace_parent(path: &CanonicalPath) -> Result<CanonicalPath, WorkspaceError> {
-    let parent = path.as_path().parent().unwrap_or_else(|| path.as_path());
-    CanonicalPath::from_absolute(parent)
-        .map_err(|error| WorkspaceError::Validation(ValidationError::Canonicalize(error)))
-}
-
 fn initialize_creation_with_mode(
     connection: &mut SqliteConnection,
     plan: CreationPlan,
     management_mode: WorkspaceManagementMode,
-    workspace_root: Option<CanonicalPath>,
     pool_id: Option<PoolId>,
     claim: Option<&WorkspaceClaim>,
     intent_json: JsonDocument,
@@ -817,7 +798,6 @@ fn initialize_creation_with_mode(
                 updated_at: now.clone(),
                 last_reconciled_at: None,
                 management_mode,
-                workspace_root,
                 pool_id,
                 last_released_at: None,
                 reclaimed_at: None,
@@ -1494,7 +1474,6 @@ mod tests {
                     created_at: now.clone(),
                     updated_at: now.clone(),
                     last_reconciled_at: None,
-                    workspace_root: None,
                 },
             )
             .expect("candidate should be inserted");
@@ -1502,7 +1481,6 @@ mod tests {
                 .set((
                     crate::schema::workspaces::management_mode
                         .eq(crate::domain::WorkspaceManagementMode::Automatic),
-                    crate::schema::workspaces::workspace_root.eq(Some(plan.workspace_root.clone())),
                     crate::schema::workspaces::pool_id.eq(Some(pool.id)),
                     crate::schema::workspaces::last_released_at
                         .eq(Some(Timestamp::parse(released_at).unwrap())),
@@ -1591,7 +1569,6 @@ mod tests {
             .set((
                 crate::schema::workspaces::management_mode
                     .eq(crate::domain::WorkspaceManagementMode::Automatic),
-                crate::schema::workspaces::workspace_root.eq(Some(plan.workspace_root.clone())),
                 crate::schema::workspaces::pool_id.eq(Some(pool.id)),
             ))
             .execute(&mut connection)
@@ -1919,7 +1896,6 @@ mod tests {
             WorkspaceManagementMode::Automatic
         );
         assert_eq!(workspace.pool_id, Some(result.pool_id));
-        assert_eq!(workspace.workspace_root, Some(canonical_workspace_root));
         assert_eq!(workspace.state, WorkspaceState::Ready);
         let repositories = crate::storage::list_repo_worktrees(&mut connection, &workspace.id)
             .expect("worktree lookup should succeed");

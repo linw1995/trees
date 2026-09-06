@@ -1,4 +1,0 @@
-# Replace the workspace access lease with a persistent usage claim, align the
-# idle timestamp with the release primitive, use ID naming for pool FKs, and
-# keep operation leases to owner and expiry metadata.
-run_in_transaction = false

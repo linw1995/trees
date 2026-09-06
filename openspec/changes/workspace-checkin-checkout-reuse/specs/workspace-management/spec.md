@@ -29,7 +29,7 @@ additional `--mode` flag is required or accepted.
   matches the exact repository set
 - **THEN** Trees generates a path under its currently configured managed
   workspace root, creates the direct-child detached worktrees, records the
-  pool UUID and slot root, and returns the new workspace with an active claim
+  pool UUID, and returns the new workspace with an active claim
 
 #### Scenario: Create a Manual Workspace
 

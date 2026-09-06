@@ -119,13 +119,12 @@ CREATE TABLE workspaces_v3 (
     updated_at TEXT NOT NULL,
     last_reconciled_at TEXT,
     management_mode TEXT NOT NULL DEFAULT 'manual' CHECK (management_mode IN ('automatic', 'manual')),
-    workspace_root TEXT,
-    pool_key TEXT REFERENCES workspace_pools(id),
-    last_checked_in_at TEXT,
+    pool_id TEXT REFERENCES workspace_pools(id),
+    last_released_at TEXT,
     reclaimed_at TEXT,
     CHECK (
         management_mode = 'manual'
-        OR pool_key IS NOT NULL
+        OR pool_id IS NOT NULL
     )
 );
 
@@ -137,9 +136,8 @@ INSERT INTO workspaces_v3 (
     updated_at,
     last_reconciled_at,
     management_mode,
-    workspace_root,
-    pool_key,
-    last_checked_in_at,
+    pool_id,
+    last_released_at,
     reclaimed_at
 )
 SELECT
@@ -150,7 +148,6 @@ SELECT
     workspace.updated_at,
     workspace.last_reconciled_at,
     workspace.management_mode,
-    COALESCE(workspace.workspace_root, workspace.canonical_path),
     map.pool_id,
     workspace.last_checked_in_at,
     workspace.reclaimed_at
@@ -199,6 +196,28 @@ ALTER TABLE workspaces_v3 RENAME TO workspaces;
 ALTER TABLE repo_worktrees_v3 RENAME TO repo_worktrees;
 
 CREATE INDEX workspaces_pool_lookup_idx
-    ON workspaces (management_mode, pool_key, last_checked_in_at, created_at);
+    ON workspaces (management_mode, pool_id, last_released_at, created_at);
+
+CREATE TABLE workspace_claims (
+    id TEXT NOT NULL PRIMARY KEY CHECK (length(id) = 36),
+    workspace_id TEXT NOT NULL UNIQUE REFERENCES workspaces(id),
+    claimed_at TEXT NOT NULL
+);
+
+INSERT INTO workspace_claims (
+    id,
+    workspace_id,
+    claimed_at
+)
+SELECT
+    id,
+    workspace_id,
+    checked_out_at
+FROM workspace_leases;
+
+DROP TABLE workspace_leases;
+
+ALTER TABLE operations
+    DROP COLUMN last_heartbeat_at;
 
 PRAGMA foreign_keys = ON;

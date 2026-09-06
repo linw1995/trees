@@ -18,9 +18,9 @@ with `~/.local/share/trees/workspaces` as the Linux fallback,
 `%LOCALAPPDATA%\\trees\\workspaces` on Windows. The lifecycle database SHALL
 remain in the existing platform state directory. Trees SHALL create the
 resolved directory lazily and generate each automatic workspace below it from
-the workspace UUID. Persisted workspace paths and per-slot `workspace_root`
-values SHALL be absolute. The slot root SHALL not participate in repository-set
-pool matching.
+the workspace UUID. Persisted workspace paths SHALL be absolute. A slot root
+SHALL be derived from `canonical_path.parent()` and SHALL not participate in
+repository-set pool matching.
 
 #### Scenario: Generate an Automatic Workspace Path
 
@@ -221,8 +221,8 @@ The CLI SHALL provide `trees gc --older-than <duration> [--dry-run] [--yes]
 supplied duration and consider all `automatic` workspaces. The idle timestamp
 SHALL be the last successful release time, or `created_at` when the workspace
 has never been released.
-Each candidate SHALL use its persisted `workspace_root` for root-containment
-and unexpected-content checks; the current configuration root SHALL not filter
+Each candidate SHALL use `canonical_path.parent()` for root-containment and
+unexpected-content checks; the current configuration root SHALL not filter
 reuse or GC candidates.
 GC SHALL report the total automatic workspaces, the number currently not
 claimed, the number currently claimed, the number older than the

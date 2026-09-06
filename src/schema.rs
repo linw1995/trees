@@ -84,7 +84,6 @@ diesel::table! {
         updated_at -> Text,
         last_reconciled_at -> Nullable<Text>,
         management_mode -> Text,
-        workspace_root -> Nullable<Text>,
         pool_id -> Nullable<Text>,
         last_released_at -> Nullable<Text>,
         reclaimed_at -> Nullable<Text>,

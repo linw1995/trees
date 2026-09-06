@@ -1,5 +1,39 @@
 PRAGMA foreign_keys = OFF;
 
+CREATE TABLE workspace_leases (
+    id TEXT NOT NULL PRIMARY KEY CHECK (length(id) = 36),
+    workspace_id TEXT NOT NULL UNIQUE REFERENCES workspaces(id),
+    owner_id TEXT NOT NULL,
+    checked_out_at TEXT NOT NULL,
+    lease_expires_at TEXT NOT NULL,
+    last_heartbeat_at TEXT NOT NULL
+);
+
+INSERT INTO workspace_leases (
+    id,
+    workspace_id,
+    owner_id,
+    checked_out_at,
+    lease_expires_at,
+    last_heartbeat_at
+)
+SELECT
+    id,
+    workspace_id,
+    'migration',
+    claimed_at,
+    '9999-12-31T23:59:59Z',
+    claimed_at
+FROM workspace_claims;
+
+DROP TABLE workspace_claims;
+
+ALTER TABLE operations
+    ADD COLUMN last_heartbeat_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z';
+
+UPDATE operations
+SET last_heartbeat_at = started_at;
+
 CREATE TABLE workspaces_v2 (
     id TEXT NOT NULL PRIMARY KEY CHECK (length(id) = 36),
     canonical_path TEXT NOT NULL UNIQUE,
@@ -40,12 +74,15 @@ SELECT
     workspace.last_reconciled_at,
     workspace.management_mode,
     pool.hash_key,
-    workspace.workspace_root,
-    workspace.last_checked_in_at,
+    CASE
+        WHEN workspace.management_mode = 'automatic' THEN workspace.canonical_path
+        ELSE NULL
+    END,
+    workspace.last_released_at,
     workspace.reclaimed_at
 FROM workspaces AS workspace
 LEFT JOIN workspace_pools AS pool
-  ON pool.id = workspace.pool_key;
+  ON pool.id = workspace.pool_id;
 
 CREATE TABLE repo_worktrees_v2 (
     id TEXT NOT NULL PRIMARY KEY CHECK (length(id) = 36),

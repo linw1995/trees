@@ -1334,7 +1334,6 @@ mod tests {
                 created_at: now.clone(),
                 updated_at: now.clone(),
                 last_reconciled_at: None,
-                workspace_root: None,
             },
         )
         .expect("workspace should be inserted");
@@ -1524,7 +1523,6 @@ mod tests {
                 created_at: now.clone(),
                 updated_at: now,
                 last_reconciled_at: None,
-                workspace_root: None,
             },
         )
         .expect("workspace should be inserted");
@@ -1593,7 +1591,6 @@ mod tests {
                 created_at: now.clone(),
                 updated_at: now.clone(),
                 last_reconciled_at: None,
-                workspace_root: None,
             },
         )
         .expect("workspace should be inserted");
@@ -1691,7 +1688,6 @@ mod tests {
                 created_at: now.clone(),
                 updated_at: now.clone(),
                 last_reconciled_at: None,
-                workspace_root: None,
             },
         )
         .expect("workspace should be inserted");
@@ -1786,7 +1782,6 @@ mod tests {
                 created_at: now.clone(),
                 updated_at: now,
                 last_reconciled_at: None,
-                workspace_root: None,
             },
         )
         .expect("workspace should be inserted");
@@ -1840,7 +1835,6 @@ mod tests {
                     created_at: now.clone(),
                     updated_at: now.clone(),
                     last_reconciled_at: None,
-                    workspace_root: None,
                 },
             )
             .expect("workspace should be inserted");
@@ -1887,7 +1881,6 @@ mod tests {
                 created_at: now.clone(),
                 updated_at: now.clone(),
                 last_reconciled_at: None,
-                workspace_root: None,
             },
         )
         .expect("workspace should be inserted");
@@ -1956,7 +1949,6 @@ mod tests {
                 created_at: now.clone(),
                 updated_at: now.clone(),
                 last_reconciled_at: None,
-                workspace_root: None,
             },
         )
         .expect("workspace should be inserted");
@@ -2014,7 +2006,6 @@ mod tests {
                 created_at: now.clone(),
                 updated_at: now.clone(),
                 last_reconciled_at: None,
-                workspace_root: None,
             },
         )
         .expect("workspace should be inserted");

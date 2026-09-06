@@ -151,11 +151,6 @@ fn reuses_the_same_automatic_slot_across_acquire_release_cycles() {
 fn reuses_an_idle_slot_after_the_configured_root_changes() {
     let mut fixture = automatic_fixture();
     let original_path = fixture.workspace.canonical_path.clone();
-    let original_root = fixture
-        .workspace
-        .workspace_root
-        .clone()
-        .expect("automatic workspace should have a root");
     fixture.plan.workspace_root = CanonicalPath::from_absolute(fixture.root.join("other-managed"))
         .expect("new workspace root should be absolute");
 
@@ -165,12 +160,6 @@ fn reuses_an_idle_slot_after_the_configured_root_changes() {
     assert_eq!(
         allocation.pool_id,
         fixture.workspace.pool_id.expect("pool should exist")
-    );
-    assert_eq!(
-        find_workspace(&mut fixture.connection, &fixture.workspace.id)
-            .expect("workspace lookup should succeed")
-            .workspace_root,
-        Some(original_root)
     );
 
     release_automatic_workspace(

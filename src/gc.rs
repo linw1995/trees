@@ -525,18 +525,15 @@ fn prepare_removal(
     repositories: &[RepoWorktreeRow],
     force: bool,
 ) -> Result<RemovalPlan, GcCandidateReason> {
-    let Some(workspace_root) = workspace.workspace_root.as_ref() else {
+    let Some(workspace_root) = workspace.canonical_path.as_path().parent() else {
         return Err(GcCandidateReason::UnsafeRoot);
     };
-    if workspace.canonical_path.as_path().parent() != Some(workspace_root.as_path()) {
-        return Err(GcCandidateReason::UnsafeRoot);
-    }
     for repository in repositories {
         if repository.worktree_path.as_path().parent() != Some(workspace.canonical_path.as_path())
             || !repository
                 .worktree_path
                 .as_path()
-                .starts_with(workspace_root.as_path())
+                .starts_with(workspace_root)
         {
             return Err(GcCandidateReason::UnsafeRoot);
         }
@@ -581,7 +578,7 @@ fn prepare_removal(
     if !force {
         validation::validate_workspace_root(
             workspace.canonical_path.as_path(),
-            workspace_root.as_path(),
+            workspace_root,
             &expected_paths,
         )
         .map_err(|error| match error {
@@ -870,8 +867,6 @@ mod tests {
         let database_path = root.join("state.sqlite");
         let workspace_root = CanonicalPath::from_absolute(root.join("managed"))
             .expect("workspace root should be absolute");
-        let alternate_workspace_root = CanonicalPath::from_absolute(root.join("other-managed"))
-            .expect("alternate workspace root should be absolute");
         fs::create_dir_all(&root).expect("GC test root should be created");
         let mut connection = database::connect(&database_path).expect("database should open");
         let old = timestamp("2020-01-01T00:00:00Z");
@@ -891,37 +886,17 @@ mod tests {
             .id,
         );
         let entries = [
-            (
-                WorkspaceState::Ready,
-                old.clone(),
-                None,
-                workspace_root.clone(),
-            ),
-            (
-                WorkspaceState::Ready,
-                young,
-                None,
-                alternate_workspace_root.clone(),
-            ),
-            (
-                WorkspaceState::Ready,
-                old.clone(),
-                Some("active"),
-                workspace_root.clone(),
-            ),
-            (
-                WorkspaceState::Degraded,
-                old.clone(),
-                None,
-                alternate_workspace_root.clone(),
-            ),
+            (WorkspaceState::Ready, old.clone(), None),
+            (WorkspaceState::Ready, young, None),
+            (WorkspaceState::Ready, old.clone(), Some("active")),
+            (WorkspaceState::Degraded, old.clone(), None),
         ];
         let mut workspace_ids = Vec::new();
-        for (state, idle_since, claim_kind, slot_root) in entries {
+        for (state, idle_since, claim_kind) in entries {
             let id = WorkspaceId::new();
             workspace_ids.push((id, claim_kind));
             let workspace_path =
-                CanonicalPath::from_absolute(slot_root.as_path().join(id.to_string()))
+                CanonicalPath::from_absolute(workspace_root.as_path().join(id.to_string()))
                     .expect("workspace path should be absolute");
             insert_managed_workspace(
                 &mut connection,
@@ -933,7 +908,6 @@ mod tests {
                     updated_at: old.clone(),
                     last_reconciled_at: None,
                     management_mode: WorkspaceManagementMode::Automatic,
-                    workspace_root: Some(slot_root),
                     pool_id,
                     last_released_at: Some(idle_since),
                     reclaimed_at: None,
@@ -958,7 +932,6 @@ mod tests {
                 updated_at: old.clone(),
                 last_reconciled_at: None,
                 management_mode: WorkspaceManagementMode::Manual,
-                workspace_root: None,
                 pool_id: None,
                 last_released_at: Some(old.clone()),
                 reclaimed_at: None,

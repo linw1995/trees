@@ -10,19 +10,19 @@
 - [x] 1.3 Define the UUID-backed repository-set pool registry and non-unique
   hash index. Define exact sorted origin repository ID matching,
   least-recently-used candidate ordering, configurable platform-specific
-  `workspaces_dir`, per-slot absolute root normalization, generated path format,
+  `workspaces_dir`, absolute path normalization, generated path format,
   and allocation retry behavior after a claim race
 - [x] 1.4 Define a typed workspace claim with an acquisition timestamp; keep
   expiry and renewal on operation leases only, and define
   explicit mode/access/health separation
 - [x] 1.5 Extend lifecycle states with `dirty` and `reclaimed`, plus
-  `last_released_at`, pool ID, per-slot absolute workspace-root, and
-  reclamation timestamps; update claim parsing, serialization, workspace-state
+  `last_released_at`, pool ID, and reclamation timestamps; update claim parsing,
+  serialization, workspace-state
   aggregation, and affected validation paths
 
 ## 2. Persistence and Migration
 
-- [x] 2.1 Add follow-up migration `00000000000004` that converts the existing
+- [x] 2.1 Consolidate migration `00000000000003` so it converts the existing
   `workspace_leases` table into `workspace_claims`, preserves active workspace
   IDs and acquisition timestamps, removes workspace lease owner, expiry, and
   heartbeat columns, renames the idle timestamp to `last_released_at`, and
@@ -85,8 +85,8 @@
 - [x] 5.4 Implement `trees gc --older-than <duration> [--dry-run] [--yes]
   [--force]`
   with UTC cutoff calculation, `last_released_at`/`created_at` idle
-  selection, automatic-mode-only candidate filtering using each slot's
-  persisted workspace root, and counts for unclaimed and claimed workspaces
+  selection, automatic-mode-only candidate filtering using each slot path's
+  derived parent root, and counts for unclaimed and claimed workspaces
 - [x] 5.5 Execute GC as one serialized operation per candidate, safely remove
   clean worktrees and the empty workspace root in normal mode; in `--force`
   mode allow explicitly authorized unsafe automatic-slot cleanup while

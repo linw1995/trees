@@ -30,7 +30,6 @@ fn workspace(id: WorkspaceId, path: CanonicalPath) -> NewWorkspace {
         created_at: now.clone(),
         updated_at: now,
         last_reconciled_at: None,
-        workspace_root: None,
     }
 }
 
@@ -335,7 +334,6 @@ fn migration_three_normalizes_a_database_already_at_migration_two() {
         .expect("automatic workspace should reference a pool");
     let pool = trees::storage::find_workspace_pool_by_id(&mut connection, &pool_id)
         .expect("pool should be queryable");
-    assert_eq!(workspace.workspace_root, Some(workspace_root.clone()));
     let origin = trees::storage::find_origin_repository_by_identity(&mut connection, &source_path)
         .expect("origin repository should be queryable")
         .expect("origin repository should exist");
@@ -488,7 +486,6 @@ fn automatic_workspace_metadata_and_timestamps_round_trip_as_absolute_values() {
     let mut connection = database::connect(&path).expect("database should open");
     let workspace_id = WorkspaceId::new();
     let workspace_path = CanonicalPath::resolve(".").expect("workspace path should resolve");
-    let workspace_root = CanonicalPath::resolve("/tmp").expect("workspace root should resolve");
     let repository_path =
         CanonicalPath::from_absolute("/repo/api").expect("repository path should be absolute");
     let repository_id =
@@ -507,7 +504,6 @@ fn automatic_workspace_metadata_and_timestamps_round_trip_as_absolute_values() {
     diesel::update(trees::schema::workspaces::table.find(&workspace_id))
         .set((
             trees::schema::workspaces::management_mode.eq(WorkspaceManagementMode::Automatic),
-            trees::schema::workspaces::workspace_root.eq(Some(workspace_root)),
             trees::schema::workspaces::pool_id.eq(Some(pool.id)),
             trees::schema::workspaces::last_released_at.eq(Some(now.clone())),
             trees::schema::workspaces::reclaimed_at.eq::<Option<Timestamp>>(None),
