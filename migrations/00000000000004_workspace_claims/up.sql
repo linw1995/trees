@@ -25,4 +25,7 @@ ALTER TABLE workspaces
 ALTER TABLE workspaces
     RENAME COLUMN pool_key TO pool_id;
 
+ALTER TABLE operations
+    DROP COLUMN last_heartbeat_at;
+
 PRAGMA foreign_keys = ON;

@@ -993,8 +993,8 @@ fn execute_repository_step(
         intent_json,
     )
     .map_err(WorkspaceError::Database)?;
-    // The subprocess and heartbeat callback run outside SQLite transactions;
-    // each heartbeat is an independent short operation-lease update.
+    // The subprocess and lease-renewal callback run outside SQLite
+    // transactions; each renewal is an independent short operation update.
     let operation_id = context.operation_id;
     let owner_id = context.owner_id.clone();
     git::add_detached_worktree_with_heartbeat(

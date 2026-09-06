@@ -13,7 +13,7 @@
   normalization, generated path format, and allocation retry behavior after a
   claim race
 - [x] 1.4 Define a typed workspace claim with an acquisition timestamp; keep
-  expiry, heartbeat, and renewal on operation leases only, and define
+  expiry and renewal on operation leases only, and define
   explicit mode/access/health separation
 - [x] 1.5 Extend lifecycle states with `dirty` and `reclaimed`, plus
   `last_released_at`, pool ID, pool-scoped absolute workspace-root, and
@@ -34,7 +34,7 @@
   repositories, pool relations, and acquiring, reading, and releasing claims
   without runtime raw SQL
 - [x] 2.4 Add typed persistence helpers for acquire, release, GC operations,
-  access/reclamation events, operation lease heartbeats, and atomic operation
+  access/reclamation events, operation lease renewals, and atomic operation
   completion
 - [x] 2.5 Verify claim acquisition races, wrong-token rejection, mode,
   timestamp persistence, tombstone retention, JSON detail validation, and
@@ -50,7 +50,7 @@
   and recovery idempotent
 - [x] 3.3 Reconcile active claims at acquire and release boundaries while
   keeping Git and filesystem commands outside short database transactions;
-  renew operation heartbeats while external steps run, and verify unchanged
+  renew operation leases while external steps run, and verify unchanged
   observations do not append duplicate events
 - [x] 3.4 Add a non-forced worktree removal primitive and a workspace-root
   safety check that refuses to remove unexpected files or directories
@@ -66,8 +66,8 @@
 - [x] 4.3 Implement automatic provisioning below the managed workspace root
   when no safe candidate exists, including generated paths, creation intent,
   immediate claim creation, and partial-creation rollback
-- [x] 4.4 Implement operation-lease heartbeat updates during long external
-  steps with owner validation, short transactions, and recovery-safe expiry
+- [x] 4.4 Implement operation-lease renewals during long external steps with
+  owner validation, short transactions, and recovery-safe expiry
 - [x] 4.5 Implement expired-operation recovery with a safe reconciliation gate
   and an atomic owner/expiry transition
 

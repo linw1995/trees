@@ -56,7 +56,6 @@ diesel::table! {
         state -> Text,
         owner_id -> Text,
         lease_expires_at -> Text,
-        last_heartbeat_at -> Text,
         started_at -> Text,
         finished_at -> Nullable<Text>,
         pending_step -> Text,

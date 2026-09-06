@@ -6,6 +6,12 @@ ALTER TABLE workspaces
 ALTER TABLE workspaces
     RENAME COLUMN pool_id TO pool_key;
 
+ALTER TABLE operations
+    ADD COLUMN last_heartbeat_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z';
+
+UPDATE operations
+SET last_heartbeat_at = started_at;
+
 CREATE TABLE workspace_leases (
     id TEXT NOT NULL PRIMARY KEY CHECK (length(id) = 36),
     workspace_id TEXT NOT NULL UNIQUE REFERENCES workspaces(id),

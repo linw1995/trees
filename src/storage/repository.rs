@@ -760,7 +760,6 @@ pub fn persist_operation_intent(
             state: OperationState::Running,
             owner_id: intent.owner_id.clone(),
             lease_expires_at: intent.lease_expires_at.clone(),
-            last_heartbeat_at: intent.started_at.clone(),
             started_at: intent.started_at.clone(),
             finished_at: None,
             pending_step: intent.pending_step.clone(),
@@ -854,7 +853,6 @@ pub fn claim_expired_operation(
     )
     .set((
         operations::owner_id.eq(new_owner_id),
-        operations::last_heartbeat_at.eq(&now),
         operations::lease_expires_at.eq(new_lease_expires_at),
     ))
     .execute(connection)?;
@@ -867,10 +865,9 @@ pub fn renew_operation_lease(
     operation_id: &OperationId,
     owner_id: &str,
 ) -> QueryResult<bool> {
-    // Heartbeats run while external work is in progress, so each update gets
-    // its own short transaction and never extends the surrounding operation.
+    // Lease renewals run while external work is in progress, so each update
+    // gets its own short transaction and never extends the surrounding operation.
     with_short_transaction(connection, |connection| {
-        let heartbeat_at = Timestamp::now();
         let lease_expires_at = Timestamp::after_seconds(300);
         let updated = diesel::update(
             operations::table
@@ -878,10 +875,7 @@ pub fn renew_operation_lease(
                 .filter(operations::state.eq(OperationState::Running))
                 .filter(operations::owner_id.eq(owner_id)),
         )
-        .set((
-            operations::last_heartbeat_at.eq(&heartbeat_at),
-            operations::lease_expires_at.eq(&lease_expires_at),
-        ))
+        .set(operations::lease_expires_at.eq(&lease_expires_at))
         .execute(connection)?;
 
         Ok(updated == 1)
@@ -1047,7 +1041,6 @@ fn finish_operation_in_transaction(
         .set((
             operations::state.eq(state),
             operations::pending_step.eq(pending_step),
-            operations::last_heartbeat_at.eq(&occurred_at),
             operations::finished_at.eq(finished_at),
             operations::error_json.eq(metadata.error_json.clone()),
         ))
@@ -1082,7 +1075,6 @@ pub fn persist_operation_step_intent(
             .set((
                 operations::pending_step.eq(pending_step),
                 operations::intent_json.eq(intent_json),
-                operations::last_heartbeat_at.eq(Timestamp::now()),
                 operations::lease_expires_at.eq(Timestamp::after_seconds(300)),
             ))
             .execute(connection)?;
@@ -1122,7 +1114,6 @@ pub fn record_worktree_step_result(
         diesel::update(operations::table.find(operation_id))
             .set((
                 operations::pending_step.eq(pending_step),
-                operations::last_heartbeat_at.eq(&occurred_at),
                 operations::lease_expires_at.eq(Timestamp::after_seconds(300)),
                 operations::error_json.eq(metadata.error_json.clone()),
             ))
@@ -1181,7 +1172,6 @@ pub fn finalize_creation(
             .set((
                 operations::state.eq(OperationState::Succeeded),
                 operations::pending_step.eq("complete"),
-                operations::last_heartbeat_at.eq(&occurred_at),
                 operations::lease_expires_at.eq(&occurred_at),
                 operations::finished_at.eq(&occurred_at),
                 operations::error_json.eq::<Option<JsonDocument>>(None),
@@ -1404,7 +1394,6 @@ mod tests {
                 state: OperationState::Running,
                 owner_id: "test-owner".to_owned(),
                 lease_expires_at: now.clone(),
-                last_heartbeat_at: now.clone(),
                 started_at: now.clone(),
                 finished_at: None,
                 pending_step: "attach".to_owned(),
@@ -1940,7 +1929,6 @@ mod tests {
                 state: OperationState::Running,
                 owner_id: "original-owner".to_owned(),
                 lease_expires_at: now.clone(),
-                last_heartbeat_at: now.clone(),
                 started_at: now.clone(),
                 finished_at: None,
                 pending_step: "attach".to_owned(),
@@ -2010,7 +1998,6 @@ mod tests {
                 state: OperationState::Running,
                 owner_id: "owner".to_owned(),
                 lease_expires_at: lease_expires_at.clone(),
-                last_heartbeat_at: now.clone(),
                 started_at: now,
                 finished_at: None,
                 pending_step: "attach".to_owned(),

@@ -13,7 +13,7 @@ selected slot through a persistent workspace claim. The workspace returns to
 the pool only when its worktrees are safe to hand to the next caller. The claim
 is a persistent ownership state for this workspace, not a long-lived SQLite
 transaction or database lock. Operation leases, rather than workspace claims,
-provide expiry and heartbeat metadata for automatic recovery when an operation
+provide expiry metadata and renewal for automatic recovery when an operation
 owner disappears. A separate management mode distinguishes workspaces that
 Trees may automatically reclaim from workspaces whose retention remains a
 manual responsibility.
@@ -55,8 +55,9 @@ manual responsibility.
   restricted to an explicit GC operation, with `--force` as the explicit
   opt-in for unsafe automatic-slot cleanup; active claims remain protected.
 - Record acquire, release, rejection, and operation recovery actions in the
-  existing operation and immutable lifecycle event model; operation heartbeats
-  update the running operation without appending an event for every heartbeat.
+  existing operation and immutable lifecycle event model; operation lease
+  renewals update the running operation without appending an event for each
+  renewal.
 - Preserve explicit-path creation for manual workspaces without adding a
   redundant mode flag, while keeping repair and manual-workspace overrides
   outside this change. GC retains lifecycle tombstones instead of deleting
@@ -85,8 +86,8 @@ manual responsibility.
 - Adds a follow-up lifecycle migration that converts the existing workspace
   lease table into active workspace claims. It preserves workspace IDs and
   acquisition timestamps while dropping workspace-claim owner metadata.
-  Operation expiry and heartbeat metadata remain on the existing operations
-  table.
+  Operation expiry metadata remains on the existing operations table, and its
+  expiry is renewed during long external steps.
 - Extends the path/configuration layers with a configurable platform-specific
   automatic workspace root, absolute persisted paths, and generated workspace
   paths.

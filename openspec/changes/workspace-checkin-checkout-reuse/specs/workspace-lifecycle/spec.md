@@ -150,9 +150,9 @@ renewal SHALL be one short metadata update and SHALL NOT span external work.
 
 ### Requirement: Renew Operation Leases During External Work
 
-Each non-terminal workspace operation SHALL carry an owner identity, an
-expiration time, and a heartbeat timestamp. A long-running Git or filesystem step MAY
-renew the operation lease through an owner-checked short transaction. Operation
+Each non-terminal workspace operation SHALL carry an owner identity and an
+expiration time. A long-running Git or filesystem step MAY renew the operation
+lease through an owner-checked short transaction. Operation
 lease renewal SHALL protect the in-flight mutation from premature recovery;
 it SHALL NOT create or extend a workspace claim. An expired operation MAY be
 recovered only after an atomic owner/expiry check and a fresh external-state
@@ -162,7 +162,7 @@ observation.
 
 - **WHEN** an external Git operation outlives the current operation lease
 - **THEN** the owning process can renew the operation lease with a short
-  heartbeat transaction, and another process cannot recover that operation
+  renewal transaction, and another process cannot recover that operation
   while the owner check still succeeds
 
 ### Requirement: Record Access Events with Existing Lifecycle Identity

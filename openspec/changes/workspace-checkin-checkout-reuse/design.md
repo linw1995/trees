@@ -100,13 +100,13 @@ The workspace claim table stores the current usage claim only:
 The claim remains while the caller uses the workspace, but it does not hold a
 database transaction or database lock. It is released explicitly by the
 release operation; this model does not infer abandonment from process
-liveness or expire a claim. Operation rows retain their own expiry and
-heartbeat fields for short-lived operation recovery. The workspace and
+liveness or expire a claim. Operation rows retain their own expiry metadata
+for short-lived operation recovery. The workspace and
 repo-worktree IDs never change when a claim is reused.
 
-Operation rows retain their own owner, expiry, and heartbeat fields. Those
-operation leases protect a mutation while Git or filesystem work runs outside
-SQLite transactions. Only operation leases are renewed through short
+Operation rows retain their own owner and expiry metadata. Those operation
+leases protect a mutation while Git or filesystem work runs outside SQLite
+transactions. Only operation leases are renewed through short
 transactions.
 
 ### Resolve the Managed Workspace Root
@@ -327,7 +327,7 @@ between those transactions. Access and GC events use `entity_type = workspace`
 and the stable workspace ID; structured details carry claim identifiers, GC
 counts, age cutoffs, and the `forced` marker when applicable.
 
-Operation lease heartbeats are short owner-checked updates made while an
+Operation lease renewals are short owner-checked updates made while an
 external step runs. They protect the in-flight operation and do not hold SQLite
 transactions during Git or filesystem work. Git reads happen outside SQLite
 transactions. Before returning from automatic acquisition or release, the
