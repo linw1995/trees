@@ -12,7 +12,7 @@ pub use models::{
 pub use repository::{
     append_event, begin_operation, claim_expired_operation, ensure_origin_repository,
     ensure_workspace_pool, finalize_automatic_creation, finalize_creation,
-    find_latest_operation_event, find_operation, find_operation_lease,
+    finalize_recovered_creation, find_latest_operation_event, find_operation, find_operation_lease,
     find_origin_repository_by_identity, find_running_operation, find_workspace,
     find_workspace_by_path, find_workspace_claim, find_workspace_claim_by_id, find_workspace_pool,
     find_workspace_pool_by_id, insert_event, insert_managed_workspace, insert_operation,

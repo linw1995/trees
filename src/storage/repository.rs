@@ -1244,43 +1244,74 @@ pub fn finalize_creation(
     lease_id: &LeaseId,
 ) -> QueryResult<()> {
     with_short_transaction(connection, |connection| {
-        let operation_id = operation_id_for_lease(connection, lease_id)?;
-        let workspace = workspaces::table
-            .find(workspace_id)
-            .select(WorkspaceRow::as_select())
-            .first(connection)?;
-        let occurred_at = Timestamp::now();
-
-        finish_operation_in_transaction(
+        finalize_creation_in_transaction(
             connection,
+            workspace_id,
             lease_id,
-            OperationState::Succeeded,
             TransitionMetadata::new("operation_succeeded", "trees").with_pending_step("complete"),
-        )?;
-        diesel::update(workspaces::table.find(workspace_id))
-            .set((
-                workspaces::state.eq(WorkspaceState::Ready),
-                workspaces::updated_at.eq(&occurred_at),
-                workspaces::last_reconciled_at.eq(&occurred_at),
-            ))
-            .execute(connection)?;
-        append_event(
-            connection,
-            &EventDraft {
-                operation_id,
-                entity_type: "workspace".to_owned(),
-                entity_id: workspace.id.to_string(),
-                event_type: "workspace_ready".to_owned(),
-                source: "trees".to_owned(),
-                occurred_at,
-                previous_state: Some(workspace.state.to_string()),
-                current_state: Some(WorkspaceState::Ready.to_string()),
-                details_json: None,
-                error_json: None,
-            },
-        )?;
-        Ok(())
+        )
     })
+}
+
+/// Finalizes a recovered creation and its recovery event atomically.
+pub fn finalize_recovered_creation(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+    lease_id: &LeaseId,
+) -> QueryResult<()> {
+    with_short_transaction(connection, |connection| {
+        finalize_creation_in_transaction(
+            connection,
+            workspace_id,
+            lease_id,
+            TransitionMetadata::new("operation_recovered", "recovery")
+                .with_pending_step("recovery complete"),
+        )
+    })
+}
+
+fn finalize_creation_in_transaction(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+    lease_id: &LeaseId,
+    terminal_metadata: TransitionMetadata,
+) -> QueryResult<()> {
+    let operation_id = operation_id_for_lease(connection, lease_id)?;
+    let workspace = workspaces::table
+        .find(workspace_id)
+        .select(WorkspaceRow::as_select())
+        .first(connection)?;
+    let occurred_at = Timestamp::now();
+
+    finish_operation_in_transaction(
+        connection,
+        lease_id,
+        OperationState::Succeeded,
+        terminal_metadata,
+    )?;
+    diesel::update(workspaces::table.find(workspace_id))
+        .set((
+            workspaces::state.eq(WorkspaceState::Ready),
+            workspaces::updated_at.eq(&occurred_at),
+            workspaces::last_reconciled_at.eq(&occurred_at),
+        ))
+        .execute(connection)?;
+    append_event(
+        connection,
+        &EventDraft {
+            operation_id,
+            entity_type: "workspace".to_owned(),
+            entity_id: workspace.id.to_string(),
+            event_type: "workspace_ready".to_owned(),
+            source: "trees".to_owned(),
+            occurred_at,
+            previous_state: Some(workspace.state.to_string()),
+            current_state: Some(WorkspaceState::Ready.to_string()),
+            details_json: None,
+            error_json: None,
+        },
+    )?;
+    Ok(())
 }
 
 pub fn finalize_automatic_creation(

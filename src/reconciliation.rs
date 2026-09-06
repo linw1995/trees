@@ -8,11 +8,11 @@ use crate::domain::{
 };
 use crate::git::GitError;
 use crate::storage::{
-    append_event, claim_expired_operation, finalize_creation, find_operation,
-    find_running_operation, find_workspace, find_workspace_claim, list_repo_worktrees,
-    record_operation_transition, record_repo_worktree_transition, record_workspace_transition,
-    renew_operation_lease, update_workspace_observation, EventDraft, OperationRow, RepoWorktreeRow,
-    TransitionMetadata, WorkspaceClaimRow, WorkspaceRow,
+    claim_expired_operation, finalize_recovered_creation, find_operation, find_running_operation,
+    find_workspace, find_workspace_claim, list_repo_worktrees, record_operation_transition,
+    record_repo_worktree_transition, record_workspace_transition, renew_operation_lease,
+    update_workspace_observation, OperationRow, RepoWorktreeRow, TransitionMetadata,
+    WorkspaceClaimRow, WorkspaceRow,
 };
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -549,13 +549,8 @@ fn recover_completed_operation(
             .map_err(ReconciliationError::Database)?;
         }
     }
-    finalize_creation(connection, workspace_id, lease_id).map_err(ReconciliationError::Database)?;
-    append_recovery_event(
-        connection,
-        &operation.id,
-        OperationState::Succeeded,
-        "operation_recovered",
-    )?;
+    finalize_recovered_creation(connection, workspace_id, lease_id)
+        .map_err(ReconciliationError::Database)?;
     Ok(RecoveryOutcome::Succeeded)
 }
 
@@ -640,31 +635,6 @@ fn recover_incomplete_operation(
     } else {
         Ok(RecoveryOutcome::Failed)
     }
-}
-
-fn append_recovery_event(
-    connection: &mut SqliteConnection,
-    operation_id: &OperationId,
-    state: OperationState,
-    event_type: &str,
-) -> Result<(), ReconciliationError> {
-    append_event(
-        connection,
-        &EventDraft {
-            operation_id: *operation_id,
-            entity_type: "operation".to_owned(),
-            entity_id: operation_id.to_string(),
-            event_type: event_type.to_owned(),
-            source: "recovery".to_owned(),
-            occurred_at: Timestamp::now(),
-            previous_state: Some(OperationState::Running.to_string()),
-            current_state: Some(state.to_string()),
-            details_json: None,
-            error_json: None,
-        },
-    )
-    .map(|_| ())
-    .map_err(ReconciliationError::Database)
 }
 
 enum Observation {

@@ -197,7 +197,10 @@ Lease changes SHALL NOT create a workspace claim or mutate the immutable
 - **WHEN** a lease has expired and a later invocation provides the current
   lease token
 - **THEN** the lease row ID is atomically replaced, external state is observed,
-  and the recovery transition is appended to `lifecycle_events`
+  and the recovery transition is appended to `lifecycle_events`. When external
+  state proves creation completed, the recovery terminal event and lease
+  cleanup SHALL be committed together with the ready snapshot in one short
+  transaction.
 
 ### Requirement: Renew Operation Leases During External Work
 

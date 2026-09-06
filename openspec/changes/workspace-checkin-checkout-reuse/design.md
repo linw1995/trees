@@ -123,6 +123,9 @@ Operation facts and operation leases are deliberately separate:
   lease-id/expiry check; `operation_id` is retained for reverse lookup.
 - Lease-owned step and terminal persistence uses only the current `lease_id` as
   its mutable-state selector and derives `operation_id` from that lease row.
+- When recovery proves that creation completed externally, the recovery
+  terminal event, lease cleanup, ready snapshot, and workspace-ready event are
+  committed in one finalization transaction.
 
 The operation lease protects a mutation while Git or filesystem work runs
 outside SQLite transactions. Workspace claims remain independent and are not
