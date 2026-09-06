@@ -205,18 +205,28 @@ fn list_idle_automatic_candidates(
 }
 
 fn is_retryable_allocation_error(error: &WorkspaceError) -> bool {
-    matches!(
-        error,
+    match error {
         WorkspaceError::OperationActive(_)
-            | WorkspaceError::NotAutomatic(_)
-            | WorkspaceError::NotReusable(_)
-            | WorkspaceError::ClaimActive(_)
-            | WorkspaceError::Database(diesel::result::Error::NotFound)
-            | WorkspaceError::Database(diesel::result::Error::DatabaseError(
-                diesel::result::DatabaseErrorKind::UniqueViolation,
-                _,
-            ))
-    )
+        | WorkspaceError::NotAutomatic(_)
+        | WorkspaceError::NotReusable(_)
+        | WorkspaceError::ClaimActive(_)
+        | WorkspaceError::Database(diesel::result::Error::NotFound)
+        | WorkspaceError::Database(diesel::result::Error::DatabaseError(
+            diesel::result::DatabaseErrorKind::UniqueViolation,
+            _,
+        )) => true,
+        WorkspaceError::Database(error) => is_retryable_database_error(error),
+        _ => false,
+    }
+}
+
+fn is_retryable_database_error(error: &diesel::result::Error) -> bool {
+    match error {
+        diesel::result::Error::DatabaseError(_, information) => {
+            information.message().contains("locked")
+        }
+        _ => false,
+    }
 }
 
 pub fn acquire_automatic_candidate(
