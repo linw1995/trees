@@ -429,10 +429,10 @@ fn dry_run_scan_uses_a_read_only_connection_and_preserves_state() {
 #[test]
 fn force_gc_reclaims_diverged_worktrees_and_extra_content() {
     let fixture = automatic_fixture();
-    run_git(
-        &fixture.worktree_path,
-        &["checkout", "-q", "-b", "external"],
-    );
+    fs::write(fixture.worktree_path.join("diverged"), "diverged\n")
+        .expect("worktree should contain a divergent commit");
+    run_git(&fixture.worktree_path, &["add", "diverged"]);
+    run_git(&fixture.worktree_path, &["commit", "-qm", "diverged"]);
     fs::write(
         fixture.workspace.canonical_path.as_path().join("extra"),
         "extra\n",
@@ -466,6 +466,45 @@ fn force_gc_reclaims_diverged_worktrees_and_extra_content() {
     drop(connection);
     fs::remove_file(fixture.database_path).expect("database should be removable");
     fs::remove_dir_all(fixture.root).expect("test root should be removable");
+}
+
+#[test]
+fn force_gc_skips_a_branch_attached_worktree() {
+    let fixture = automatic_fixture();
+    run_git(
+        &fixture.worktree_path,
+        &["checkout", "-q", "-b", "external"],
+    );
+    let mut connection = fixture.connection;
+    let report = gc::execute(
+        &mut connection,
+        "30d".parse().expect("duration should parse"),
+        true,
+    )
+    .expect("forced GC should complete with a skip");
+    assert!(report.reclaimed.is_empty());
+    assert_eq!(report.skipped.len(), 1);
+    assert_eq!(
+        report.skipped[0].reason,
+        gc::GcCandidateReason::WorktreeMismatch
+    );
+    assert!(fixture.workspace.canonical_path.as_path().exists());
+    assert_eq!(
+        git::list_worktrees(&fixture.source)
+            .expect("source worktrees should be readable")
+            .len(),
+        2
+    );
+
+    cleanup_fixture(AutomaticFixture {
+        root: fixture.root,
+        database_path: fixture.database_path,
+        connection,
+        plan: fixture.plan,
+        source: fixture.source,
+        workspace: fixture.workspace,
+        worktree_path: fixture.worktree_path,
+    });
 }
 
 #[test]

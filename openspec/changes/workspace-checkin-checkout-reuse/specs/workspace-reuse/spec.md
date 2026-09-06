@@ -238,7 +238,8 @@ content. `--force` SHALL imply `--yes` and permit cleanup of age-qualified
 automatic workspaces with dirty, diverged, missing, prunable, or unexpected
 content. `--force` SHALL still refuse manual workspaces, young workspaces,
 active claims, active operations, and paths whose source repository identity
-cannot be verified. Forced cleanup SHALL record that it was forced.
+cannot be verified. Both modes SHALL refuse a worktree that is branch-attached
+or not detached. Forced cleanup SHALL record that it was forced.
 
 #### Scenario: Preview GC Candidates Safely
 

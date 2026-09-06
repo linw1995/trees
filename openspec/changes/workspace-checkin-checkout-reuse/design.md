@@ -308,9 +308,10 @@ filesystem.
 
 Before any deletion, GC performs a final read-only safety check for every
 managed worktree. Both modes must verify the source repository identity when
-possible, the expected direct-child path, and that the target is within the
-workspace path's derived parent root. Without `--force`, the worktree must also be
-detached, at the recorded `HEAD`, clean, present, and non-prunable; dirty,
+possible, the expected direct-child path, that the target is within the
+workspace path's derived parent root, and that the worktree is detached without
+a branch. Without `--force`, the worktree must also be at the recorded `HEAD`,
+clean, present, and non-prunable; dirty,
 missing, diverged, failed, manual, claimed, young, or unexpected-content
 workspaces are skipped and preserved.
 

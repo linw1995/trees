@@ -645,6 +645,13 @@ fn prepare_removal(
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
             Err(_) => return Err(GcCandidateReason::WorktreeMismatch),
         };
+        if let Some(worktree) = listed.as_ref() {
+            // Force removal may discard content, but it must not remove a
+            // worktree that still owns a branch.
+            if !worktree.detached || worktree.branch.is_some() {
+                return Err(GcCandidateReason::WorktreeMismatch);
+            }
+        }
         if !force {
             let Some(worktree) = listed.as_ref() else {
                 return Err(GcCandidateReason::WorktreeMismatch);

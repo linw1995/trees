@@ -570,17 +570,28 @@ fn recover_incomplete_operation(
         .collect::<Vec<_>>();
     for (repository, observation) in repositories.iter().zip(observations) {
         if observation.owned_by_operation {
-            match renew_lease(connection, lease_id) {
-                Ok(()) => {
-                    if let Err(error) = crate::git::remove_worktree_with_heartbeat(
-                        &repository.source_path,
-                        repository.worktree_path.as_path(),
-                        || renew_lease(connection, lease_id),
-                    ) {
-                        errors.push(error.to_string());
+            let detachable = observation
+                .worktree
+                .as_ref()
+                .is_some_and(|worktree| worktree.detached && worktree.branch.is_none());
+            if detachable {
+                match renew_lease(connection, lease_id) {
+                    Ok(()) => {
+                        if let Err(error) = crate::git::remove_worktree_with_heartbeat(
+                            &repository.source_path,
+                            repository.worktree_path.as_path(),
+                            || renew_lease(connection, lease_id),
+                        ) {
+                            errors.push(error.to_string());
+                        }
                     }
+                    Err(error) => errors.push(error.to_string()),
                 }
-                Err(error) => errors.push(error.to_string()),
+            } else {
+                errors.push(format!(
+                    "refusing to remove branch-attached worktree {}",
+                    repository.worktree_path
+                ));
             }
         }
         if let Err(error) = record_repo_worktree_transition(
@@ -1189,6 +1200,34 @@ mod tests {
                 .all(|repository| repository.state == RepoWorktreeState::Failed)
         );
 
+        drop(connection);
+        fs::remove_file(root.join("state.sqlite")).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn refuses_to_remove_a_branch_attached_worktree_during_recovery() {
+        let (root, mut connection, context) = setup_context();
+        execute_creation(&mut connection, &context).expect("creation should execute");
+        let repository = &context.repositories[0];
+        run_git(
+            &repository.plan.worktree_path,
+            &["checkout", "-q", "-b", "external"],
+        );
+        expire_operation(&mut connection, &context.operation_id);
+
+        assert_eq!(
+            recover_expired_operation(&mut connection, &context.workspace_id).unwrap(),
+            RecoveryOutcome::Failed
+        );
+        let worktree =
+            crate::git::find_worktree(&repository.plan.source_path, &repository.plan.worktree_path)
+                .expect("branch-attached worktree should remain registered");
+        assert_eq!(worktree.branch.as_deref(), Some("refs/heads/external"));
+        assert!(repository.plan.worktree_path.exists());
+
+        crate::git::remove_worktree(&repository.plan.source_path, &repository.plan.worktree_path)
+            .expect("test worktree should be removable");
         drop(connection);
         fs::remove_file(root.join("state.sqlite")).expect("state database should be removable");
         fs::remove_dir_all(root).expect("test root should be removable");

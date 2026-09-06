@@ -1084,7 +1084,7 @@ fn rollback_creation(
 
     for repository in repositories {
         match git::find_worktree(&repository.plan.source_path, &repository.plan.worktree_path) {
-            Ok(_) => {
+            Ok(worktree) if worktree.detached && worktree.branch.is_none() => {
                 if let Err(error) = git::remove_worktree_with_heartbeat(
                     &repository.plan.source_path,
                     &repository.plan.worktree_path,
@@ -1099,6 +1099,10 @@ fn rollback_creation(
                     errors.push(error.to_string());
                 }
             }
+            Ok(worktree) => errors.push(format!(
+                "refusing to remove branch-attached worktree {} ({:?})",
+                worktree.path, worktree.branch
+            )),
             Err(GitError::WorktreeNotFound(_)) => {}
             Err(_error) if failed_id == Some(repository.id) => {}
             Err(error) => errors.push(error.to_string()),
