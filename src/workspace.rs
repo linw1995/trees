@@ -170,6 +170,15 @@ fn list_idle_automatic_candidates(
         .map_err(WorkspaceError::Database)?;
     let mut idle_candidates = Vec::new();
     for workspace in candidates {
+        match reconciliation::recover_expired_operation(connection, &workspace.id)
+            .map_err(WorkspaceError::Reconciliation)?
+        {
+            reconciliation::RecoveryOutcome::LeaseActive => continue,
+            reconciliation::RecoveryOutcome::NoRunningOperation
+            | reconciliation::RecoveryOutcome::Succeeded
+            | reconciliation::RecoveryOutcome::RolledBack
+            | reconciliation::RecoveryOutcome::Failed => {}
+        }
         if crate::storage::find_running_operation(connection, &workspace.id)
             .map_err(WorkspaceError::Database)?
             .is_some()
@@ -1645,6 +1654,46 @@ mod tests {
 
         crate::storage::release_workspace_claim(&mut connection, &candidate.id, &result.claim_id)
             .expect("acquire claim should be releasable");
+        crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
+            .expect("test worktree should be removable");
+        drop(connection);
+        fs::remove_file(database_path).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn recovers_an_expired_operation_before_automatic_allocation() {
+        let (root, database_path, mut connection, plan, candidate, worktree_path) =
+            automatic_candidate_fixture();
+        let stale_intent = OperationIntent::new(
+            candidate.id,
+            "stale",
+            Timestamp::now(),
+            "recover stale operation",
+            JsonDocument::parse(r#"{"recovery":true}"#).unwrap(),
+        );
+        let stale_operation =
+            begin_operation(&mut connection, &stale_intent).expect("stale operation should start");
+        let stale_lease =
+            crate::storage::find_operation_lease(&mut connection, &stale_operation.id)
+                .expect("stale operation lease should be queryable")
+                .expect("stale operation lease should exist");
+        diesel::update(crate::schema::operation_leases::table.find(stale_lease.id))
+            .set(crate::schema::operation_leases::lease_expires_at.eq(Timestamp::now()))
+            .execute(&mut connection)
+            .expect("stale operation lease should expire");
+
+        let result = allocate_automatic_workspace(&mut connection, &plan)
+            .expect("automatic allocation should recover the stale operation");
+        assert_eq!(result.workspace_path, candidate.canonical_path);
+        assert_eq!(
+            crate::storage::operation_state(&mut connection, &stale_operation.id)
+                .expect("stale operation state should be queryable"),
+            Some(OperationState::Succeeded)
+        );
+
+        crate::storage::release_workspace_claim(&mut connection, &candidate.id, &result.claim_id)
+            .expect("allocated claim should be releasable");
         crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
             .expect("test worktree should be removable");
         drop(connection);

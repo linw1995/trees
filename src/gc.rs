@@ -155,10 +155,20 @@ pub struct GcCandidate {
     pub claimed: bool,
     pub active_operation: bool,
     pub physical_reason: Option<GcCandidateReason>,
+    pub operation_expired: bool,
     force: bool,
 }
 
 impl GcCandidate {
+    fn recoverable_expired_operation(&self, force: bool) -> bool {
+        self.age_eligible
+            && !self.claimed
+            && self.active_operation
+            && self.operation_expired
+            && self.workspace.state != WorkspaceState::Reclaimed
+            && (force || self.workspace.state == WorkspaceState::Ready)
+    }
+
     fn database_reason(&self) -> Option<GcCandidateReason> {
         if !self.age_eligible {
             Some(GcCandidateReason::Young)
@@ -195,6 +205,7 @@ impl GcScan {
             .iter()
             .filter(|candidate| {
                 execution_skip_reason(candidate, force) == Some(GcCandidateReason::Eligible)
+                    || candidate.recoverable_expired_operation(force)
             })
             .count()
     }
@@ -252,9 +263,11 @@ pub fn scan_with_force(
         if age_eligible {
             counts.age_eligible += 1;
         }
-        let active_operation = find_running_operation(connection, &workspace.id)
-            .map_err(GcError::Database)?
-            .is_some();
+        let running_operation =
+            find_running_operation(connection, &workspace.id).map_err(GcError::Database)?;
+        let active_operation = running_operation.is_some();
+        let operation_expired =
+            running_operation.is_some_and(|running| running.lease.lease_expires_at.has_expired());
         let mut candidate = GcCandidate {
             workspace,
             idle_since,
@@ -262,6 +275,7 @@ pub fn scan_with_force(
             claimed,
             active_operation,
             physical_reason: None,
+            operation_expired,
             force,
         };
         if candidate.database_reason().is_none() {
@@ -287,6 +301,7 @@ pub fn execute(
     older_than: GcDuration,
     force: bool,
 ) -> Result<GcExecutionReport, GcError> {
+    recover_expired_automatic_operations(connection)?;
     let scan = scan_with_force(connection, older_than, force)?;
     let mut report = GcExecutionReport {
         scan: scan.clone(),
@@ -430,6 +445,14 @@ pub fn execute(
         report.reclaimed.push(workspace.canonical_path);
     }
     Ok(report)
+}
+
+fn recover_expired_automatic_operations(connection: &mut SqliteConnection) -> Result<(), GcError> {
+    for workspace in list_automatic_workspaces(connection).map_err(GcError::Database)? {
+        reconciliation::recover_expired_operation(connection, &workspace.id)
+            .map_err(GcError::Reconciliation)?;
+    }
+    Ok(())
 }
 
 fn execution_skip_reason(candidate: &GcCandidate, _force: bool) -> Option<GcCandidateReason> {
@@ -795,12 +818,16 @@ impl fmt::Display for GcPhysicalError {
 #[derive(Debug)]
 pub enum GcError {
     Database(diesel::result::Error),
+    Reconciliation(reconciliation::ReconciliationError),
 }
 
 impl fmt::Display for GcError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Database(error) => write!(formatter, "GC database operation failed: {error}"),
+            Self::Reconciliation(error) => {
+                write!(formatter, "GC reconciliation operation failed: {error}")
+            }
         }
     }
 }
@@ -809,6 +836,7 @@ impl std::error::Error for GcError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Database(error) => Some(error),
+            Self::Reconciliation(error) => Some(error),
         }
     }
 }
@@ -1072,6 +1100,53 @@ mod tests {
         drop(connection);
         fs::remove_file(database_path).expect("state database should be removable");
         fs::remove_dir_all(root).expect("GC test root should be removable");
+    }
+
+    #[test]
+    fn recovers_an_expired_operation_before_gc() {
+        let (root, database_path, mut connection, workspace, source, worktree) =
+            automatic_workspace_fixture();
+        let stale_intent = OperationIntent::new(
+            workspace.id,
+            "stale",
+            Timestamp::now(),
+            "recover stale operation",
+            JsonDocument::parse(r#"{"recovery":true}"#).unwrap(),
+        );
+        let stale_operation =
+            begin_operation(&mut connection, &stale_intent).expect("stale operation should start");
+        let stale_lease =
+            crate::storage::find_operation_lease(&mut connection, &stale_operation.id)
+                .expect("stale operation lease should be queryable")
+                .expect("stale operation lease should exist");
+        diesel::update(crate::schema::operation_leases::table.find(stale_lease.id))
+            .set(crate::schema::operation_leases::lease_expires_at.eq(Timestamp::now()))
+            .execute(&mut connection)
+            .expect("stale operation lease should expire");
+
+        let report = execute(
+            &mut connection,
+            "30d".parse().expect("duration should parse"),
+            false,
+        )
+        .expect("GC should recover the stale operation");
+        assert_eq!(report.reclaimed, vec![workspace.canonical_path]);
+        assert_eq!(
+            crate::storage::operation_state(&mut connection, &stale_operation.id)
+                .expect("stale operation state should be queryable"),
+            Some(crate::domain::OperationState::Succeeded)
+        );
+        assert!(!worktree.exists());
+        assert_eq!(
+            crate::git::list_worktrees(&source)
+                .expect("source worktrees should be readable")
+                .len(),
+            1
+        );
+
+        drop(connection);
+        fs::remove_file(database_path).expect("database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
     }
 
     #[test]
