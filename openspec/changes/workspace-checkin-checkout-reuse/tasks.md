@@ -124,7 +124,7 @@
 
 - [x] 7.1 Remove the redundant GC execution skip predicate without changing
   candidate safety or reported reasons.
-- [ ] 7.2 Require the lease-backed access reconciliation boundary and remove
+- [x] 7.2 Require the lease-backed access reconciliation boundary and remove
   the lease-free access facade after consumer review.
 - [ ] 7.3 Remove the post-acquisition allocation test seam and retain
   equivalent integration coverage.

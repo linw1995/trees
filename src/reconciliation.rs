@@ -28,15 +28,6 @@ pub struct AccessBoundary {
     pub claim: Option<WorkspaceClaimRow>,
 }
 
-pub fn reconcile_workspace_for_access(
-    connection: &mut SqliteConnection,
-    workspace_id: &WorkspaceId,
-    operation_id: &OperationId,
-) -> Result<AccessBoundary, ReconciliationError> {
-    let summary = reconcile_workspace(connection, workspace_id, operation_id)?;
-    load_access_boundary(connection, workspace_id, summary)
-}
-
 pub fn reconcile_workspace_for_access_with_lease(
     connection: &mut SqliteConnection,
     workspace_id: &WorkspaceId,
@@ -998,17 +989,12 @@ mod tests {
     fn access_boundary_reconciles_git_and_returns_current_claim() {
         let (root, mut connection, context) = setup_context();
         execute_creation(&mut connection, &context).expect("creation should execute");
-        crate::storage::finalize_creation(
-            &mut connection,
-            &context.workspace_id,
-            &context.lease_id,
-        )
-        .expect("creation should finalize");
 
-        let boundary = reconcile_workspace_for_access(
+        let boundary = reconcile_workspace_for_access_with_lease(
             &mut connection,
             &context.workspace_id,
             &context.operation_id,
+            &context.lease_id,
         )
         .expect("access boundary should reconcile");
         assert_eq!(boundary.summary.workspace_state, WorkspaceState::Ready);
@@ -1021,13 +1007,22 @@ mod tests {
             &crate::storage::NewWorkspaceClaim::from(&claim),
         )
         .expect("claim should be inserted");
-        let claimed = reconcile_workspace_for_access(
+        let claimed = reconcile_workspace_for_access_with_lease(
             &mut connection,
             &context.workspace_id,
             &context.operation_id,
+            &context.lease_id,
         )
         .expect("claimed boundary should reconcile");
         assert_eq!(claimed.claim.unwrap().id, claim.id);
+        crate::storage::release_workspace_claim(&mut connection, &context.workspace_id, &claim.id)
+            .expect("test claim should be released");
+        crate::storage::finalize_creation(
+            &mut connection,
+            &context.workspace_id,
+            &context.lease_id,
+        )
+        .expect("creation should finalize");
 
         crate::git::remove_worktree(
             &context.repositories[0].plan.source_path,

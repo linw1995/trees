@@ -144,6 +144,11 @@ treated as a local coordination token rather than a security credential. This
 capability SHALL NOT infer an abandoned claim from process liveness or replace
 it automatically.
 
+Access-boundary reconciliation SHALL require the current operation lease. The
+capability SHALL not expose a lease-free access-boundary entry point; general
+lease-free reconciliation remains available only for non-access observation
+contexts.
+
 #### Scenario: Serialize Concurrent Acquisitions
 
 - **WHEN** two processes attempt automatic create for the same reusable pool

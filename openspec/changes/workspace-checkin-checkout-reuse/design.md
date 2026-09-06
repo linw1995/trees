@@ -259,6 +259,10 @@ records the failed acquisition before returning an error. The caller never
 receives a successful acquisition result for a workspace that fails the final
 safety check.
 
+The access boundary is lease-backed by construction. The generic reconciliation
+entry point remains available for non-access observation, but access workflows
+do not have a second lease-free facade.
+
 ### Release Without Destructive Cleanup
 
 Release requires the workspace path and the active claim identifier. Trees
