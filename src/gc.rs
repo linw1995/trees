@@ -156,21 +156,31 @@ pub struct GcCandidate {
     pub age_eligible: bool,
     pub claimed: bool,
     pub active_operation: bool,
+    pub physical_reason: Option<GcCandidateReason>,
+    force: bool,
 }
 
 impl GcCandidate {
-    pub fn reason(&self) -> GcCandidateReason {
+    fn database_reason(&self) -> Option<GcCandidateReason> {
         if !self.age_eligible {
-            GcCandidateReason::Young
+            Some(GcCandidateReason::Young)
         } else if self.claimed {
-            GcCandidateReason::Claimed
+            Some(GcCandidateReason::Claimed)
         } else if self.active_operation {
-            GcCandidateReason::ActiveOperation
-        } else if self.workspace.state != WorkspaceState::Ready {
-            GcCandidateReason::Unhealthy
+            Some(GcCandidateReason::ActiveOperation)
+        } else if self.workspace.state == WorkspaceState::Reclaimed
+            || (!self.force && self.workspace.state != WorkspaceState::Ready)
+        {
+            Some(GcCandidateReason::Unhealthy)
         } else {
-            GcCandidateReason::Eligible
+            None
         }
+    }
+
+    pub fn reason(&self) -> GcCandidateReason {
+        self.database_reason()
+            .or(self.physical_reason)
+            .unwrap_or(GcCandidateReason::Eligible)
     }
 }
 
@@ -213,6 +223,14 @@ pub struct GcExecutionReport {
 }
 
 pub fn scan(connection: &mut SqliteConnection, older_than: GcDuration) -> Result<GcScan, GcError> {
+    scan_with_force(connection, older_than, false)
+}
+
+pub fn scan_with_force(
+    connection: &mut SqliteConnection,
+    older_than: GcDuration,
+    force: bool,
+) -> Result<GcScan, GcError> {
     let cutoff = Timestamp::before_seconds(older_than.seconds());
     let workspaces = list_automatic_workspaces(connection).map_err(GcError::Database)?;
     let mut counts = GcCounts {
@@ -239,13 +257,21 @@ pub fn scan(connection: &mut SqliteConnection, older_than: GcDuration) -> Result
         let active_operation = find_running_operation(connection, &workspace.id)
             .map_err(GcError::Database)?
             .is_some();
-        let candidate = GcCandidate {
+        let mut candidate = GcCandidate {
             workspace,
             idle_since,
             age_eligible,
             claimed,
             active_operation,
+            physical_reason: None,
+            force,
         };
+        if candidate.database_reason().is_none() {
+            let repositories = list_repo_worktrees(connection, &candidate.workspace.id)
+                .map_err(GcError::Database)?;
+            candidate.physical_reason =
+                prepare_removal(&candidate.workspace, &repositories, force).err();
+        }
         if candidate.reason() == GcCandidateReason::Eligible {
             counts.safe_to_reclaim += 1;
         }
@@ -263,7 +289,7 @@ pub fn execute(
     older_than: GcDuration,
     force: bool,
 ) -> Result<GcExecutionReport, GcError> {
-    let scan = scan(connection, older_than)?;
+    let scan = scan_with_force(connection, older_than, force)?;
     let mut report = GcExecutionReport {
         scan: scan.clone(),
         reclaimed: Vec::new(),
@@ -411,23 +437,8 @@ pub fn execute(
     Ok(report)
 }
 
-fn execution_skip_reason(candidate: &GcCandidate, force: bool) -> Option<GcCandidateReason> {
-    if !candidate.age_eligible {
-        return Some(GcCandidateReason::Young);
-    }
-    if candidate.claimed {
-        return Some(GcCandidateReason::Claimed);
-    }
-    if candidate.active_operation {
-        return Some(GcCandidateReason::ActiveOperation);
-    }
-    if candidate.workspace.state == WorkspaceState::Reclaimed {
-        return Some(GcCandidateReason::Unhealthy);
-    }
-    if !force && candidate.workspace.state != WorkspaceState::Ready {
-        return Some(GcCandidateReason::Unhealthy);
-    }
-    Some(GcCandidateReason::Eligible)
+fn execution_skip_reason(candidate: &GcCandidate, _force: bool) -> Option<GcCandidateReason> {
+    Some(candidate.reason())
 }
 
 fn begin_gc_operation(
@@ -960,7 +971,7 @@ mod tests {
         assert_eq!(result.counts.unclaimed, 3);
         assert_eq!(result.counts.claimed, 1);
         assert_eq!(result.counts.age_eligible, 3);
-        assert_eq!(result.counts.safe_to_reclaim, 1);
+        assert_eq!(result.counts.safe_to_reclaim, 0);
         assert_eq!(workspace_ids.len(), 4);
 
         drop(connection);
@@ -1062,7 +1073,7 @@ mod tests {
     }
 
     #[test]
-    fn normal_gc_skips_a_workspace_that_becomes_dirty_after_scan() {
+    fn normal_gc_skips_a_workspace_that_is_dirty_during_scan() {
         let (root, database_path, mut connection, workspace, source, worktree) =
             automatic_workspace_fixture();
         fs::write(worktree.join("local-change"), "dirty\n").expect("worktree should become dirty");
@@ -1076,13 +1087,16 @@ mod tests {
         assert!(report.reclaimed.is_empty());
         assert!(report.failed.is_empty());
         assert_eq!(report.skipped.len(), 1);
-        assert_eq!(report.skipped[0].reason, GcCandidateReason::Unhealthy);
+        assert_eq!(
+            report.skipped[0].reason,
+            GcCandidateReason::WorktreeMismatch
+        );
         assert!(workspace.canonical_path.as_path().exists());
         assert_eq!(
             crate::storage::find_workspace(&mut connection, &workspace.id)
                 .expect("workspace lookup should succeed")
                 .state,
-            WorkspaceState::Degraded
+            WorkspaceState::Ready
         );
         assert_eq!(
             crate::git::list_worktrees(&source)

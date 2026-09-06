@@ -148,13 +148,14 @@ fn run_gc(arguments: trees::cli::GcArgs) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let scan = match trees::gc::scan(&mut connection, arguments.older_than) {
-        Ok(scan) => scan,
-        Err(error) => {
-            eprintln!("Error: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let scan =
+        match trees::gc::scan_with_force(&mut connection, arguments.older_than, arguments.force) {
+            Ok(scan) => scan,
+            Err(error) => {
+                eprintln!("Error: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
     println!("cutoff={}", scan.cutoff);
     println!("automatic={}", scan.counts.automatic);
     println!("unclaimed={}", scan.counts.unclaimed);
