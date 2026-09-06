@@ -235,4 +235,16 @@ DROP TABLE operations_legacy;
 CREATE INDEX operation_leases_expiry_idx
     ON operation_leases (lease_expires_at);
 
+CREATE TRIGGER operations_immutable_update
+BEFORE UPDATE ON operations
+BEGIN
+    SELECT RAISE(ABORT, 'operations are immutable');
+END;
+
+CREATE TRIGGER operations_immutable_delete
+BEFORE DELETE ON operations
+BEGIN
+    SELECT RAISE(ABORT, 'operations are immutable');
+END;
+
 PRAGMA foreign_keys = ON;

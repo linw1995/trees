@@ -2170,6 +2170,16 @@ mod tests {
                 .len(),
             4
         );
+        assert!(diesel::update(operations::table.find(&operation.id))
+            .set(operations::kind.eq("mutated"))
+            .execute(&mut connection)
+            .is_err());
+        assert!(diesel::delete(operations::table.find(&operation.id))
+            .execute(&mut connection)
+            .is_err());
+        assert!(find_operation_lease(&mut connection, &operation.id)
+            .unwrap()
+            .is_none());
 
         drop(connection);
         fs::remove_file(database_path).expect("temporary database should be removable");
