@@ -1671,7 +1671,7 @@ mod tests {
             automatic_candidate_fixture();
         let stale_intent = OperationIntent::new(
             candidate.id,
-            "stale",
+            "create",
             Timestamp::now(),
             "recover stale operation",
             JsonDocument::parse(r#"{"recovery":true}"#).unwrap(),

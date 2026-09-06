@@ -367,6 +367,14 @@ pub fn recover_expired_operation(
         find_workspace(connection, workspace_id).map_err(ReconciliationError::Database)?;
     let repositories =
         list_repo_worktrees(connection, workspace_id).map_err(ReconciliationError::Database)?;
+    if operation.kind != "create" {
+        return recover_non_creation_operation(
+            connection,
+            workspace_id,
+            &operation,
+            &recovery_lease_id,
+        );
+    }
     let mut heartbeat = || renew_lease(connection, &recovery_lease_id);
     let observations = repositories
         .iter()
@@ -399,6 +407,27 @@ pub fn recover_expired_operation(
         &observations,
         &recovery_lease_id,
     )
+}
+
+fn recover_non_creation_operation(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+    operation: &OperationRow,
+    lease_id: &LeaseId,
+) -> Result<RecoveryOutcome, ReconciliationError> {
+    // Access, GC, and integration operations do not own the existing
+    // worktrees. Recovery observes their current state but never removes it.
+    reconcile_workspace_with_lease(connection, workspace_id, &operation.id, lease_id)?;
+    record_operation_transition(
+        connection,
+        lease_id,
+        OperationState::Failed,
+        TransitionMetadata::new("operation_recovered", "recovery")
+            .with_pending_step("non-creation operation recovery complete")
+            .with_error(json_error("non-creation operation expired")),
+    )
+    .map_err(ReconciliationError::Database)?;
+    Ok(RecoveryOutcome::Failed)
 }
 
 #[derive(Debug)]
@@ -1229,6 +1258,54 @@ mod tests {
                 .expect("branch-attached worktree should remain registered");
         assert_eq!(worktree.branch.as_deref(), Some("refs/heads/external"));
         assert!(repository.plan.worktree_path.exists());
+
+        crate::git::remove_worktree(&repository.plan.source_path, &repository.plan.worktree_path)
+            .expect("test worktree should be removable");
+        drop(connection);
+        fs::remove_file(root.join("state.sqlite")).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn non_creation_recovery_does_not_remove_a_dirty_worktree() {
+        let (root, mut connection, context) = setup_context();
+        execute_creation(&mut connection, &context).expect("creation should execute");
+        crate::storage::finalize_creation(
+            &mut connection,
+            &context.workspace_id,
+            &context.lease_id,
+        )
+        .expect("creation should finalize");
+        let repository = &context.repositories[0];
+        fs::write(
+            repository.plan.worktree_path.join("local-change"),
+            "dirty\n",
+        )
+        .expect("worktree should become dirty");
+        let intent = crate::storage::OperationIntent::new(
+            context.workspace_id,
+            "release",
+            Timestamp::after_seconds(300),
+            "release workspace",
+            JsonDocument::parse(r#"{"kind":"release"}"#).unwrap(),
+        );
+        let operation = crate::storage::begin_operation(&mut connection, &intent)
+            .expect("release operation should start");
+        expire_operation(&mut connection, &operation.id);
+
+        assert_eq!(
+            recover_expired_operation(&mut connection, &context.workspace_id).unwrap(),
+            RecoveryOutcome::Failed
+        );
+        assert!(repository.plan.worktree_path.join("local-change").exists());
+        assert!(
+            !crate::git::is_worktree_clean(repository.plan.worktree_path.as_path())
+                .expect("worktree status should be readable")
+        );
+        assert_eq!(
+            crate::storage::operation_state(&mut connection, &operation.id).unwrap(),
+            Some(OperationState::Failed)
+        );
 
         crate::git::remove_worktree(&repository.plan.source_path, &repository.plan.worktree_path)
             .expect("test worktree should be removable");

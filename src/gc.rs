@@ -1115,7 +1115,7 @@ mod tests {
             automatic_workspace_fixture();
         let stale_intent = OperationIntent::new(
             workspace.id,
-            "stale",
+            "create",
             Timestamp::now(),
             "recover stale operation",
             JsonDocument::parse(r#"{"recovery":true}"#).unwrap(),
