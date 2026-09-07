@@ -23,6 +23,7 @@ use super::models::{
 };
 use super::transaction::{
     with_immediate_transaction, with_retrying_short_transaction, with_short_transaction,
+    with_trying_short_transaction,
 };
 
 #[derive(Debug, Clone)]
@@ -843,6 +844,27 @@ pub fn begin_operation(
     })
     .map_err(|error| match error {
         Error::DatabaseError(DatabaseErrorKind::UniqueViolation, _) => {
+            OperationIntentError::WorkspaceBusy(intent.workspace_id)
+        }
+        error => OperationIntentError::Database(error),
+    })
+}
+
+pub fn try_begin_operation(
+    connection: &mut SqliteConnection,
+    intent: &OperationIntent,
+) -> Result<OperationRow, OperationIntentError> {
+    with_trying_short_transaction(connection, |connection| {
+        persist_operation_intent(connection, intent)
+    })
+    .map_err(|error| match error {
+        Error::DatabaseError(DatabaseErrorKind::UniqueViolation, _) => {
+            OperationIntentError::WorkspaceBusy(intent.workspace_id)
+        }
+        Error::DatabaseError(_, information)
+            if information.message().contains("locked")
+                || information.message().contains("busy") =>
+        {
             OperationIntentError::WorkspaceBusy(intent.workspace_id)
         }
         error => OperationIntentError::Database(error),

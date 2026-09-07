@@ -11,7 +11,8 @@ if [[ -n "$violations" ]]; then
     exit 1
 fi
 
-violations="$(rg -n --glob 'database.rs' "$pattern" src | rg -v 'batch_execute\(CONNECTION_PRAGMAS\)' || true)"
+allowed='batch_execute\((CONNECTION_PRAGMAS|CONNECTION_BUSY_TIMEOUT_PRAGMA|TRY_BUSY_TIMEOUT_PRAGMA)\)'
+violations="$(rg -n --glob 'database.rs' "$pattern" src | rg -v "$allowed" || true)"
 if [[ -n "$violations" ]]; then
     printf '%s\n' "Only the fixed SQLite connection PRAGMAs may use runtime SQL:" >&2
     printf '%s\n' "$violations" >&2

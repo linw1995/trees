@@ -12,6 +12,20 @@ pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
 const CONNECTION_PRAGMAS: &str =
     "PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;";
+const CONNECTION_BUSY_TIMEOUT_PRAGMA: &str = "PRAGMA busy_timeout = 5000;";
+const TRY_BUSY_TIMEOUT_PRAGMA: &str = "PRAGMA busy_timeout = 0;";
+
+pub(crate) fn use_try_busy_timeout(
+    connection: &mut SqliteConnection,
+) -> Result<(), diesel::result::Error> {
+    connection.batch_execute(TRY_BUSY_TIMEOUT_PRAGMA)
+}
+
+pub(crate) fn restore_busy_timeout(
+    connection: &mut SqliteConnection,
+) -> Result<(), diesel::result::Error> {
+    connection.batch_execute(CONNECTION_BUSY_TIMEOUT_PRAGMA)
+}
 
 pub fn open_default() -> Result<SqliteConnection, DatabaseError> {
     let path = paths::database_path().map_err(DatabaseError::Path)?;

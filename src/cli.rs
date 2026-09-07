@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -36,12 +36,17 @@ pub struct CreateArgs {
 }
 
 #[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new("target")
+        .multiple(false)
+        .args(["workspace_dir", "claim_id"])
+))]
 pub struct ReleaseArgs {
-    #[arg(value_name = "WORKSPACE_PATH")]
-    pub workspace_path: PathBuf,
+    #[arg(value_name = "WORKSPACE_DIR")]
+    pub workspace_dir: Option<PathBuf>,
 
-    #[arg(long = "claim-id", required = true, value_name = "CLAIM_ID")]
-    pub claim_id: String,
+    #[arg(long = "claim-id", value_name = "CLAIM_ID")]
+    pub claim_id: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -183,33 +188,62 @@ mod tests {
     }
 
     #[test]
-    fn parses_release_with_a_claim_id() {
-        let cli = Cli::try_parse_from([
-            "trees",
-            "release",
-            "/tmp/workspace",
-            "--claim-id",
-            "claim-id",
-        ])
-        .expect("release command should parse");
+    fn parses_release_with_a_relative_workspace_directory() {
+        let cli = Cli::try_parse_from(["trees", "release", "relative/workspace"])
+            .expect("release command should parse");
 
         let Command::Release(arguments) = cli.command else {
             panic!("expected release command");
         };
-        assert_eq!(arguments.workspace_path, PathBuf::from("/tmp/workspace"));
-        assert_eq!(arguments.claim_id, "claim-id");
+        assert_eq!(
+            arguments.workspace_dir,
+            Some(PathBuf::from("relative/workspace"))
+        );
+        assert_eq!(arguments.claim_id, None);
+    }
+
+    #[test]
+    fn parses_release_without_a_target() {
+        let cli = Cli::try_parse_from(["trees", "release"]).expect("release command should parse");
+
+        let Command::Release(arguments) = cli.command else {
+            panic!("expected release command");
+        };
+        assert_eq!(arguments.workspace_dir, None);
+        assert_eq!(arguments.claim_id, None);
+    }
+
+    #[test]
+    fn parses_release_with_a_claim_id() {
+        let cli = Cli::try_parse_from(["trees", "release", "--claim-id", "claim-id"])
+            .expect("release command should parse");
+
+        let Command::Release(arguments) = cli.command else {
+            panic!("expected release command");
+        };
+        assert_eq!(arguments.workspace_dir, None);
+        assert_eq!(arguments.claim_id.as_deref(), Some("claim-id"));
+    }
+
+    #[test]
+    fn rejects_combined_release_targets_and_the_removed_cwd_option() {
+        for arguments in [
+            vec![
+                "trees",
+                "release",
+                "/tmp/workspace",
+                "--claim-id",
+                "claim-id",
+            ],
+            vec!["trees", "release", "--cwd"],
+        ] {
+            assert!(Cli::try_parse_from(arguments).is_err());
+        }
     }
 
     #[test]
     fn rejects_the_legacy_checkout_id_option() {
-        assert!(Cli::try_parse_from([
-            "trees",
-            "release",
-            "/tmp/workspace",
-            "--checkout-id",
-            "claim-id",
-        ])
-        .is_err());
+        assert!(Cli::try_parse_from(["trees", "release", "--checkout-id", "claim-id",]).is_err());
     }
 
     #[test]

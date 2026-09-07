@@ -279,10 +279,10 @@ workspace merely by having no claim.
 
 #### Scenario: Release an Active Claim
 
-- **WHEN** the supplied claim identifier successfully releases its workspace
-- **THEN** the active claim row is removed atomically with the terminal
-  operation and release event, while workspace and repo-worktree identities
-  remain intact
+- **WHEN** a release target resolves an active claim and release succeeds
+- **THEN** the selected active claim row is removed atomically with the
+  terminal operation and release event, while workspace and repo-worktree
+  identities remain intact
 
 ### Requirement: Observe Dirty Worktrees in Lifecycle State
 
@@ -303,18 +303,25 @@ fingerprint SHALL be idempotent.
 
 ### Requirement: Serialize Access Operations with Workspace Operations
 
-Acquire and release SHALL use the existing per-workspace
-operation serialization. A request SHALL NOT replace an active claim or run
-concurrently with another non-terminal workspace operation. Claim changes,
-operation lease changes, and access lifecycle events SHALL use the existing
-short Diesel transaction boundaries. Git and filesystem work SHALL occur
-outside those transactions.
+Acquire and release SHALL use the existing per-workspace operation exclusion.
+A request SHALL NOT replace an active claim or run concurrently with another
+non-terminal workspace operation. Release SHALL attempt admission once and
+return busy immediately when admission is unavailable; it SHALL NOT wait or
+retry into a later operation slot. Claim changes, operation lease changes, and
+access lifecycle events SHALL use the existing short Diesel transaction
+boundaries. Git and filesystem work SHALL occur outside those transactions.
 
 #### Scenario: Reject Access During an Active Operation
 
 - **WHEN** a workspace has a non-terminal operation or an active claim with a
   different claim identifier
 - **THEN** the access request fails without changing Git or the active claim
+
+#### Scenario: Do Not Serialize Concurrent Releases
+
+- **WHEN** two release requests concurrently target the same workspace
+- **THEN** at most one request starts a release operation and the other exits
+  busy without waiting for the first request to finish
 
 ### Requirement: Keep SQLite Critical Sections Short
 
