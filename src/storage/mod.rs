@@ -24,9 +24,10 @@ pub use repository::{
     record_workspace_acquire, record_workspace_acquire_failure, record_workspace_gc_failure,
     record_workspace_gc_skipped, record_workspace_reclaimed, record_workspace_release,
     record_workspace_release_rejection, record_workspace_transition, record_worktree_step_result,
-    release_workspace_claim, renew_operation_lease, update_workspace_observation, EventDraft,
-    OperationIntentError, TransitionMetadata,
+    release_workspace_claim, renew_operation_lease, try_begin_operation,
+    update_workspace_observation, EventDraft, OperationIntentError, TransitionMetadata,
 };
 pub use transaction::{
     with_immediate_transaction, with_retrying_short_transaction, with_short_transaction,
+    with_trying_short_transaction,
 };

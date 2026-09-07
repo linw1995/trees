@@ -109,14 +109,26 @@ fn run_release(arguments: trees::cli::ReleaseArgs) -> ExitCode {
 fn release_automatic(
     arguments: &trees::cli::ReleaseArgs,
 ) -> Result<trees::workspace::ReleaseResult, String> {
-    let claim_id = arguments
-        .claim_id
-        .parse::<trees::domain::ClaimId>()
-        .map_err(|error| format!("invalid claim ID: {error}"))?;
-    let workspace_path = trees::validation::resolve_workspace_path(&arguments.workspace_path)
-        .map_err(|error| error.to_string())?;
+    let target = match (
+        arguments.workspace_path.as_ref(),
+        arguments.cwd,
+        arguments.claim_id.as_deref(),
+    ) {
+        (Some(path), false, None) => trees::workspace::ReleaseTarget::WorkspacePath(
+            trees::validation::resolve_workspace_path(path).map_err(|error| error.to_string())?,
+        ),
+        (None, true, None) => trees::workspace::ReleaseTarget::CurrentDirectory(
+            trees::domain::CanonicalPath::resolve(".").map_err(|error| error.to_string())?,
+        ),
+        (None, false, Some(claim_id)) => trees::workspace::ReleaseTarget::ClaimId(
+            claim_id
+                .parse::<trees::domain::ClaimId>()
+                .map_err(|error| format!("invalid claim ID: {error}"))?,
+        ),
+        _ => return Err("exactly one release target is required".to_owned()),
+    };
     let mut connection = trees::database::open_default().map_err(|error| error.to_string())?;
-    trees::workspace::release_automatic_workspace(&mut connection, &workspace_path, claim_id)
+    trees::workspace::release_automatic_workspace_by_target(&mut connection, target)
         .map_err(|error| error.to_string())
 }
 

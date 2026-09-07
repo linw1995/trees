@@ -20,6 +20,20 @@ where
     connection.immediate_transaction(operation)
 }
 
+/// Attempts one immediate transaction without waiting for another SQLite writer.
+pub fn with_trying_short_transaction<T, F>(
+    connection: &mut SqliteConnection,
+    operation: F,
+) -> QueryResult<T>
+where
+    F: FnOnce(&mut SqliteConnection) -> QueryResult<T>,
+{
+    crate::database::use_try_busy_timeout(connection)?;
+    let result = connection.immediate_transaction(operation);
+    crate::database::restore_busy_timeout(connection)?;
+    result
+}
+
 /// Runs immediate metadata work with bounded retries for transient SQLite busy errors.
 pub fn with_immediate_transaction<T, F>(
     connection: &mut SqliteConnection,
@@ -76,6 +90,8 @@ fn is_sqlite_busy(error: &diesel::result::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use std::fs;
 
     use diesel::prelude::*;
@@ -119,6 +135,29 @@ mod tests {
         assert_eq!(count, 0);
 
         drop(connection);
+        fs::remove_file(database_path).expect("temporary database should be removable");
+    }
+
+    #[test]
+    fn trying_short_transaction_exits_when_database_is_locked() {
+        let database_path =
+            std::env::temp_dir().join(format!("trees-{}.sqlite", WorkspaceId::new()));
+        let mut holder = database::connect(&database_path).expect("database should open");
+        let mut contender = database::connect(&database_path).expect("database should open");
+        holder
+            .immediate_transaction::<_, diesel::result::Error, _>(|_| {
+                let started_at = Instant::now();
+                let result = with_trying_short_transaction(&mut contender, |_| {
+                    Ok::<_, diesel::result::Error>(())
+                });
+
+                assert!(result.is_err());
+                assert!(started_at.elapsed() < Duration::from_secs(1));
+                Ok(())
+            })
+            .expect("holder transaction should complete");
+        drop(contender);
+        drop(holder);
         fs::remove_file(database_path).expect("temporary database should be removable");
     }
 }

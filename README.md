@@ -47,15 +47,25 @@ generated path below its managed workspace directory:
 
 ```sh
 trees create --repo /path/to/api --repo /path/to/web
-trees release /absolute/path/to/workspace --claim-id CLAIM_ID
+trees release /absolute/path/to/workspace
+trees release --cwd
+trees release --claim-id CLAIM_ID
 ```
 
 The automatic command prints Bash assignments that can be captured by a shell:
 `WORKSPACE_PATH`, `POOL_ID`, and `CLAIM_ID`. Use `--json` for a single JSON
-object instead. Keep the claim ID with the caller that owns the workspace and
-pass it to release. Release retains the claim when Git reports dirty, missing, prunable,
-diverged, or failed worktrees, so the claim holder can repair the workspace before
-returning it.
+object instead. Release accepts exactly one target. A workspace path selects
+that exact managed workspace, `--cwd` selects the nearest managed workspace
+containing the current directory, and `--claim-id` selects the active claim
+directly. Keep the claim ID when automation must release the exact claim
+returned by automatic create. Path and current-directory targets release the
+claim active when the command resolves the workspace.
+
+Concurrent release attempts use try-or-exit admission: at most one release
+starts for a workspace, and another attempt exits busy without waiting or
+retrying. Release retains the claim when Git reports dirty, missing, prunable,
+diverged, or failed worktrees, so the claim holder can repair the workspace
+before returning it.
 `POOL_ID` is the stable UUID of the repository-set pool; its BLAKE3 hash and
 canonical sorted origin repository ID set are stored internally for indexed
 lookup and exact matching.

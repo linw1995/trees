@@ -17,14 +17,15 @@ use crate::reconciliation::{self, ReconciliationError};
 use crate::storage::{
     append_event, begin_operation, ensure_origin_repository, finalize_automatic_creation,
     finalize_creation as finalize_persisted_creation, find_workspace, find_workspace_by_path,
-    find_workspace_claim, find_workspace_pool, insert_managed_workspace, insert_repo_worktree,
-    insert_workspace_claim, insert_workspace_pool_repositories, persist_operation_intent,
-    persist_operation_step_intent, record_operation_transition, record_repo_worktree_transition,
-    record_workspace_acquire, record_workspace_acquire_failure, record_workspace_release,
-    record_workspace_release_rejection, record_workspace_transition, record_worktree_step_result,
-    release_workspace_claim, with_retrying_short_transaction, EventDraft, NewManagedWorkspace,
+    find_workspace_claim, find_workspace_claim_by_id, find_workspace_pool,
+    insert_managed_workspace, insert_repo_worktree, insert_workspace_claim,
+    insert_workspace_pool_repositories, persist_operation_intent, persist_operation_step_intent,
+    record_operation_transition, record_repo_worktree_transition, record_workspace_acquire,
+    record_workspace_acquire_failure, record_workspace_release, record_workspace_release_rejection,
+    record_workspace_transition, record_worktree_step_result, release_workspace_claim,
+    try_begin_operation, with_retrying_short_transaction, EventDraft, NewManagedWorkspace,
     NewRepoWorktree, NewWorkspacePoolRepository, OperationIntent, OperationIntentError,
-    TransitionMetadata,
+    TransitionMetadata, WorkspaceRow,
 };
 use crate::validation::{self, ValidationError};
 
@@ -64,6 +65,13 @@ pub struct ReleaseResult {
     pub workspace_path: CanonicalPath,
     pub claim_id: ClaimId,
     pub released_at: Timestamp,
+}
+
+#[derive(Debug, Clone)]
+pub enum ReleaseTarget {
+    WorkspacePath(CanonicalPath),
+    CurrentDirectory(CanonicalPath),
+    ClaimId(ClaimId),
 }
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
@@ -394,6 +402,80 @@ fn fail_acquire(
     }
 }
 
+pub fn release_automatic_workspace_by_target(
+    connection: &mut SqliteConnection,
+    target: ReleaseTarget,
+) -> Result<ReleaseResult, WorkspaceError> {
+    let (workspace_path, claim_id) = match target {
+        ReleaseTarget::WorkspacePath(path) => {
+            release_identity_for_workspace_path(connection, &path)?
+        }
+        ReleaseTarget::CurrentDirectory(path) => {
+            release_identity_for_current_directory(connection, &path)?
+        }
+        ReleaseTarget::ClaimId(claim_id) => release_identity_for_claim(connection, claim_id)?,
+    };
+    release_automatic_workspace(connection, &workspace_path, claim_id)
+}
+
+fn release_identity_for_workspace_path(
+    connection: &mut SqliteConnection,
+    workspace_path: &CanonicalPath,
+) -> Result<(CanonicalPath, ClaimId), WorkspaceError> {
+    let workspace = find_workspace_by_path(connection, workspace_path)
+        .map_err(WorkspaceError::Database)?
+        .ok_or_else(|| WorkspaceError::WorkspaceNotFound(workspace_path.clone()))?;
+    release_identity_for_workspace(connection, workspace)
+}
+
+fn release_identity_for_current_directory(
+    connection: &mut SqliteConnection,
+    current_directory: &CanonicalPath,
+) -> Result<(CanonicalPath, ClaimId), WorkspaceError> {
+    for ancestor in current_directory.as_path().ancestors() {
+        let path = CanonicalPath::from_absolute(ancestor)
+            .expect("an ancestor of an absolute path should be absolute");
+        if let Some(workspace) =
+            find_workspace_by_path(connection, &path).map_err(WorkspaceError::Database)?
+        {
+            return release_identity_for_workspace(connection, workspace);
+        }
+    }
+    Err(WorkspaceError::WorkspaceNotFound(current_directory.clone()))
+}
+
+fn release_identity_for_claim(
+    connection: &mut SqliteConnection,
+    claim_id: ClaimId,
+) -> Result<(CanonicalPath, ClaimId), WorkspaceError> {
+    let claim = match find_workspace_claim_by_id(connection, &claim_id) {
+        Ok(claim) => claim,
+        Err(diesel::result::Error::NotFound) => {
+            return Err(WorkspaceError::ClaimNotFound(claim_id));
+        }
+        Err(error) => return Err(WorkspaceError::Database(error)),
+    };
+    let workspace =
+        find_workspace(connection, &claim.workspace_id).map_err(WorkspaceError::Database)?;
+    if workspace.management_mode != WorkspaceManagementMode::Automatic {
+        return Err(WorkspaceError::NotAutomatic(workspace.canonical_path));
+    }
+    Ok((workspace.canonical_path, claim.id))
+}
+
+fn release_identity_for_workspace(
+    connection: &mut SqliteConnection,
+    workspace: WorkspaceRow,
+) -> Result<(CanonicalPath, ClaimId), WorkspaceError> {
+    if workspace.management_mode != WorkspaceManagementMode::Automatic {
+        return Err(WorkspaceError::NotAutomatic(workspace.canonical_path));
+    }
+    let claim = find_workspace_claim(connection, &workspace.id)
+        .map_err(WorkspaceError::Database)?
+        .ok_or_else(|| WorkspaceError::WorkspaceUnclaimed(workspace.canonical_path.clone()))?;
+    Ok((workspace.canonical_path, claim.id))
+}
+
 pub fn release_automatic_workspace(
     connection: &mut SqliteConnection,
     workspace_path: &CanonicalPath,
@@ -425,7 +507,7 @@ pub fn release_automatic_workspace(
         intent_json,
     );
     let lease_id = intent.lease_id;
-    let operation = begin_operation(connection, &intent).map_err(map_operation_error)?;
+    let operation = try_begin_operation(connection, &intent).map_err(map_operation_error)?;
     let boundary = match reconciliation::reconcile_workspace_for_access_with_lease(
         connection,
         &workspace.id,
@@ -1247,6 +1329,7 @@ pub enum WorkspaceError {
     ClaimActive(WorkspaceId),
     GeneratedPathUnavailable(PathBuf),
     ClaimNotFound(ClaimId),
+    WorkspaceUnclaimed(CanonicalPath),
     RepositorySetMismatch(WorkspaceId),
     WorkspaceNotFound(CanonicalPath),
     Json(crate::domain::JsonDocumentError),
@@ -1300,6 +1383,9 @@ impl fmt::Display for WorkspaceError {
             Self::ClaimNotFound(claim_id) => {
                 write!(formatter, "workspace claim was not found: {claim_id}")
             }
+            Self::WorkspaceUnclaimed(path) => {
+                write!(formatter, "workspace has no active claim: {path}")
+            }
             Self::RepositorySetMismatch(workspace_id) => write!(
                 formatter,
                 "repository set does not match workspace pool: {workspace_id}"
@@ -1349,6 +1435,7 @@ impl std::error::Error for WorkspaceError {
             Self::ClaimActive(_) => None,
             Self::GeneratedPathUnavailable(_) => None,
             Self::ClaimNotFound(_) => None,
+            Self::WorkspaceUnclaimed(_) => None,
             Self::RepositorySetMismatch(_) => None,
             Self::WorkspaceNotFound(_) => None,
             Self::Json(error) => Some(error),
@@ -1837,6 +1924,126 @@ mod tests {
     }
 
     #[test]
+    fn releases_by_workspace_path_current_directory_or_claim_id() {
+        let (root, database_path, mut connection, plan, candidate, worktree_path) =
+            automatic_candidate_fixture();
+
+        let path_claim = acquire_automatic_candidate(&mut connection, &plan, &candidate)
+            .expect("path-targeted acquire should succeed");
+        let path_result = release_automatic_workspace_by_target(
+            &mut connection,
+            ReleaseTarget::WorkspacePath(candidate.canonical_path.clone()),
+        )
+        .expect("path-targeted release should succeed");
+        assert_eq!(path_result.claim_id, path_claim.claim_id);
+
+        let id_claim = acquire_automatic_candidate(&mut connection, &plan, &candidate)
+            .expect("claim-targeted acquire should succeed");
+        let id_result = release_automatic_workspace_by_target(
+            &mut connection,
+            ReleaseTarget::ClaimId(id_claim.claim_id),
+        )
+        .expect("claim-targeted release should succeed");
+        assert_eq!(id_result.claim_id, id_claim.claim_id);
+
+        let cwd_claim = acquire_automatic_candidate(&mut connection, &plan, &candidate)
+            .expect("current-directory-targeted acquire should succeed");
+        let nested_directory = worktree_path.join("nested").join("directory");
+        fs::create_dir_all(&nested_directory).expect("nested directory should be created");
+        let nested_directory = CanonicalPath::resolve(&nested_directory)
+            .expect("nested directory should be canonicalized");
+        assert!(matches!(
+            release_automatic_workspace_by_target(
+                &mut connection,
+                ReleaseTarget::WorkspacePath(nested_directory.clone()),
+            ),
+            Err(WorkspaceError::WorkspaceNotFound(path)) if path == nested_directory
+        ));
+        let cwd_result = release_automatic_workspace_by_target(
+            &mut connection,
+            ReleaseTarget::CurrentDirectory(nested_directory),
+        )
+        .expect("current-directory-targeted release should succeed");
+        assert_eq!(cwd_result.claim_id, cwd_claim.claim_id);
+
+        assert!(matches!(
+            release_automatic_workspace_by_target(
+                &mut connection,
+                ReleaseTarget::WorkspacePath(candidate.canonical_path.clone()),
+            ),
+            Err(WorkspaceError::WorkspaceUnclaimed(path)) if path == candidate.canonical_path
+        ));
+        assert!(matches!(
+            release_automatic_workspace_by_target(
+                &mut connection,
+                ReleaseTarget::ClaimId(cwd_claim.claim_id),
+            ),
+            Err(WorkspaceError::ClaimNotFound(claim_id)) if claim_id == cwd_claim.claim_id
+        ));
+
+        crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
+            .expect("test worktree should be removable");
+        drop(connection);
+        fs::remove_file(database_path).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn concurrent_release_exits_when_the_workspace_operation_is_busy() {
+        let (root, database_path, mut connection, plan, candidate, worktree_path) =
+            automatic_candidate_fixture();
+        let acquire = acquire_automatic_candidate(&mut connection, &plan, &candidate)
+            .expect("automatic acquire should succeed");
+        let intent = OperationIntent::new(
+            candidate.id,
+            "release",
+            Timestamp::after_seconds(300),
+            "hold release admission",
+            JsonDocument::parse(r#"{"target":"test"}"#).unwrap(),
+        );
+        let lease_id = intent.lease_id;
+        let operation = begin_operation(&mut connection, &intent)
+            .expect("first release operation should acquire admission");
+
+        let error = release_automatic_workspace_by_target(
+            &mut connection,
+            ReleaseTarget::WorkspacePath(candidate.canonical_path.clone()),
+        )
+        .expect_err("second release should exit busy");
+        assert!(matches!(
+            error,
+            WorkspaceError::OperationActive(workspace_id) if workspace_id == candidate.id
+        ));
+        assert_eq!(
+            crate::storage::operation_state(&mut connection, &operation.id)
+                .expect("operation state should be queryable"),
+            Some(OperationState::Running)
+        );
+        assert_eq!(
+            crate::storage::find_workspace_claim(&mut connection, &candidate.id)
+                .expect("claim lookup should succeed")
+                .expect("claim should remain active")
+                .id,
+            acquire.claim_id
+        );
+
+        crate::storage::record_operation_transition(
+            &mut connection,
+            &lease_id,
+            OperationState::Failed,
+            TransitionMetadata::new("operation_failed", "test"),
+        )
+        .expect("test operation should finish");
+        crate::storage::release_workspace_claim(&mut connection, &candidate.id, &acquire.claim_id)
+            .expect("claim should be releasable for cleanup");
+        crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
+            .expect("test worktree should be removable");
+        drop(connection);
+        fs::remove_file(database_path).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
     fn rejects_dirty_release_and_retains_the_active_claim() {
         let (root, database_path, mut connection, plan, candidate, worktree_path) =
             automatic_candidate_fixture();
@@ -2231,6 +2438,7 @@ mod tests {
             WorkspaceError::ClaimActive(WorkspaceId::new()),
             WorkspaceError::GeneratedPathUnavailable(path.as_path().to_owned()),
             WorkspaceError::ClaimNotFound(ClaimId::new()),
+            WorkspaceError::WorkspaceUnclaimed(path.clone()),
             WorkspaceError::RepositorySetMismatch(WorkspaceId::new()),
             WorkspaceError::WorkspaceNotFound(path.clone()),
             WorkspaceError::Json(JsonDocument::parse("not json").unwrap_err()),
