@@ -296,11 +296,8 @@ fn manual_create_opens_an_explicit_program_in_the_workspace() {
             .to_string()
     );
 
-    git::remove_worktree(
-        &CanonicalPath::resolve(&source).unwrap(),
-        &workspace_path.join("source"),
-    )
-    .expect("created worktree should be removable");
+    git::remove_worktree(&CanonicalPath::resolve(&source).unwrap(), &workspace_path)
+        .expect("created worktree should be removable");
     fs::remove_dir_all(root).expect("test root should be removable");
 }
 
@@ -335,10 +332,7 @@ fn automatic_create_opens_the_shell_program_in_the_workspace() {
         CanonicalPath::resolve(&workspace_path).expect("workspace should resolve");
     assert_eq!(workspace_path, canonical_workspace.as_path());
 
-    git::remove_worktree(
-        &CanonicalPath::resolve(&source).unwrap(),
-        &workspace_path.join("source"),
-    )
-    .expect("created worktree should be removable");
+    git::remove_worktree(&CanonicalPath::resolve(&source).unwrap(), &workspace_path)
+        .expect("created worktree should be removable");
     fs::remove_dir_all(root).expect("test root should be removable");
 }
