@@ -141,7 +141,8 @@ in the active claim table. A workspace with no active claim is unclaimed; a
 workspace with an active claim is unavailable for another acquisition. The
 claim records persistent usage state for the workspace. It is not a database
 transaction or a database lock and SHALL remain until the caller releases it.
-The claim identifier SHALL be required to release the claim and SHALL be
+Release SHALL identify the active claim from exactly one workspace path,
+current-directory, or claim-identifier target. The claim identifier SHALL be
 treated as a local coordination token rather than a security credential. This
 capability SHALL NOT infer an abandoned claim from process liveness or replace
 it automatically.
@@ -198,28 +199,55 @@ before returning success.
 
 ### Requirement: Release Without Destroying Git State
 
-The CLI SHALL provide `trees release <workspace-path> --claim-id <claim-id>`.
-The `--claim-id` spelling is the only supported claim option. Release SHALL
-require the active claim identifier, reconcile the workspace while retaining
-the claim, and release the claim only when all managed worktrees satisfy the
-reusable snapshot requirement. A successful release SHALL leave the workspace
-directory, worktree files, source repositories, and worktree associations
-unchanged.
+The CLI SHALL accept exactly one of `trees release <workspace-path>`, `trees
+release --cwd`, or `trees release --claim-id <claim-id>`. An explicit path
+SHALL select that exact managed workspace. `--cwd` SHALL select the nearest
+managed workspace containing the canonical current directory. A claim
+identifier SHALL select its active claim and associated workspace. Release
+SHALL snapshot the active claim selected by a path or current directory,
+reconcile the workspace while retaining that claim, and release it only when
+all managed worktrees satisfy the reusable snapshot requirement. A successful
+release SHALL leave the workspace directory, worktree files, source
+repositories, and worktree associations unchanged.
 
 #### Scenario: Release a Reusable Workspace
 
-- **WHEN** the supplied claim identifier owns the active claim and all managed
+- **WHEN** one release target resolves an active claim and all managed
   worktrees pass the final reconciliation
-- **THEN** the active claim is removed atomically, a release operation and
-  immutable release event are recorded, and the workspace can be acquired
+- **THEN** the selected active claim is removed atomically, a release operation
+  and immutable release event are recorded, and the workspace can be acquired
   again
+
+#### Scenario: Release from a Workspace Descendant
+
+- **WHEN** `trees release --cwd` runs from a directory below a managed
+  workspace
+- **THEN** release selects the nearest containing managed workspace and its
+  active claim
+
+#### Scenario: Reject Invalid Target Combinations
+
+- **WHEN** release receives no target or more than one workspace path,
+  current-directory, or claim-identifier target
+- **THEN** argument parsing fails before any workspace state changes
 
 #### Scenario: Reject an Unknown Claim Identifier
 
-- **WHEN** the path has no active claim or the supplied identifier does not
-  match the active claim
-- **THEN** release fails without releasing another caller's claim or changing
-  Git state
+- **WHEN** the selected claim identifier is absent
+- **THEN** release fails without releasing another claim or changing Git state
+
+#### Scenario: Reject an Unknown Workspace Target
+
+- **WHEN** the selected workspace is unclaimed or the selected path does not
+  identify a managed workspace
+- **THEN** release fails without releasing another claim or changing Git state
+
+#### Scenario: Exit on Concurrent Release
+
+- **WHEN** release cannot immediately acquire operation admission for the
+  selected workspace
+- **THEN** release returns a busy failure without waiting, retrying, or changing
+  Git or claim state
 
 ### Requirement: Reclaim Idle Automatic Workspaces
 
