@@ -114,7 +114,7 @@ workspace path and claim identifier.
 
 - **WHEN** no idle automatic workspace matches the exact repository set
 - **THEN** Trees generates a path below its managed workspace root, creates
-  direct-child detached worktrees from each repository's current `HEAD`,
+  detached worktrees using the repository-count-based layout from each repository's current `HEAD`,
   records the pool UUID, and returns the new workspace already claimed
 
 #### Scenario: Retry a Pool Race
