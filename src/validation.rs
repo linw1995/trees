@@ -26,6 +26,10 @@ pub fn validate_workspace_root(
         return Err(WorkspaceRootError::NotDirectory(workspace_path.to_owned()));
     }
 
+    if expected_worktree_paths == [workspace_path] {
+        return Ok(());
+    }
+
     let expected = expected_worktree_paths
         .iter()
         .cloned()

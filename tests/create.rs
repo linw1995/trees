@@ -135,6 +135,42 @@ fn creates_direct_child_worktrees_and_tracks_events() {
 }
 
 #[test]
+fn creates_a_single_repository_at_the_workspace_root() {
+    let root = test_root();
+    let source = repository(&root, "alpha");
+    let workspace_path = root.join("workspace");
+    let plan = prepare_create(&CreateRequest {
+        workspace_path: workspace_path.clone(),
+        repositories: vec![source.clone()],
+    })
+    .expect("creation plan should be prepared");
+    let database_path = root.join("state.sqlite");
+    let mut connection = trees::database::connect(&database_path).expect("database should open");
+
+    let result =
+        create_with_connection(&mut connection, plan).expect("workspace should be created");
+
+    assert_eq!(
+        result.worktree_paths,
+        vec![result.workspace_path.as_path().to_owned()]
+    );
+    assert!(workspace_path.join("README").exists());
+    assert!(!workspace_path.join("alpha").exists());
+    assert_eq!(
+        git::list_worktrees(&CanonicalPath::resolve(&source).unwrap())
+            .unwrap()
+            .len(),
+        2
+    );
+
+    git::remove_worktree(&CanonicalPath::resolve(&source).unwrap(), &workspace_path)
+        .expect("worktree should be removable");
+    drop(connection);
+    fs::remove_file(database_path).expect("state database should be removable");
+    fs::remove_dir_all(root).expect("test root should be removable");
+}
+
+#[test]
 fn failed_creation_leaves_no_partial_workspace() {
     let root = test_root();
     let first = repository(&root, "alpha");

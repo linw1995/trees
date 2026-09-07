@@ -15,7 +15,7 @@ The expected locations are `$XDG_STATE_HOME/trees/db.sqlite` with a `~/.local/st
 #### Scenario: Record a Workspace and Its Worktree Associations
 
 - **WHEN** a workspace operation creates or updates repository worktrees
-- **THEN** the SQLite state contains the workspace identity, each source repository identity, each direct child worktree path, the current lifecycle state, and the latest observation timestamp
+- **THEN** the SQLite state contains the workspace identity, each source repository identity, each managed worktree path, the current lifecycle state, and the latest observation timestamp
 
 #### Scenario: Keep Lifecycle Storage Outside the Workspace
 
@@ -131,7 +131,7 @@ Before performing any Git worktree mutation, the system SHALL persist the operat
 
 #### Scenario: Record a Worktree Intent
 
-- **WHEN** an operation is about to create a direct child worktree
+- **WHEN** an operation is about to create a managed worktree
 - **THEN** the operation record identifies the source repository, target worktree path, and pending step before `git worktree add` is invoked
 
 ### Requirement: Keep Git Mutations Outside Long Database Transactions
@@ -245,7 +245,7 @@ SHALL not be eligible for acquisition or ordinary workspace launch.
 
 #### Scenario: Persist Successful Reclamation
 
-- **WHEN** GC removes all managed worktrees and the empty workspace directory
+- **WHEN** GC removes all managed worktrees and any remaining empty workspace directory
 - **THEN** the workspace is `reclaimed`, each removed repo-worktree association
   is `reclaimed`, the reclamation timestamp is stored, and prior lifecycle
   events remain readable

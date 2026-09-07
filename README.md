@@ -6,7 +6,7 @@
 
 Trees is a Rust CLI for managing coding workspaces composed of Git worktrees.
 
-Each workspace contains one direct child worktree for every source repository. Trees records workspace lifecycle state and immutable events in a shared SQLite database.
+A single-repository workspace is itself the repository worktree. A multi-repository workspace contains one direct child worktree for every source repository. Trees records workspace lifecycle state and immutable events in a shared SQLite database.
 
 The development environment is provided by Nix Flake.
 
@@ -39,7 +39,7 @@ Create a workspace from one or more Git repositories:
 trees create ./workspace --repo /path/to/api --repo /path/to/web
 ```
 
-Each repository becomes a direct child worktree under `./workspace`. The source repositories remain at their original paths.
+With one repository, `./workspace` is the worktree root. With multiple repositories, each repository becomes a direct child worktree under `./workspace`. The source repositories remain at their original paths.
 
 An automatic workspace is allocated from the reusable pool for a repository
 set. It does not take a workspace path; Trees reuses an idle slot or creates a
@@ -74,8 +74,9 @@ lookup and exact matching.
 
 The command shape selects the management mode. An explicit workspace path is
 manual and remains outside automatic allocation and GC; omitting the path is
-automatic. No `--mode` option is needed. Manual workspaces keep the existing
-direct-child worktree behavior and are never removed by automatic GC.
+automatic. No `--mode` option is needed. Manual workspaces keep detached
+worktrees using the repository-count-based layout and are never removed by
+automatic GC.
 
 Configure the automatic workspace content directory independently from the
 lifecycle database:
@@ -106,7 +107,7 @@ Launch an interactive Codex session for a managed workspace:
 trees codex -C ./workspace
 ```
 
-Trees reads the workspace from the forwarded Codex `-C` or `--cd` argument. If neither is present, it uses the current directory. Trees reconciles the workspace with Git before launching Codex. The Codex project roots are the managed worktree directories under the workspace, in deterministic order; the original repository paths are not used as roots. Repeated launches reuse the workspace's Codex project, synchronize its complete root list, and create a new durable thread for each session.
+Trees reads the workspace from the forwarded Codex `-C` or `--cd` argument. If neither is present, it uses the current directory. Trees reconciles the workspace with Git before launching Codex. The Codex project roots are the workspace's managed worktree directories, in deterministic order; the original repository paths are not used as roots. Repeated launches reuse the workspace's Codex project, synchronize its complete root list, and create a new durable thread for each session.
 
 By default, Trees resolves `codex` from `PATH`. Use `--codex-bin` when Codex is installed at a custom path or when selecting a controlled executable:
 

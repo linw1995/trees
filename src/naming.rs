@@ -16,6 +16,7 @@ pub struct WorktreePlan {
 pub fn plan_worktrees(input: &ValidatedCreateInput) -> Result<Vec<WorktreePlan>, NamingError> {
     let mut names = HashMap::with_capacity(input.repositories.len());
     let mut plans = Vec::with_capacity(input.repositories.len());
+    let single_repository = input.repositories.len() == 1;
 
     for repository in &input.repositories {
         let name = repository
@@ -34,7 +35,11 @@ pub fn plan_worktrees(input: &ValidatedCreateInput) -> Result<Vec<WorktreePlan>,
 
         plans.push(WorktreePlan {
             repository: repository.clone(),
-            worktree_path: input.workspace_path.as_path().join(&name),
+            worktree_path: if single_repository {
+                input.workspace_path.as_path().to_owned()
+            } else {
+                input.workspace_path.as_path().join(&name)
+            },
             name,
         });
     }
@@ -115,6 +120,23 @@ mod tests {
             plans[1].worktree_path,
             input.workspace_path.as_path().join("beta")
         );
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn uses_the_workspace_path_for_a_single_repository() {
+        let root = test_root();
+        let repository = root.join("source").join("alpha");
+        fs::create_dir_all(root.join("source")).expect("source parent should be created");
+        fake_repository(&repository);
+        let input = validate_create(&root.join("workspace"), &[repository])
+            .expect("create input should be valid");
+
+        let plans = plan_worktrees(&input).expect("worktree plan should be valid");
+
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].name, OsString::from("alpha"));
+        assert_eq!(plans[0].worktree_path, input.workspace_path.as_path());
         fs::remove_dir_all(root).expect("test root should be removable");
     }
 

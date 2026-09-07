@@ -2,13 +2,18 @@
 
 ## Purpose
 
-This capability defines how `trees` creates a workspace that physically associates multiple independent Git repositories through direct child worktrees.
+This capability defines how `trees` creates a workspace that physically associates one or more independent Git repositories through Git worktrees.
 
 ## Requirements
 
 ### Requirement: Create a Workspace with Direct Child Worktrees
 
-The CLI SHALL provide `trees create <workspace-path> --repo <repository-path>...`. For every repository input, the command SHALL create one distinct direct child directory below the workspace path. Each child directory SHALL be a Git worktree physically associated with its source repository. The workspace SHALL NOT require an additional repository container directory.
+The CLI SHALL provide `trees create <workspace-path> --repo <repository-path>...`. When given one repository, the command SHALL create its Git worktree directly at the workspace path. When given multiple repositories, the command SHALL create one distinct direct child directory below the workspace path for every repository input. Each worktree SHALL be physically associated with its source repository. The workspace SHALL NOT require an additional repository container directory.
+
+#### Scenario: Create a Workspace from One Repository
+
+- **WHEN** the user creates a workspace with one valid repository path
+- **THEN** the workspace path itself is recognized by Git as a worktree of the source repository and no repository-name child directory is added
 
 #### Scenario: Create a Workspace from Multiple Repositories
 
@@ -18,11 +23,11 @@ The CLI SHALL provide `trees create <workspace-path> --repo <repository-path>...
 #### Scenario: Keep Source Repositories Outside the Workspace
 
 - **WHEN** a workspace is created
-- **THEN** the source repository working trees remain at their original paths, while the workspace children provide the associated worktrees
+- **THEN** the source repository working trees remain at their original paths, while the workspace layout provides the associated worktrees
 
-### Requirement: Derive Child Paths from Repository Names
+### Requirement: Derive Multi-Repository Child Paths from Repository Names
 
-The CLI SHALL use each source repository's base name as the corresponding direct child directory name. If two inputs resolve to the same base name, the create operation SHALL fail before creating any worktree rather than silently choosing a different layout.
+For a workspace containing multiple repositories, the CLI SHALL use each source repository's base name as the corresponding direct child directory name. If two inputs resolve to the same base name, the create operation SHALL fail before creating any worktree rather than silently choosing a different layout.
 
 #### Scenario: Use Repository Names
 
@@ -41,7 +46,7 @@ The initial create operation SHALL create each worktree from the source reposito
 #### Scenario: Create a Detached Worktree
 
 - **WHEN** the user creates a workspace from a valid repository without branch or ref options
-- **THEN** the direct child worktree points to the source repository's current `HEAD` and has no checked-out local branch
+- **THEN** the created worktree points to the source repository's current `HEAD` and has no checked-out local branch
 
 ### Requirement: Reject Unsafe Workspace Targets
 
@@ -78,7 +83,7 @@ persisted root. Otherwise, it SHALL generate a workspace path below the
 currently configured Trees-managed workspace root and provision a new
 automatic workspace. Manual creation SHALL be `trees create
 <workspace-path> --repo <repository-path>...` and SHALL retain the existing
-  direct-child worktree structure and detached initial worktree behavior. The
+  repository-count-based worktree structure and detached initial worktree behavior. The
 presence of a positional workspace path SHALL be the mode discriminator; no
 additional `--mode` flag is required or accepted.
 
@@ -94,7 +99,7 @@ additional `--mode` flag is required or accepted.
 - **WHEN** the caller runs automatic create and no reusable automatic workspace
   matches the exact repository set
 - **THEN** Trees generates a path under its currently configured managed
-  workspace root, creates the direct-child detached worktrees, records the
+  workspace root, creates detached worktrees using the repository-count-based layout, records the
   pool UUID, and returns the new workspace with an active claim
 
 #### Scenario: Create a Manual Workspace

@@ -978,12 +978,14 @@ fn execute_creation_with_claim(
 ) -> Result<(), WorkspaceError> {
     // Git and filesystem steps can be slow; their intent and result writes are
     // deliberately split into short transactions around each external step.
-    if let Err(source) = fs::create_dir(&context.plan.workspace_path) {
-        let primary = WorkspaceError::Io {
-            path: context.plan.workspace_path.clone().into_path_buf(),
-            source,
-        };
-        return fail_creation(connection, context, &[], None, claim, primary);
+    if !workspace_is_worktree_root(&context.plan) {
+        if let Err(source) = fs::create_dir(&context.plan.workspace_path) {
+            let primary = WorkspaceError::Io {
+                path: context.plan.workspace_path.clone().into_path_buf(),
+                source,
+            };
+            return fail_creation(connection, context, &[], None, claim, primary);
+        }
     }
 
     let mut completed = Vec::new();
@@ -1002,6 +1004,11 @@ fn execute_creation_with_claim(
     }
 
     Ok(())
+}
+
+fn workspace_is_worktree_root(plan: &CreationPlan) -> bool {
+    plan.repositories.len() == 1
+        && plan.repositories[0].worktree_path == plan.workspace_path.as_path()
 }
 
 #[derive(Debug, Clone, Serialize)]
