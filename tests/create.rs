@@ -212,3 +212,97 @@ fn detects_an_external_worktree_branch_change() {
     fs::remove_file(database_path).expect("state database should be removable");
     fs::remove_dir_all(root).expect("test root should be removable");
 }
+
+#[cfg(unix)]
+fn trees_command(root: &Path) -> Command {
+    let home = root.join("home");
+    fs::create_dir_all(&home).expect("test home should be created");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_trees"));
+    command
+        .env("HOME", home)
+        .env("XDG_STATE_HOME", root.join("state"))
+        .env("XDG_DATA_HOME", root.join("data"))
+        .env("XDG_CONFIG_HOME", root.join("config"));
+    command
+}
+
+#[cfg(unix)]
+#[test]
+fn manual_create_opens_an_explicit_program_in_the_workspace() {
+    let root = test_root();
+    let source = repository(&root, "source");
+    let workspace_path = root.join("workspace");
+
+    let output = trees_command(&root)
+        .args([
+            "create",
+            workspace_path
+                .to_str()
+                .expect("workspace path should be UTF-8"),
+            "--repo",
+            source.to_str().expect("repository path should be UTF-8"),
+            "--open=pwd",
+        ])
+        .output()
+        .expect("trees create should run");
+
+    assert!(
+        output.status.success(),
+        "trees create failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout)
+            .expect("program output should be UTF-8")
+            .trim(),
+        CanonicalPath::resolve(&workspace_path)
+            .expect("workspace should resolve")
+            .to_string()
+    );
+
+    git::remove_worktree(
+        &CanonicalPath::resolve(&source).unwrap(),
+        &workspace_path.join("source"),
+    )
+    .expect("created worktree should be removable");
+    fs::remove_dir_all(root).expect("test root should be removable");
+}
+
+#[cfg(unix)]
+#[test]
+fn automatic_create_opens_the_shell_program_in_the_workspace() {
+    let root = test_root();
+    let source = repository(&root, "source");
+
+    let output = trees_command(&root)
+        .args([
+            "create",
+            "--repo",
+            source.to_str().expect("repository path should be UTF-8"),
+            "--open",
+        ])
+        .env("SHELL", "pwd")
+        .output()
+        .expect("trees create should run");
+
+    assert!(
+        output.status.success(),
+        "trees create failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let workspace_path = PathBuf::from(
+        String::from_utf8(output.stdout)
+            .expect("program output should be UTF-8")
+            .trim(),
+    );
+    let canonical_workspace =
+        CanonicalPath::resolve(&workspace_path).expect("workspace should resolve");
+    assert_eq!(workspace_path, canonical_workspace.as_path());
+
+    git::remove_worktree(
+        &CanonicalPath::resolve(&source).unwrap(),
+        &workspace_path.join("source"),
+    )
+    .expect("created worktree should be removable");
+    fs::remove_dir_all(root).expect("test root should be removable");
+}

@@ -47,6 +47,8 @@ generated path below its managed workspace directory:
 
 ```sh
 trees create --repo /path/to/api --repo /path/to/web
+trees create --open --repo /path/to/api --repo /path/to/web
+trees create --open=codex --repo /path/to/api --repo /path/to/web
 trees release /absolute/path/to/workspace
 trees release relative/path/to/workspace
 trees release
@@ -62,6 +64,13 @@ workspace containing the current directory. Keep the claim ID when automation
 must release the exact claim returned by automatic create. Workspace-directory
 and current-directory targets release the claim active when the command
 resolves the workspace.
+
+Pass `--open` to replace the Trees process with `$SHELL` in the created or
+allocated workspace. Exiting that shell returns to the original shell in its
+original directory. Use `--open=<PROGRAM>` to select another executable, such
+as `--open=codex`. The program inherits the terminal and environment and starts
+with the workspace as its current directory. `--open` and `--json` are mutually
+exclusive. If `$SHELL` is unset or empty, provide an explicit program.
 
 Concurrent release attempts use try-or-exit admission: at most one release
 starts for a workspace, and another attempt exits busy without waiting or
