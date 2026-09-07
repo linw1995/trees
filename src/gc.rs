@@ -672,8 +672,12 @@ fn validate_repository_layout(
     repositories: &[RepoWorktreeRow],
     workspace_root: &Path,
 ) -> Result<(), GcCandidateReason> {
+    let workspace_root_is_worktree = repositories.len() == 1
+        && repositories[0].worktree_path.as_path() == workspace.canonical_path.as_path();
     for repository in repositories {
-        if repository.worktree_path.as_path().parent() != Some(workspace.canonical_path.as_path())
+        if (!workspace_root_is_worktree
+            && repository.worktree_path.as_path().parent()
+                != Some(workspace.canonical_path.as_path()))
             || !repository
                 .worktree_path
                 .as_path()
@@ -707,6 +711,18 @@ fn prepare_workspace_entries(
             return Ok(None);
         }
         return Err(GcCandidateReason::WorktreeMismatch);
+    }
+
+    if expected_paths == [workspace.canonical_path.as_path()] {
+        if !force {
+            validation::validate_workspace_root(
+                workspace.canonical_path.as_path(),
+                workspace_root,
+                expected_paths,
+            )
+            .map_err(workspace_root_reason)?;
+        }
+        return Ok(Some(Vec::new()));
     }
 
     let extra_entries = fs::read_dir(workspace.canonical_path.as_path())
