@@ -109,27 +109,42 @@ fn run_release(arguments: trees::cli::ReleaseArgs) -> ExitCode {
 fn release_automatic(
     arguments: &trees::cli::ReleaseArgs,
 ) -> Result<trees::workspace::ReleaseResult, String> {
-    let target = match (
-        arguments.workspace_path.as_ref(),
-        arguments.cwd,
-        arguments.claim_id.as_deref(),
-    ) {
-        (Some(path), false, None) => trees::workspace::ReleaseTarget::WorkspacePath(
-            trees::validation::resolve_workspace_path(path).map_err(|error| error.to_string())?,
-        ),
-        (None, true, None) => trees::workspace::ReleaseTarget::CurrentDirectory(
-            trees::domain::CanonicalPath::resolve(".").map_err(|error| error.to_string())?,
-        ),
-        (None, false, Some(claim_id)) => trees::workspace::ReleaseTarget::ClaimId(
-            claim_id
-                .parse::<trees::domain::ClaimId>()
-                .map_err(|error| format!("invalid claim ID: {error}"))?,
-        ),
-        _ => return Err("exactly one release target is required".to_owned()),
-    };
+    let target = release_target(arguments)?;
     let mut connection = trees::database::open_default().map_err(|error| error.to_string())?;
     trees::workspace::release_automatic_workspace_by_target(&mut connection, target)
         .map_err(|error| error.to_string())
+}
+
+fn release_target(
+    arguments: &trees::cli::ReleaseArgs,
+) -> Result<trees::workspace::ReleaseTarget, String> {
+    match arguments.workspace_path.as_ref() {
+        Some(path) => workspace_path_release_target(path),
+        None if arguments.cwd => current_directory_release_target(),
+        None => claim_release_target(arguments.claim_id.as_deref()),
+    }
+}
+
+fn workspace_path_release_target(
+    path: &std::path::Path,
+) -> Result<trees::workspace::ReleaseTarget, String> {
+    trees::validation::resolve_workspace_path(path)
+        .map(trees::workspace::ReleaseTarget::WorkspacePath)
+        .map_err(|error| error.to_string())
+}
+
+fn current_directory_release_target() -> Result<trees::workspace::ReleaseTarget, String> {
+    trees::domain::CanonicalPath::resolve(".")
+        .map(trees::workspace::ReleaseTarget::CurrentDirectory)
+        .map_err(|error| error.to_string())
+}
+
+fn claim_release_target(claim_id: Option<&str>) -> Result<trees::workspace::ReleaseTarget, String> {
+    let claim_id = claim_id.ok_or_else(|| "exactly one release target is required".to_owned())?;
+    claim_id
+        .parse::<trees::domain::ClaimId>()
+        .map(trees::workspace::ReleaseTarget::ClaimId)
+        .map_err(|error| format!("invalid claim ID: {error}"))
 }
 
 fn run_config(arguments: trees::cli::ConfigArgs) -> ExitCode {
@@ -424,5 +439,56 @@ mod tests {
             .expect("pool ID should be a string");
         assert!(pool_id.parse::<trees::domain::PoolId>().is_ok());
         assert!(value["claim_id"].is_string());
+    }
+
+    #[test]
+    fn resolves_each_release_target() {
+        let path_arguments = trees::cli::ReleaseArgs {
+            workspace_path: Some(std::path::PathBuf::from(".")),
+            cwd: false,
+            claim_id: None,
+        };
+        assert!(matches!(
+            release_target(&path_arguments),
+            Ok(trees::workspace::ReleaseTarget::WorkspacePath(_))
+        ));
+
+        let cwd_arguments = trees::cli::ReleaseArgs {
+            workspace_path: None,
+            cwd: true,
+            claim_id: None,
+        };
+        assert!(matches!(
+            release_target(&cwd_arguments),
+            Ok(trees::workspace::ReleaseTarget::CurrentDirectory(_))
+        ));
+
+        let claim_id = trees::domain::ClaimId::new();
+        let claim_arguments = trees::cli::ReleaseArgs {
+            workspace_path: None,
+            cwd: false,
+            claim_id: Some(claim_id.to_string()),
+        };
+        assert!(matches!(
+            release_target(&claim_arguments),
+            Ok(trees::workspace::ReleaseTarget::ClaimId(value)) if value == claim_id
+        ));
+    }
+
+    #[test]
+    fn rejects_an_invalid_release_target() {
+        let missing = trees::cli::ReleaseArgs {
+            workspace_path: None,
+            cwd: false,
+            claim_id: None,
+        };
+        assert!(release_target(&missing).is_err());
+
+        let invalid_claim = trees::cli::ReleaseArgs {
+            workspace_path: None,
+            cwd: false,
+            claim_id: Some("invalid".to_owned()),
+        };
+        assert!(claim_release_target(invalid_claim.claim_id.as_deref()).is_err());
     }
 }
