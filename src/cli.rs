@@ -33,6 +33,15 @@ pub struct CreateArgs {
 
     #[arg(long, help = "Print the create result as JSON")]
     pub json: bool,
+
+    #[arg(
+        long,
+        value_name = "PROGRAM",
+        require_equals = true,
+        conflicts_with = "json",
+        help = "Open a program in the workspace, defaulting to $SHELL"
+    )]
+    pub open: Option<Option<OsString>>,
 }
 
 #[derive(Debug, Args)]
@@ -156,6 +165,7 @@ mod tests {
             [PathBuf::from("/tmp/one"), PathBuf::from("/tmp/two")]
         );
         assert!(!arguments.json);
+        assert!(arguments.open.is_none());
     }
 
     #[test]
@@ -174,6 +184,7 @@ mod tests {
             [PathBuf::from("/tmp/one"), PathBuf::from("/tmp/two")]
         );
         assert!(!arguments.json);
+        assert!(arguments.open.is_none());
     }
 
     #[test]
@@ -185,6 +196,54 @@ mod tests {
             panic!("expected create command");
         };
         assert!(arguments.json);
+        assert!(arguments.open.is_none());
+    }
+
+    #[test]
+    fn parses_create_open_with_the_default_program() {
+        let cli = Cli::try_parse_from(["trees", "create", "--repo", "/tmp/one", "--open"])
+            .expect("create command should parse");
+
+        let Command::Create(arguments) = cli.command else {
+            panic!("expected create command");
+        };
+        assert_eq!(arguments.open, Some(None));
+    }
+
+    #[test]
+    fn parses_create_open_with_an_explicit_program() {
+        let cli = Cli::try_parse_from([
+            "trees",
+            "create",
+            "--repo",
+            "/tmp/one",
+            "--open=/usr/bin/env",
+        ])
+        .expect("create command should parse");
+
+        let Command::Create(arguments) = cli.command else {
+            panic!("expected create command");
+        };
+        assert_eq!(arguments.open, Some(Some(OsString::from("/usr/bin/env"))));
+    }
+
+    #[test]
+    fn parses_an_empty_explicit_open_program_for_validation() {
+        let cli = Cli::try_parse_from(["trees", "create", "--repo", "/tmp/one", "--open="])
+            .expect("create command should parse before program validation");
+
+        let Command::Create(arguments) = cli.command else {
+            panic!("expected create command");
+        };
+        assert_eq!(arguments.open, Some(Some(OsString::new())));
+    }
+
+    #[test]
+    fn rejects_combined_create_open_and_json() {
+        assert!(
+            Cli::try_parse_from(["trees", "create", "--repo", "/tmp/one", "--open", "--json"])
+                .is_err()
+        );
     }
 
     #[test]

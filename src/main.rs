@@ -1,4 +1,6 @@
+use std::ffi::{OsStr, OsString};
 use std::io::{self, IsTerminal, Write};
+use std::path::Path;
 use std::process::{ExitCode, ExitStatus};
 
 use clap::Parser;
@@ -22,7 +24,15 @@ fn run_create(arguments: trees::cli::CreateArgs) -> ExitCode {
         workspace_path,
         repositories,
         json,
+        open,
     } = arguments;
+    let open = match resolve_open_program(open) {
+        Ok(open) => open,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     match workspace_path {
         Some(workspace_path) => {
             match trees::workspace::create(trees::workspace::CreateRequest {
@@ -30,6 +40,9 @@ fn run_create(arguments: trees::cli::CreateArgs) -> ExitCode {
                 repositories,
             }) {
                 Ok(result) => {
+                    if let Some(program) = open.as_deref() {
+                        return open_workspace(program, result.workspace_path.as_path());
+                    }
                     if json {
                         return print_json(&result);
                     }
@@ -45,11 +58,27 @@ fn run_create(arguments: trees::cli::CreateArgs) -> ExitCode {
                 }
             }
         }
-        None => run_automatic_create(repositories, json),
+        None => run_automatic_create(repositories, json, open.as_deref()),
     }
 }
 
-fn run_automatic_create(repositories: Vec<std::path::PathBuf>, json: bool) -> ExitCode {
+fn resolve_open_program(open: Option<Option<OsString>>) -> Result<Option<OsString>, String> {
+    match open {
+        None => Ok(None),
+        Some(Some(program)) if !program.is_empty() => Ok(Some(program)),
+        Some(Some(_)) => Err("--open program must not be empty".to_owned()),
+        Some(None) => std::env::var_os("SHELL")
+            .filter(|shell| !shell.is_empty())
+            .map(Some)
+            .ok_or_else(|| "$SHELL is unset or empty; use --open=<PROGRAM>".to_owned()),
+    }
+}
+
+fn run_automatic_create(
+    repositories: Vec<std::path::PathBuf>,
+    json: bool,
+    open: Option<&OsStr>,
+) -> ExitCode {
     let plan =
         match trees::workspace::prepare_automatic(&trees::workspace::AutomaticCreateRequest {
             repositories,
@@ -67,16 +96,20 @@ fn run_automatic_create(repositories: Vec<std::path::PathBuf>, json: bool) -> Ex
             return ExitCode::FAILURE;
         }
     };
-    run_automatic_allocation(&mut connection, &plan, json)
+    run_automatic_allocation(&mut connection, &plan, json, open)
 }
 
 fn run_automatic_allocation(
     connection: &mut diesel::sqlite::SqliteConnection,
     plan: &trees::workspace::AutomaticAllocationPlan,
     json: bool,
+    open: Option<&OsStr>,
 ) -> ExitCode {
     match trees::workspace::allocate_automatic_workspace(connection, plan) {
         Ok(result) => {
+            if let Some(program) = open {
+                return open_workspace(program, result.workspace_path.as_path());
+            }
             if json {
                 print_json(&result)
             } else {
@@ -86,6 +119,41 @@ fn run_automatic_allocation(
         }
         Err(error) => {
             eprintln!("Error: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(unix)]
+fn open_workspace(program: &OsStr, workspace_path: &Path) -> ExitCode {
+    use std::os::unix::process::CommandExt;
+
+    let error = std::process::Command::new(program)
+        .current_dir(workspace_path)
+        .exec();
+    eprintln!(
+        "Error: failed to open {} in workspace {}: {}",
+        Path::new(program).display(),
+        workspace_path.display(),
+        error
+    );
+    ExitCode::FAILURE
+}
+
+#[cfg(not(unix))]
+fn open_workspace(program: &OsStr, workspace_path: &Path) -> ExitCode {
+    match std::process::Command::new(program)
+        .current_dir(workspace_path)
+        .status()
+    {
+        Ok(status) => exit_code(status),
+        Err(error) => {
+            eprintln!(
+                "Error: failed to open {} in workspace {}: {}",
+                Path::new(program).display(),
+                workspace_path.display(),
+                error
+            );
             ExitCode::FAILURE
         }
     }
@@ -380,9 +448,13 @@ fn exit_code(status: ExitStatus) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use clap::Parser;
 
     use super::*;
+
+    static SHELL_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn reports_create_validation_errors() {
@@ -396,6 +468,46 @@ mod tests {
         .expect("create command should parse");
 
         assert_eq!(run(cli), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn resolves_the_default_open_program_from_the_shell_environment() {
+        let _guard = SHELL_ENV_LOCK.lock().expect("environment lock should work");
+        let previous = std::env::var_os("SHELL");
+        std::env::set_var("SHELL", "/bin/test-shell");
+
+        let resolved = resolve_open_program(Some(None));
+
+        match previous {
+            Some(value) => std::env::set_var("SHELL", value),
+            None => std::env::remove_var("SHELL"),
+        }
+        assert_eq!(resolved, Ok(Some(OsString::from("/bin/test-shell"))));
+    }
+
+    #[test]
+    fn rejects_a_missing_default_open_program() {
+        let _guard = SHELL_ENV_LOCK.lock().expect("environment lock should work");
+        let previous = std::env::var_os("SHELL");
+        std::env::remove_var("SHELL");
+
+        let resolved = resolve_open_program(Some(None));
+
+        if let Some(value) = previous {
+            std::env::set_var("SHELL", value);
+        }
+        assert_eq!(
+            resolved,
+            Err("$SHELL is unset or empty; use --open=<PROGRAM>".to_owned())
+        );
+    }
+
+    #[test]
+    fn rejects_an_empty_explicit_open_program() {
+        assert_eq!(
+            resolve_open_program(Some(Some(OsString::new()))),
+            Err("--open program must not be empty".to_owned())
+        );
     }
 
     #[test]
