@@ -9,11 +9,11 @@ in the active claim table. A workspace with no active claim is unclaimed; a
 workspace with an active claim is unavailable for another acquisition. The
 claim records persistent usage state for the workspace. It is not a database
 transaction or a database lock and SHALL remain until the caller releases it.
-Release SHALL identify the active claim from exactly one workspace path,
-current-directory, or claim-identifier target. The claim identifier SHALL be
-treated as a local coordination token rather than a security credential. This
-capability SHALL NOT infer an abandoned claim from process liveness or replace
-it automatically.
+Release SHALL identify the active claim from an explicit workspace-directory
+or claim-identifier target, or from the current directory when neither target
+is supplied. The claim identifier SHALL be treated as a local coordination
+token rather than a security credential. This capability SHALL NOT infer an
+abandoned claim from process liveness or replace it automatically.
 
 Access-boundary reconciliation SHALL require the current operation lease. The
 capability SHALL not expose a lease-free access-boundary entry point; general
@@ -36,16 +36,19 @@ contexts.
 
 ### Requirement: Release Without Destroying Git State
 
-The CLI SHALL accept exactly one of `trees release <workspace-path>`, `trees
-release --cwd`, or `trees release --claim-id <claim-id>`. An explicit path
-SHALL select that exact managed workspace. `--cwd` SHALL select the nearest
-managed workspace containing the canonical current directory. A claim
-identifier SHALL select its active claim and associated workspace. Release
-SHALL snapshot the active claim selected by a path or current directory,
-reconcile the workspace while retaining that claim, and release it only when
-all managed worktrees satisfy the reusable snapshot requirement. A successful
-release SHALL leave the workspace directory, worktree files, source
-repositories, and worktree associations unchanged.
+The CLI SHALL accept `trees release [<workspace-dir>]` or `trees release
+--claim-id <claim-id>`. The positional workspace directory and claim identifier
+SHALL be mutually exclusive. An explicit workspace directory MAY be absolute
+or relative; release SHALL resolve a relative directory against the process
+current directory and select that exact managed workspace. When neither input
+is supplied, release SHALL select the nearest managed workspace containing the
+canonical current directory. A claim identifier SHALL select its active claim
+and associated workspace. Release SHALL snapshot the active claim selected by
+a workspace directory or current directory, reconcile the workspace while
+retaining that claim, and release it only when all managed worktrees satisfy
+the reusable snapshot requirement. A successful release SHALL leave the
+workspace directory, worktree files, source repositories, and worktree
+associations unchanged.
 
 #### Scenario: Release a Reusable Workspace
 
@@ -57,15 +60,21 @@ repositories, and worktree associations unchanged.
 
 #### Scenario: Release from a Workspace Descendant
 
-- **WHEN** `trees release --cwd` runs from a directory below a managed
-  workspace
+- **WHEN** `trees release` runs without a target from a directory below a
+  managed workspace
 - **THEN** release selects the nearest containing managed workspace and its
   active claim
 
+#### Scenario: Release a Relative Workspace Directory
+
+- **WHEN** `trees release <workspace-dir>` receives a relative directory
+- **THEN** release resolves it against the process current directory and
+  selects that exact managed workspace
+
 #### Scenario: Reject Invalid Target Combinations
 
-- **WHEN** release receives no target or more than one workspace path,
-  current-directory, or claim-identifier target
+- **WHEN** release receives both a workspace directory and claim-identifier
+  target
 - **THEN** argument parsing fails before any workspace state changes
 
 #### Scenario: Reject an Unknown Claim Identifier

@@ -4,8 +4,8 @@ Release currently requires both a workspace path and claim identifier even thoug
 
 ## What Changes
 
-- Allow `trees release` to select exactly one target by positional workspace path, `--cwd`, or `--claim-id`.
-- Map path and current-directory targets to the active claim at command start, and map claim identifiers directly to their workspaces.
+- Allow `trees release` to select a target by optional positional workspace directory or `--claim-id`, defaulting to the current directory when neither is supplied.
+- Resolve absolute and relative workspace directories, map directory and current-directory targets to the active claim at command start, and map claim identifiers directly to their workspaces.
 - Make release operation admission try-once: an active workspace operation or SQLite writer conflict returns busy immediately without waiting or retrying.
 - Update release documentation and tests for all target forms, invalid combinations, path resolution, and contention.
 - **BREAKING**: Reject the previous combined `trees release <workspace-path> --claim-id <claim-id>` form because release targets are now mutually exclusive.
@@ -18,7 +18,7 @@ None.
 
 ### Modified Capabilities
 
-- `workspace-reuse`: Change the release CLI target contract and concurrent admission behavior.
+- `workspace-reuse`: Change the release CLI target contract, relative-directory handling, current-directory default, and concurrent admission behavior.
 - `workspace-lifecycle`: Clarify how release resolves and removes the active claim under per-workspace operation exclusion.
 
 ## Impact

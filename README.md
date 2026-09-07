@@ -48,18 +48,20 @@ generated path below its managed workspace directory:
 ```sh
 trees create --repo /path/to/api --repo /path/to/web
 trees release /absolute/path/to/workspace
-trees release --cwd
+trees release relative/path/to/workspace
+trees release
 trees release --claim-id CLAIM_ID
 ```
 
 The automatic command prints Bash assignments that can be captured by a shell:
 `WORKSPACE_PATH`, `POOL_ID`, and `CLAIM_ID`. Use `--json` for a single JSON
-object instead. Release accepts exactly one target. A workspace path selects
-that exact managed workspace, `--cwd` selects the nearest managed workspace
-containing the current directory, and `--claim-id` selects the active claim
-directly. Keep the claim ID when automation must release the exact claim
-returned by automatic create. Path and current-directory targets release the
-claim active when the command resolves the workspace.
+object instead. Release accepts an optional workspace directory or
+`--claim-id`. An absolute or relative workspace directory selects that exact
+managed workspace. With neither input, release selects the nearest managed
+workspace containing the current directory. Keep the claim ID when automation
+must release the exact claim returned by automatic create. Workspace-directory
+and current-directory targets release the claim active when the command
+resolves the workspace.
 
 Concurrent release attempts use try-or-exit admission: at most one release
 starts for a workspace, and another attempt exits busy without waiting or

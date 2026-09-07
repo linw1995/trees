@@ -1,6 +1,6 @@
 ## 1. Release Target Contract
 
-- [x] 1.1 Add the mutually exclusive workspace path, current-directory, and claim-identifier CLI targets and verify parser tests accept each target and reject missing or combined targets
+- [x] 1.1 Add mutually exclusive workspace-directory and claim-identifier CLI targets with a current-directory default and verify parser tests accept omitted and relative directory targets while rejecting combined targets
 - [x] 1.2 Resolve every target to a stable workspace path and active claim snapshot and verify workspace tests cover exact paths, descendant current directories, claim lookup, and unclaimed targets
 
 ## 2. Fail-Fast Release Admission

@@ -6,7 +6,7 @@ See `proposal.md` for motivation. The active claim table already provides a glob
 
 **Goals:**
 
-- Represent the CLI input as one of three explicit release targets.
+- Represent the CLI input as an optional workspace directory or claim identifier, with a current-directory default.
 - Resolve every target to one workspace and the active claim observed for that invocation.
 - Make concurrent release admission fail immediately instead of waiting for another writer or retrying after the active operation completes.
 - Preserve the existing reconciliation and atomic release behavior after admission.
@@ -20,11 +20,11 @@ See `proposal.md` for motivation. The active claim table already provides a glob
 
 ## Decisions
 
-### Use Exactly One Release Target
+### Use an Optional Release Target
 
-The CLI accepts a positional workspace path, `--cwd`, or `--claim-id`, enforced as one required argument group. This makes each invocation's intent unambiguous and intentionally rejects the previous redundant path-plus-claim form.
+The CLI accepts a positional workspace directory or `--claim-id`, enforced as one optional, mutually exclusive argument group. When neither input is present, release selects the process current directory. This keeps each explicit invocation's intent unambiguous and intentionally rejects the previous redundant path-plus-claim form.
 
-An explicit path resolves only an exact managed workspace. `--cwd` canonicalizes the process current directory and walks its ancestors, selecting the nearest managed workspace so the command works from a repository subdirectory. A claim identifier resolves through the active claim row and then its workspace.
+An explicit directory may be absolute or relative and resolves only an exact managed workspace. A relative directory is resolved against the process current directory. The no-argument form canonicalizes the process current directory and walks its ancestors, selecting the nearest managed workspace so the command works from a repository subdirectory. A claim identifier resolves through the active claim row and then its workspace.
 
 ### Snapshot the Active Claim Before Operation Admission
 
@@ -43,8 +43,8 @@ General operation admission keeps bounded retries because create, acquire, and g
 - [Path and current-directory targets release the currently observed claim rather than proving caller identity] → Keep `--claim-id` for automation that needs exact acquire-to-release correlation and document the distinction.
 - [A global SQLite writer unrelated to the target workspace can cause fail-fast release admission] → Report the same busy outcome and require an explicit caller retry; this preserves try-or-exit semantics.
 - [Temporarily changing the connection busy timeout could leak into later operations] → Restore the configured timeout on every non-panicking result path and cover lock contention with a regression test.
-- [The old combined CLI form breaks existing scripts] → Mark the change as breaking and document the three replacement forms.
+- [The old combined CLI form breaks existing scripts] → Mark the change as breaking and document the workspace-directory, no-argument, and claim-identifier forms.
 
 ## Migration Plan
 
-Update callers to pass exactly one of the workspace path, `--cwd`, or `--claim-id`. Rolling back restores the previous parser and retrying admission path; no database migration is required.
+Update callers to pass a workspace directory, pass `--claim-id`, or rely on the no-argument current-directory default. Rolling back restores the previous parser and retrying admission path; no database migration is required.
