@@ -1811,9 +1811,39 @@ mod tests {
         crate::storage::WorkspaceRow,
         PathBuf,
     ) {
+        let (root, database_path, connection, plan, candidate, mut worktree_paths) =
+            automatic_candidate_fixture_with_sources(&["source"]);
+        let worktree_path = worktree_paths
+            .pop()
+            .expect("candidate should have a worktree");
+        (
+            root,
+            database_path,
+            connection,
+            plan,
+            candidate,
+            worktree_path,
+        )
+    }
+
+    fn automatic_candidate_fixture_with_sources(
+        source_names: &[&str],
+    ) -> (
+        PathBuf,
+        PathBuf,
+        SqliteConnection,
+        AutomaticAllocationPlan,
+        crate::storage::WorkspaceRow,
+        Vec<PathBuf>,
+    ) {
         let root = test_root();
-        let source = root.join("source");
-        repository(&source);
+        let sources = source_names
+            .iter()
+            .map(|name| root.join(name))
+            .collect::<Vec<_>>();
+        for source in &sources {
+            repository(source);
+        }
         let database_path = root.join("state.sqlite");
         let mut connection =
             crate::database::connect(&database_path).expect("database should open");
@@ -1821,7 +1851,7 @@ mod tests {
             &mut connection,
             prepare_create(&CreateRequest {
                 workspace_path: root.join("workspace"),
-                repositories: vec![source.clone()],
+                repositories: sources.clone(),
             })
             .expect("manual creation plan should be prepared"),
         )
@@ -1831,7 +1861,7 @@ mod tests {
                 .expect("workspace lookup should succeed")
                 .expect("workspace should exist");
         let mut plan = prepare_automatic(&AutomaticCreateRequest {
-            repositories: vec![source],
+            repositories: sources,
         })
         .expect("automatic allocation plan should be prepared");
         plan.workspace_root =
@@ -1853,20 +1883,18 @@ mod tests {
             .into_iter()
             .next()
             .expect("automatic candidate should exist");
-        let worktree_path = crate::storage::list_repo_worktrees(&mut connection, &candidate.id)
+        let worktree_paths = crate::storage::list_repo_worktrees(&mut connection, &candidate.id)
             .expect("worktree lookup should succeed")
             .into_iter()
-            .next()
-            .expect("candidate should have a worktree")
-            .worktree_path
-            .into_path_buf();
+            .map(|repository| repository.worktree_path.into_path_buf())
+            .collect();
         (
             root,
             database_path,
             connection,
             plan,
             candidate,
-            worktree_path,
+            worktree_paths,
         )
     }
 
@@ -2246,6 +2274,78 @@ mod tests {
             .expect("active claim should be releasable for test cleanup");
         crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
             .expect("dirty test worktree should be removable");
+        drop(connection);
+        fs::remove_file(database_path).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn dirty_release_does_not_align_any_clean_worktree() {
+        let (root, database_path, mut connection, plan, candidate, worktree_paths) =
+            automatic_candidate_fixture_with_sources(&["first", "second"]);
+        let acquire = acquire_automatic_candidate(&mut connection, &plan, &candidate)
+            .expect("automatic acquire should succeed");
+        let first_worktree = worktree_paths
+            .iter()
+            .find(|path| path.ends_with("first"))
+            .expect("first worktree should exist");
+        let second_worktree = worktree_paths
+            .iter()
+            .find(|path| path.ends_with("second"))
+            .expect("second worktree should exist");
+        let first_source = plan
+            .repositories
+            .iter()
+            .find(|repository| repository.source_path.as_path().ends_with("first"))
+            .expect("first source should exist");
+        let first_head = git::find_worktree(&first_source.source_path, first_worktree)
+            .expect("first worktree should be registered")
+            .head
+            .expect("first worktree should have a head");
+        fs::write(
+            first_source.source_path.as_path().join("README"),
+            "updated\n",
+        )
+        .expect("first source should be updated");
+        run_git(
+            first_source.source_path.as_path(),
+            &["commit", "-qam", "update"],
+        );
+        fs::write(second_worktree.join("local-change"), "dirty\n")
+            .expect("second worktree should become dirty");
+
+        let error = release_automatic_workspace(
+            &mut connection,
+            &candidate.canonical_path,
+            acquire.claim_id,
+        )
+        .expect_err("dirty release should be rejected before alignment");
+
+        assert!(matches!(error, WorkspaceError::NotReusable(_)));
+        let first_after = git::find_worktree(&first_source.source_path, first_worktree)
+            .expect("first worktree should remain registered");
+        assert_eq!(first_after.head.as_deref(), Some(first_head.as_str()));
+        assert!(first_after.detached);
+        assert!(second_worktree.join("local-change").exists());
+        assert!(
+            crate::storage::find_workspace_claim(&mut connection, &candidate.id)
+                .expect("claim lookup should succeed")
+                .is_some()
+        );
+
+        crate::storage::release_workspace_claim(&mut connection, &candidate.id, &acquire.claim_id)
+            .expect("active claim should be releasable for cleanup");
+        for worktree_path in worktree_paths {
+            let repository = plan
+                .repositories
+                .iter()
+                .find(|repository| {
+                    repository.source_path.as_path().file_name() == worktree_path.file_name()
+                })
+                .expect("worktree source should exist");
+            git::remove_worktree(&repository.source_path, &worktree_path)
+                .expect("test worktree should be removable");
+        }
         drop(connection);
         fs::remove_file(database_path).expect("state database should be removable");
         fs::remove_dir_all(root).expect("test root should be removable");
