@@ -25,7 +25,7 @@ use crate::storage::{
     record_workspace_transition, record_worktree_step_result, release_workspace_claim,
     try_begin_operation, with_retrying_short_transaction, EventDraft, NewManagedWorkspace,
     NewRepoWorktree, NewWorkspacePoolRepository, OperationIntent, OperationIntentError,
-    TransitionMetadata, WorkspaceRow,
+    RepoWorktreeRow, TransitionMetadata, WorkspaceRow,
 };
 use crate::validation::{self, ValidationError};
 
@@ -536,10 +536,35 @@ pub fn release_automatic_workspace(
         fail_operation(connection, &lease_id, &primary);
         return Err(primary);
     }
-    // Do not release the claim until live reconciliation proves the slot is
-    // safe to reuse; a rejected release intentionally keeps the claim.
     let details_json = release_details(workspace_path, claim_id);
-    if boundary.summary.workspace_state != WorkspaceState::Ready {
+    if let Err(primary) = align_release_worktrees(connection, &workspace, &lease_id) {
+        return Err(fail_release(
+            connection,
+            &lease_id,
+            &workspace.id,
+            primary,
+            Some(details_json),
+        ));
+    }
+    let final_boundary = match reconciliation::reconcile_workspace_for_access_with_lease(
+        connection,
+        &workspace.id,
+        &operation.id,
+        &lease_id,
+    ) {
+        Ok(boundary) => boundary,
+        Err(error) => {
+            let primary = WorkspaceError::Reconciliation(error);
+            return Err(fail_release(
+                connection,
+                &lease_id,
+                &workspace.id,
+                primary,
+                Some(details_json),
+            ));
+        }
+    };
+    if final_boundary.summary.workspace_state != WorkspaceState::Ready {
         let primary = WorkspaceError::NotReusable(workspace.canonical_path.clone());
         return Err(fail_release(
             connection,
@@ -570,6 +595,93 @@ pub fn release_automatic_workspace(
         claim_id,
         released_at,
     })
+}
+
+struct ReleaseAlignment {
+    repository: RepoWorktreeRow,
+    target_head: String,
+    needs_checkout: bool,
+}
+
+fn align_release_worktrees(
+    connection: &mut SqliteConnection,
+    workspace: &WorkspaceRow,
+    lease_id: &LeaseId,
+) -> Result<(), WorkspaceError> {
+    let repositories = crate::storage::list_repo_worktrees(connection, &workspace.id)
+        .map_err(WorkspaceError::Database)?;
+    let mut alignments = Vec::with_capacity(repositories.len());
+
+    // Validate every worktree before changing any of them. Release must never
+    // discard staged, unstaged, or untracked work from the current claimant.
+    for repository in repositories {
+        let source = git::inspect_repository(&repository.source_path)?;
+        if source.common_dir != repository.repository_identity {
+            return Err(WorkspaceError::NotReusable(
+                workspace.canonical_path.clone(),
+            ));
+        }
+        let worktree =
+            git::find_worktree(&repository.source_path, repository.worktree_path.as_path())?;
+        if worktree.prunable.is_some()
+            || !repository.worktree_path.as_path().exists()
+            || git::inspect_worktree_identity(repository.worktree_path.as_path())?
+                != repository.repository_identity
+            || !git::is_worktree_clean(repository.worktree_path.as_path())?
+        {
+            return Err(WorkspaceError::NotReusable(
+                workspace.canonical_path.clone(),
+            ));
+        }
+        let needs_checkout = worktree.head.as_deref() != Some(source.head.as_str())
+            || !worktree.detached
+            || worktree.branch.is_some();
+        alignments.push(ReleaseAlignment {
+            repository,
+            target_head: source.head,
+            needs_checkout,
+        });
+    }
+
+    for alignment in alignments {
+        if !alignment.needs_checkout {
+            continue;
+        }
+        let details = JsonDocument::from_serializable(&serde_json::json!({
+            "head": alignment.target_head,
+            "source_path": alignment.repository.source_path,
+            "worktree_path": alignment.repository.worktree_path,
+        }))
+        .expect("release alignment details should serialize");
+        persist_operation_step_intent(
+            connection,
+            lease_id,
+            format!("align {}", alignment.repository.worktree_path),
+            details.clone(),
+        )
+        .map_err(WorkspaceError::Database)?;
+        git::checkout_detached_with_heartbeat(
+            alignment.repository.worktree_path.as_path(),
+            &alignment.target_head,
+            || match crate::storage::renew_operation_lease(connection, lease_id) {
+                Ok(true) => Ok(()),
+                Ok(false) => Err(GitError::Heartbeat(
+                    "operation lease is no longer owned".to_owned(),
+                )),
+                Err(error) => Err(GitError::Heartbeat(error.to_string())),
+            },
+        )?;
+        record_worktree_step_result(
+            connection,
+            &alignment.repository.id,
+            lease_id,
+            RepoWorktreeState::Attached,
+            Some(alignment.target_head.clone()),
+            TransitionMetadata::new("worktree_aligned", "trees").with_details(details),
+        )
+        .map_err(WorkspaceError::Database)?;
+    }
+    Ok(())
 }
 
 fn release_details(workspace_path: &CanonicalPath, claim_id: ClaimId) -> JsonDocument {
@@ -1706,9 +1818,39 @@ mod tests {
         crate::storage::WorkspaceRow,
         PathBuf,
     ) {
+        let (root, database_path, connection, plan, candidate, mut worktree_paths) =
+            automatic_candidate_fixture_with_sources(&["source"]);
+        let worktree_path = worktree_paths
+            .pop()
+            .expect("candidate should have a worktree");
+        (
+            root,
+            database_path,
+            connection,
+            plan,
+            candidate,
+            worktree_path,
+        )
+    }
+
+    fn automatic_candidate_fixture_with_sources(
+        source_names: &[&str],
+    ) -> (
+        PathBuf,
+        PathBuf,
+        SqliteConnection,
+        AutomaticAllocationPlan,
+        crate::storage::WorkspaceRow,
+        Vec<PathBuf>,
+    ) {
         let root = test_root();
-        let source = root.join("source");
-        repository(&source);
+        let sources = source_names
+            .iter()
+            .map(|name| root.join(name))
+            .collect::<Vec<_>>();
+        for source in &sources {
+            repository(source);
+        }
         let database_path = root.join("state.sqlite");
         let mut connection =
             crate::database::connect(&database_path).expect("database should open");
@@ -1716,7 +1858,7 @@ mod tests {
             &mut connection,
             prepare_create(&CreateRequest {
                 workspace_path: root.join("workspace"),
-                repositories: vec![source.clone()],
+                repositories: sources.clone(),
             })
             .expect("manual creation plan should be prepared"),
         )
@@ -1726,7 +1868,7 @@ mod tests {
                 .expect("workspace lookup should succeed")
                 .expect("workspace should exist");
         let mut plan = prepare_automatic(&AutomaticCreateRequest {
-            repositories: vec![source],
+            repositories: sources,
         })
         .expect("automatic allocation plan should be prepared");
         plan.workspace_root =
@@ -1748,20 +1890,18 @@ mod tests {
             .into_iter()
             .next()
             .expect("automatic candidate should exist");
-        let worktree_path = crate::storage::list_repo_worktrees(&mut connection, &candidate.id)
+        let worktree_paths = crate::storage::list_repo_worktrees(&mut connection, &candidate.id)
             .expect("worktree lookup should succeed")
             .into_iter()
-            .next()
-            .expect("candidate should have a worktree")
-            .worktree_path
-            .into_path_buf();
+            .map(|repository| repository.worktree_path.into_path_buf())
+            .collect();
         (
             root,
             database_path,
             connection,
             plan,
             candidate,
-            worktree_path,
+            worktree_paths,
         )
     }
 
@@ -1931,6 +2071,51 @@ mod tests {
     }
 
     #[test]
+    fn release_aligns_a_clean_worktree_to_the_source_repository_head() {
+        let (root, database_path, mut connection, plan, candidate, worktree_path) =
+            automatic_candidate_fixture();
+        let acquire = acquire_automatic_candidate(&mut connection, &plan, &candidate)
+            .expect("automatic acquire should succeed");
+        run_git(&worktree_path, &["checkout", "-q", "-b", "feature"]);
+
+        let source_path = plan.repositories[0].source_path.as_path();
+        fs::write(source_path.join("README"), "updated\n")
+            .expect("source repository should be updated");
+        run_git(source_path, &["commit", "-qam", "update"]);
+        let source_head = git::inspect_repository(&plan.repositories[0].source_path)
+            .expect("source repository should be inspectable")
+            .head;
+
+        release_automatic_workspace(&mut connection, &candidate.canonical_path, acquire.claim_id)
+            .expect("clean changed worktree should be aligned and released");
+
+        let worktree = git::find_worktree(&plan.repositories[0].source_path, &worktree_path)
+            .expect("worktree should remain registered");
+        assert!(worktree.detached);
+        assert!(worktree.branch.is_none());
+        assert_eq!(worktree.head.as_deref(), Some(source_head.as_str()));
+        assert!(git::is_worktree_clean(&worktree_path).expect("worktree status should succeed"));
+        let repository = crate::storage::list_repo_worktrees(&mut connection, &candidate.id)
+            .expect("worktree lookup should succeed")
+            .into_iter()
+            .next()
+            .expect("workspace should have a worktree");
+        assert_eq!(repository.state, RepoWorktreeState::Attached);
+        assert_eq!(repository.last_head.as_deref(), Some(source_head.as_str()));
+        assert!(
+            crate::storage::find_workspace_claim(&mut connection, &candidate.id)
+                .expect("claim lookup should succeed")
+                .is_none()
+        );
+
+        git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
+            .expect("test worktree should be removable");
+        drop(connection);
+        fs::remove_file(database_path).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
     fn releases_by_workspace_path_current_directory_or_claim_id() {
         let (root, database_path, mut connection, plan, candidate, worktree_path) =
             automatic_candidate_fixture();
@@ -2079,6 +2264,7 @@ mod tests {
                 .state,
             WorkspaceState::Degraded
         );
+        assert!(worktree_path.join("local-change").exists());
         let rejected_event = crate::schema::lifecycle_events::table
             .filter(crate::schema::lifecycle_events::entity_id.eq(candidate.id.to_string()))
             .filter(crate::schema::lifecycle_events::event_type.eq("workspace_release_rejected"))
@@ -2095,6 +2281,78 @@ mod tests {
             .expect("active claim should be releasable for test cleanup");
         crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
             .expect("dirty test worktree should be removable");
+        drop(connection);
+        fs::remove_file(database_path).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn dirty_release_does_not_align_any_clean_worktree() {
+        let (root, database_path, mut connection, plan, candidate, worktree_paths) =
+            automatic_candidate_fixture_with_sources(&["first", "second"]);
+        let acquire = acquire_automatic_candidate(&mut connection, &plan, &candidate)
+            .expect("automatic acquire should succeed");
+        let first_worktree = worktree_paths
+            .iter()
+            .find(|path| path.ends_with("first"))
+            .expect("first worktree should exist");
+        let second_worktree = worktree_paths
+            .iter()
+            .find(|path| path.ends_with("second"))
+            .expect("second worktree should exist");
+        let first_source = plan
+            .repositories
+            .iter()
+            .find(|repository| repository.source_path.as_path().ends_with("first"))
+            .expect("first source should exist");
+        let first_head = git::find_worktree(&first_source.source_path, first_worktree)
+            .expect("first worktree should be registered")
+            .head
+            .expect("first worktree should have a head");
+        fs::write(
+            first_source.source_path.as_path().join("README"),
+            "updated\n",
+        )
+        .expect("first source should be updated");
+        run_git(
+            first_source.source_path.as_path(),
+            &["commit", "-qam", "update"],
+        );
+        fs::write(second_worktree.join("local-change"), "dirty\n")
+            .expect("second worktree should become dirty");
+
+        let error = release_automatic_workspace(
+            &mut connection,
+            &candidate.canonical_path,
+            acquire.claim_id,
+        )
+        .expect_err("dirty release should be rejected before alignment");
+
+        assert!(matches!(error, WorkspaceError::NotReusable(_)));
+        let first_after = git::find_worktree(&first_source.source_path, first_worktree)
+            .expect("first worktree should remain registered");
+        assert_eq!(first_after.head.as_deref(), Some(first_head.as_str()));
+        assert!(first_after.detached);
+        assert!(second_worktree.join("local-change").exists());
+        assert!(
+            crate::storage::find_workspace_claim(&mut connection, &candidate.id)
+                .expect("claim lookup should succeed")
+                .is_some()
+        );
+
+        crate::storage::release_workspace_claim(&mut connection, &candidate.id, &acquire.claim_id)
+            .expect("active claim should be releasable for cleanup");
+        for worktree_path in worktree_paths {
+            let repository = plan
+                .repositories
+                .iter()
+                .find(|repository| {
+                    repository.source_path.as_path().file_name() == worktree_path.file_name()
+                })
+                .expect("worktree source should exist");
+            git::remove_worktree(&repository.source_path, &worktree_path)
+                .expect("test worktree should be removable");
+        }
         drop(connection);
         fs::remove_file(database_path).expect("state database should be removable");
         fs::remove_dir_all(root).expect("test root should be removable");

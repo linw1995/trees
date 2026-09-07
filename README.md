@@ -74,9 +74,11 @@ exclusive. If `$SHELL` is unset or empty, provide an explicit program.
 
 Concurrent release attempts use try-or-exit admission: at most one release
 starts for a workspace, and another attempt exits busy without waiting or
-retrying. Release retains the claim when Git reports dirty, missing, prunable,
-diverged, or failed worktrees, so the claim holder can repair the workspace
-before returning it.
+retrying. Release first rejects the entire operation when any managed worktree
+has staged, unstaged, or untracked changes. Otherwise, it aligns every clean
+worktree to its source repository's current local `HEAD` in detached mode and
+releases the claim only after final reconciliation. Missing, prunable,
+identity-mismatched, or failed worktrees also retain the claim for repair.
 `POOL_ID` is the stable UUID of the repository-set pool; its BLAKE3 hash and
 canonical sorted origin repository ID set are stored internally for indexed
 lookup and exact matching.

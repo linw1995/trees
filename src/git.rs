@@ -327,6 +327,22 @@ where
     Ok(output.trim().is_empty())
 }
 
+pub fn checkout_detached_with_heartbeat<F>(
+    worktree_path: &Path,
+    revision: &str,
+    heartbeat: F,
+) -> Result<(), GitError>
+where
+    F: FnMut() -> Result<(), GitError>,
+{
+    run_git_with_heartbeat(
+        worktree_path,
+        &[arg("checkout"), arg("--detach"), arg(revision)],
+        heartbeat,
+    )?;
+    Ok(())
+}
+
 fn parse_worktree_list(
     repository: &CanonicalPath,
     output: &str,
@@ -819,6 +835,38 @@ mod tests {
         fs::write(worktree_path.join("untracked"), "change\n")
             .expect("untracked file should be written");
         assert!(!is_worktree_clean(&worktree_path).expect("status should succeed"));
+
+        remove_worktree(&repository, &worktree_path).expect("worktree should be removed");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn checks_out_a_revision_in_detached_mode() {
+        let (root, repository) = repository();
+        let initial_head = inspect_repository(&repository)
+            .expect("repository should be inspectable")
+            .head;
+        fs::write(root.join("README"), "updated\n").expect("test file should be updated");
+        run_git_in(&root, &["commit", "-qam", "update"]);
+        let updated_head = inspect_repository(&repository)
+            .expect("repository should be inspectable")
+            .head;
+        let worktree_path = repository.as_path().join("workspace");
+        add_detached_worktree(&repository, &worktree_path).expect("worktree should be added");
+        run_git_in(
+            &worktree_path,
+            &["checkout", "-q", "-b", "feature", &initial_head],
+        );
+
+        checkout_detached_with_heartbeat(&worktree_path, &updated_head, || Ok(()))
+            .expect("worktree should align to the repository head");
+
+        let worktree =
+            find_worktree(&repository, &worktree_path).expect("worktree should remain registered");
+        assert!(worktree.detached);
+        assert!(worktree.branch.is_none());
+        assert_eq!(worktree.head.as_deref(), Some(updated_head.as_str()));
+        assert!(is_worktree_clean(&worktree_path).expect("worktree status should succeed"));
 
         remove_worktree(&repository, &worktree_path).expect("worktree should be removed");
         fs::remove_dir_all(root).expect("test root should be removable");
