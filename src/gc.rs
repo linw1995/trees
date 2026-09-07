@@ -700,20 +700,14 @@ fn prepare_workspace_entries(
     expected_paths: &[PathBuf],
     force: bool,
 ) -> Result<Option<Vec<PathBuf>>, GcCandidateReason> {
-    let workspace_exists = match fs::symlink_metadata(workspace.canonical_path.as_path()) {
-        Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => true,
-        Ok(_) => return Err(GcCandidateReason::UnsafeRoot),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-        Err(_) => return Err(GcCandidateReason::UnsafeRoot),
-    };
-    if !workspace_exists {
+    if !workspace_directory_exists(workspace.canonical_path.as_path())? {
         if force {
             return Ok(None);
         }
         return Err(GcCandidateReason::WorktreeMismatch);
     }
 
-    if expected_paths == [workspace.canonical_path.as_path()] {
+    if workspace_root_is_worktree(workspace, expected_paths) {
         if !force {
             validation::validate_workspace_root(
                 workspace.canonical_path.as_path(),
@@ -725,14 +719,7 @@ fn prepare_workspace_entries(
         return Ok(Some(Vec::new()));
     }
 
-    let extra_entries = fs::read_dir(workspace.canonical_path.as_path())
-        .map_err(|_| GcCandidateReason::UnexpectedContent)?
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| GcCandidateReason::UnexpectedContent)?
-        .into_iter()
-        .filter(|entry| !expected_paths.iter().any(|expected| expected == entry))
-        .collect::<Vec<_>>();
+    let extra_entries = unexpected_workspace_entries(workspace, expected_paths)?;
     if !force && !extra_entries.is_empty() {
         return Err(GcCandidateReason::UnexpectedContent);
     }
@@ -749,6 +736,38 @@ fn prepare_workspace_entries(
     } else {
         Some(Vec::new())
     })
+}
+
+fn workspace_directory_exists(workspace_path: &Path) -> Result<bool, GcCandidateReason> {
+    match fs::symlink_metadata(workspace_path) {
+        Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
+            Ok(true)
+        }
+        Ok(_) => Err(GcCandidateReason::UnsafeRoot),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err(GcCandidateReason::UnsafeRoot),
+    }
+}
+
+fn workspace_root_is_worktree(
+    workspace: &crate::storage::WorkspaceRow,
+    expected_paths: &[PathBuf],
+) -> bool {
+    expected_paths == [workspace.canonical_path.as_path()]
+}
+
+fn unexpected_workspace_entries(
+    workspace: &crate::storage::WorkspaceRow,
+    expected_paths: &[PathBuf],
+) -> Result<Vec<PathBuf>, GcCandidateReason> {
+    Ok(fs::read_dir(workspace.canonical_path.as_path())
+        .map_err(|_| GcCandidateReason::UnexpectedContent)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| GcCandidateReason::UnexpectedContent)?
+        .into_iter()
+        .filter(|entry| !expected_paths.iter().any(|expected| expected == entry))
+        .collect())
 }
 
 fn workspace_root_reason(error: validation::WorkspaceRootError) -> GcCandidateReason {
