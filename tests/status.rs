@@ -220,9 +220,12 @@ fn status_renders_ordered_persisted_state_and_preserves_storage() {
     );
     let human = String::from_utf8(human.stdout).expect("human output should be UTF-8");
     assert!(human.starts_with("STATE"));
+    assert!(!human.contains("OPERATION"));
     assert!(human.contains("degraded"));
-    assert!(human.contains("1(dirty=1)"));
-    assert!(human.contains("expired:release"));
+    assert!(human.contains("0/1"));
+    assert!(human.contains("🤖"));
+    assert!(human.contains("👤"));
+    assert!(!human.contains("expired:release"));
     assert!(human.contains(manual_path.as_path().to_str().unwrap()));
     assert!(human.contains(automatic_path.as_path().to_str().unwrap()));
     assert!(!human.contains(reclaimed_path.as_path().to_str().unwrap()));
