@@ -15,6 +15,8 @@ fn run(cli: trees::cli::Cli) -> ExitCode {
         trees::cli::Command::Release(arguments) => run_release(arguments),
         trees::cli::Command::Config(arguments) => run_config(arguments),
         trees::cli::Command::Gc(arguments) => run_gc(arguments),
+        trees::cli::Command::Status(arguments) => run_status(arguments),
+        trees::cli::Command::Open(arguments) => run_open(arguments),
         trees::cli::Command::Codex(arguments) => run_codex(arguments),
     }
 }
@@ -65,12 +67,20 @@ fn run_create(arguments: trees::cli::CreateArgs) -> ExitCode {
 fn resolve_open_program(open: Option<Option<OsString>>) -> Result<Option<OsString>, String> {
     match open {
         None => Ok(None),
-        Some(Some(program)) if !program.is_empty() => Ok(Some(program)),
-        Some(Some(_)) => Err("--open program must not be empty".to_owned()),
-        Some(None) => std::env::var_os("SHELL")
+        Some(program) => resolve_required_program(program, "--open").map(Some),
+    }
+}
+
+fn resolve_required_program(
+    program: Option<OsString>,
+    option_name: &str,
+) -> Result<OsString, String> {
+    match program {
+        Some(program) if !program.is_empty() => Ok(program),
+        Some(_) => Err(format!("{option_name} program must not be empty")),
+        None => std::env::var_os("SHELL")
             .filter(|shell| !shell.is_empty())
-            .map(Some)
-            .ok_or_else(|| "$SHELL is unset or empty; use --open=<PROGRAM>".to_owned()),
+            .ok_or_else(|| format!("$SHELL is unset or empty; use {option_name}=<PROGRAM>")),
     }
 }
 
@@ -138,6 +148,33 @@ fn open_workspace(program: &OsStr, workspace_path: &Path) -> ExitCode {
         error
     );
     ExitCode::FAILURE
+}
+
+fn run_open(arguments: trees::cli::OpenArgs) -> ExitCode {
+    let program = match resolve_required_program(arguments.program, "--program") {
+        Ok(program) => program,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut connection = match trees::database::open_read_only() {
+        Ok(connection) => connection,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let workspace_path =
+        match trees::workspace_open::resolve_target(&mut connection, &arguments.workspace_id) {
+            Ok(path) => path,
+            Err(error) => {
+                eprintln!("Error: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+    drop(connection);
+    open_workspace(&program, workspace_path.as_path())
 }
 
 #[cfg(not(unix))]
@@ -360,6 +397,85 @@ fn execute_gc_report(
     let mut connection = trees::database::open_default().map_err(|error| error.to_string())?;
     trees::gc::execute(&mut connection, arguments.older_than, arguments.force)
         .map_err(|error| error.to_string())
+}
+
+fn run_status(arguments: trees::cli::StatusArgs) -> ExitCode {
+    if arguments.all && arguments.view != trees::cli::StatusView::Workspaces {
+        eprintln!("Error: --all requires --view workspaces");
+        return ExitCode::FAILURE;
+    }
+    match arguments.view {
+        trees::cli::StatusView::Pools => run_pool_status(arguments.json),
+        trees::cli::StatusView::Workspaces => run_workspace_status(arguments.all, arguments.json),
+    }
+}
+
+fn run_pool_status(json: bool) -> ExitCode {
+    let snapshot = match load_pool_status_snapshot() {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if json {
+        print_json(&snapshot)
+    } else {
+        println!(
+            "{}",
+            trees::status::render_pools_human(&snapshot, status_color_enabled())
+        );
+        ExitCode::SUCCESS
+    }
+}
+
+fn load_pool_status_snapshot() -> Result<trees::status::PoolStatusSnapshot, String> {
+    let mut connection = match trees::database::open_read_only() {
+        Ok(connection) => connection,
+        Err(trees::database::DatabaseError::ReadOnlyDatabaseMissing(_)) => {
+            return Ok(trees::status::PoolStatusSnapshot::empty());
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    trees::status::load_pool_snapshot(&mut connection)
+        .map_err(|error| format!("failed to load workspace pool status: {error}"))
+}
+
+fn run_workspace_status(include_reclaimed: bool, json: bool) -> ExitCode {
+    let snapshot = match load_workspace_status_snapshot(include_reclaimed) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if json {
+        print_json(&snapshot)
+    } else {
+        println!(
+            "{}",
+            trees::status::render_workspaces_human(&snapshot, status_color_enabled())
+        );
+        ExitCode::SUCCESS
+    }
+}
+
+fn status_color_enabled() -> bool {
+    io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
+}
+
+fn load_workspace_status_snapshot(
+    include_reclaimed: bool,
+) -> Result<trees::status::StatusSnapshot, String> {
+    let mut connection = match trees::database::open_read_only() {
+        Ok(connection) => connection,
+        Err(trees::database::DatabaseError::ReadOnlyDatabaseMissing(_)) => {
+            return Ok(trees::status::StatusSnapshot::empty());
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    trees::status::load_snapshot(&mut connection, include_reclaimed)
+        .map_err(|error| format!("failed to load workspace status: {error}"))
 }
 
 fn print_automatic_claim_result(result: &trees::workspace::AutomaticClaimResult) {

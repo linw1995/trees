@@ -89,6 +89,59 @@ automatic. No `--mode` option is needed. Manual workspaces keep detached
 worktrees using the repository-count-based layout and are never removed by
 automatic GC.
 
+Inspect the persisted workspace inventory without changing lifecycle or Git
+state:
+
+```sh
+trees status
+trees status --json
+trees status --view workspaces
+trees status --view workspaces --all
+trees open WORKSPACE_ID
+trees open WORKSPACE_ID --program=codex
+```
+
+The default `pools` view reports one row per automatic repository set. Its
+`CAPACITY` value is `<available>/<total>/<abnormal>`. Available counts persisted
+ready, unclaimed, operation-free slots; total counts current non-reclaimed
+slots; abnormal counts degraded and failed slots. Interactive terminals render
+these numbers in green, blue, and red respectively. Pipelines and `NO_COLOR`
+receive the same plain value without ANSI escapes. Availability is a scheduling
+hint; automatic allocation still reconciles a slot before use. Repository
+labels start with source-path base names and expand conflicting labels with
+parent components until unique within the pool.
+
+Use `--view workspaces` for individual manual and automatic workspaces.
+`STATUS` shows workspace health and appends `🔒` when an active claim exists;
+absence of the lock means unclaimed. Automatic mode is shown as `🤖`, while
+manual mode is shown as `👤`. Reclaimed workspace records are hidden by default;
+`--all` includes them only in this detail view. `--json` emits a versioned
+snapshot for the selected view. Workspace JSON retains separate state and claim
+fields plus complete current operation, path, and repo-worktree details.
+
+The human workspace view identifies each record by stable workspace ID rather
+than path. `trees open` resolves that ID and starts `$SHELL` in the persisted
+canonical workspace directory; `--program=<PROGRAM>` selects another executable
+without shell parsing. Automatic workspaces must already have an active claim,
+while manual workspaces do not require one. Open rejects reclaimed workspaces
+and retained operation leases, closes its read-only database connection before
+handoff, and does not reconcile or mutate lifecycle state.
+
+Workspace `REPOS` uses `<ready>/<total>` followed by repository labels. Ready
+is the user-facing name for repo worktrees stored in the `attached` state. On
+interactive terminals, ready and total are green and blue; pipelines and
+`NO_COLOR` receive the same uncolored value. Ready repository labels are green,
+pending labels are yellow, and problem labels are red. Non-ready repositories
+also retain explicit suffixes such as `(dirty)`, `(missing)`, `(mismatch)`, and
+`(error)` in plain output. Removed labels are gray and use `(removed)`.
+Path-derived labels escape control characters and table delimiters before color
+is applied, preventing repository names from injecting terminal output.
+
+Status reads one consistent SQLite snapshot. It does not reconcile, recover an
+expired operation, run Git, inspect workspace files, or assert that an
+available workspace is currently reusable. Use `gc --dry-run` when the
+question is which workspaces currently satisfy reclamation checks.
+
 Configure the automatic workspace content directory independently from the
 lifecycle database:
 
@@ -185,6 +238,6 @@ See the [contributing guide](CONTRIBUTING.md) for the development workflow and t
 ## Current Scope
 
 The current CLI provides manual and automatic workspace creation, explicit
-acquire and release, configured automatic workspace roots, and time-bounded
-automatic GC. Branch selection, repair, and user-facing status or history
-commands are not part of the current command surface.
+acquire and release, read-only workspace status, configured automatic
+workspace roots, and time-bounded automatic GC. Branch selection, repair, and
+user-facing history commands are not part of the current command surface.

@@ -16,10 +16,11 @@ use crate::schema::{
 };
 
 use super::models::{
-    EventRow, NewEvent, NewManagedWorkspace, NewOperation, NewOperationLease, NewOriginRepository,
-    NewRepoWorktree, NewWorkspace, NewWorkspaceClaim, NewWorkspacePool, NewWorkspacePoolRepository,
-    OperationIntent, OperationLeaseRow, OperationRow, OriginRepositoryRow, RepoWorktreeRow,
-    WorkspaceClaimRow, WorkspacePoolRepositoryRow, WorkspacePoolRow, WorkspaceRow,
+    EventRow, LeasedOperation, NewEvent, NewManagedWorkspace, NewOperation, NewOperationLease,
+    NewOriginRepository, NewRepoWorktree, NewWorkspace, NewWorkspaceClaim, NewWorkspacePool,
+    NewWorkspacePoolRepository, OperationIntent, OperationLeaseRow, OperationRow,
+    OriginRepositoryRow, PoolOriginRepository, RepoWorktreeRow, WorkspaceClaimRow,
+    WorkspaceOpenSnapshot, WorkspacePoolRepositoryRow, WorkspacePoolRow, WorkspaceRow,
 };
 use super::transaction::{
     with_immediate_transaction, with_retrying_short_transaction, with_short_transaction,
@@ -121,6 +122,58 @@ pub fn find_workspace(
         .find(workspace_id)
         .select(WorkspaceRow::as_select())
         .first(connection)
+}
+
+pub fn find_workspace_open_snapshot(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+) -> QueryResult<Option<WorkspaceOpenSnapshot>> {
+    workspaces::table
+        .left_join(workspace_claims::table)
+        .left_join(operation_leases::table)
+        .filter(workspaces::id.eq(workspace_id))
+        .select((
+            WorkspaceRow::as_select(),
+            (
+                workspace_claims::id,
+                workspace_claims::workspace_id,
+                workspace_claims::claimed_at,
+            )
+                .nullable(),
+            (
+                operation_leases::id,
+                operation_leases::operation_id,
+                operation_leases::workspace_id,
+                operation_leases::lease_expires_at,
+            )
+                .nullable(),
+        ))
+        .first::<(
+            WorkspaceRow,
+            Option<(ClaimId, WorkspaceId, Timestamp)>,
+            Option<(LeaseId, OperationId, WorkspaceId, Timestamp)>,
+        )>(connection)
+        .optional()
+        .map(|row| {
+            row.map(
+                |(workspace, claim, operation_lease)| WorkspaceOpenSnapshot {
+                    workspace,
+                    claim: claim.map(|(id, workspace_id, claimed_at)| WorkspaceClaimRow {
+                        id,
+                        workspace_id,
+                        claimed_at,
+                    }),
+                    operation_lease: operation_lease.map(
+                        |(id, operation_id, workspace_id, lease_expires_at)| OperationLeaseRow {
+                            id,
+                            operation_id,
+                            workspace_id,
+                            lease_expires_at,
+                        },
+                    ),
+                },
+            )
+        })
 }
 
 pub fn find_origin_repository_by_identity(
@@ -269,6 +322,37 @@ pub fn list_workspace_pool_repositories(
         .load(connection)
 }
 
+pub fn list_current_automatic_pool_repositories(
+    connection: &mut SqliteConnection,
+) -> QueryResult<Vec<PoolOriginRepository>> {
+    workspace_pool_repositories::table
+        .inner_join(origin_repositories::table)
+        .inner_join(
+            workspaces::table
+                .on(workspaces::pool_id.eq(workspace_pool_repositories::pool_id.nullable())),
+        )
+        .filter(workspaces::management_mode.eq(WorkspaceManagementMode::Automatic))
+        .filter(workspaces::state.ne(WorkspaceState::Reclaimed))
+        .order((
+            workspace_pool_repositories::pool_id.asc(),
+            origin_repositories::source_path.asc(),
+        ))
+        .distinct()
+        .select((
+            workspace_pool_repositories::pool_id,
+            OriginRepositoryRow::as_select(),
+        ))
+        .load::<(PoolId, OriginRepositoryRow)>(connection)
+        .map(|rows| {
+            rows.into_iter()
+                .map(|(pool_id, repository)| PoolOriginRepository {
+                    pool_id,
+                    repository,
+                })
+                .collect()
+        })
+}
+
 pub fn list_automatic_workspace_candidates(
     connection: &mut SqliteConnection,
     pool_id: &PoolId,
@@ -289,6 +373,61 @@ pub fn list_automatic_workspaces(
         .filter(workspaces::management_mode.eq(WorkspaceManagementMode::Automatic))
         .order(workspaces::id.asc())
         .select(WorkspaceRow::as_select())
+        .load(connection)
+}
+
+pub fn list_current_automatic_workspaces(
+    connection: &mut SqliteConnection,
+) -> QueryResult<Vec<WorkspaceRow>> {
+    workspaces::table
+        .filter(workspaces::management_mode.eq(WorkspaceManagementMode::Automatic))
+        .filter(workspaces::state.ne(WorkspaceState::Reclaimed))
+        .filter(workspaces::pool_id.is_not_null())
+        .order((workspaces::pool_id.asc(), workspaces::id.asc()))
+        .select(WorkspaceRow::as_select())
+        .load(connection)
+}
+
+pub fn list_workspaces(
+    connection: &mut SqliteConnection,
+    include_reclaimed: bool,
+) -> QueryResult<Vec<WorkspaceRow>> {
+    let mut query = workspaces::table.into_boxed();
+    if !include_reclaimed {
+        query = query.filter(workspaces::state.ne(WorkspaceState::Reclaimed));
+    }
+    query
+        .order(workspaces::canonical_path.asc())
+        .select(WorkspaceRow::as_select())
+        .load(connection)
+}
+
+pub fn list_status_workspace_claims(
+    connection: &mut SqliteConnection,
+    include_reclaimed: bool,
+) -> QueryResult<Vec<WorkspaceClaimRow>> {
+    let mut query = workspace_claims::table
+        .inner_join(workspaces::table)
+        .into_boxed();
+    if !include_reclaimed {
+        query = query.filter(workspaces::state.ne(WorkspaceState::Reclaimed));
+    }
+    query
+        .order(workspace_claims::workspace_id.asc())
+        .select(WorkspaceClaimRow::as_select())
+        .load(connection)
+}
+
+pub fn list_current_automatic_workspace_claims(
+    connection: &mut SqliteConnection,
+) -> QueryResult<Vec<WorkspaceClaimRow>> {
+    workspace_claims::table
+        .inner_join(workspaces::table)
+        .filter(workspaces::management_mode.eq(WorkspaceManagementMode::Automatic))
+        .filter(workspaces::state.ne(WorkspaceState::Reclaimed))
+        .filter(workspaces::pool_id.is_not_null())
+        .order(workspace_claims::workspace_id.asc())
+        .select(WorkspaceClaimRow::as_select())
         .load(connection)
 }
 
@@ -730,6 +869,36 @@ pub fn list_repo_worktrees(
         .load(connection)
 }
 
+pub fn list_status_repo_worktrees(
+    connection: &mut SqliteConnection,
+    include_reclaimed: bool,
+) -> QueryResult<Vec<RepoWorktreeRow>> {
+    let mut query = repo_worktrees::table
+        .inner_join(origin_repositories::table)
+        .inner_join(workspaces::table.on(workspaces::id.eq(repo_worktrees::workspace_id)))
+        .into_boxed();
+    if !include_reclaimed {
+        query = query.filter(workspaces::state.ne(WorkspaceState::Reclaimed));
+    }
+    query
+        .order((
+            repo_worktrees::workspace_id.asc(),
+            repo_worktrees::worktree_path.asc(),
+        ))
+        .select((
+            repo_worktrees::id,
+            repo_worktrees::workspace_id,
+            origin_repositories::id,
+            origin_repositories::repository_identity,
+            origin_repositories::source_path,
+            repo_worktrees::worktree_path,
+            repo_worktrees::state,
+            repo_worktrees::last_head,
+            repo_worktrees::last_observed_at,
+        ))
+        .load(connection)
+}
+
 pub fn insert_operation(
     connection: &mut SqliteConnection,
     value: &NewOperation,
@@ -765,6 +934,66 @@ pub fn find_operation_lease(
         .select(OperationLeaseRow::as_select())
         .first(connection)
         .optional()
+}
+
+pub fn list_current_automatic_operation_leases(
+    connection: &mut SqliteConnection,
+) -> QueryResult<Vec<OperationLeaseRow>> {
+    operation_leases::table
+        .inner_join(workspaces::table)
+        .filter(workspaces::management_mode.eq(WorkspaceManagementMode::Automatic))
+        .filter(workspaces::state.ne(WorkspaceState::Reclaimed))
+        .filter(workspaces::pool_id.is_not_null())
+        .order(operation_leases::workspace_id.asc())
+        .select(OperationLeaseRow::as_select())
+        .load(connection)
+}
+
+pub fn list_status_leased_operations(
+    connection: &mut SqliteConnection,
+    include_reclaimed: bool,
+) -> QueryResult<Vec<LeasedOperation>> {
+    let mut query = operation_leases::table
+        .inner_join(operations::table)
+        .inner_join(workspaces::table.on(workspaces::id.eq(operation_leases::workspace_id)))
+        .into_boxed();
+    if !include_reclaimed {
+        query = query.filter(workspaces::state.ne(WorkspaceState::Reclaimed));
+    }
+    query
+        .order(operation_leases::workspace_id.asc())
+        .select((OperationLeaseRow::as_select(), OperationRow::as_select()))
+        .load::<(OperationLeaseRow, OperationRow)>(connection)
+        .map(|rows| {
+            rows.into_iter()
+                .map(|(lease, operation)| LeasedOperation { operation, lease })
+                .collect()
+        })
+}
+
+pub fn list_status_operation_events(
+    connection: &mut SqliteConnection,
+    include_reclaimed: bool,
+) -> QueryResult<Vec<EventRow>> {
+    let mut query = lifecycle_events::table
+        .inner_join(
+            operation_leases::table
+                .on(operation_leases::operation_id.eq(lifecycle_events::operation_id)),
+        )
+        .inner_join(workspaces::table.on(workspaces::id.eq(operation_leases::workspace_id)))
+        .into_boxed();
+    if !include_reclaimed {
+        query = query.filter(workspaces::state.ne(WorkspaceState::Reclaimed));
+    }
+    query
+        .filter(lifecycle_events::entity_type.eq("operation"))
+        .order((
+            lifecycle_events::operation_id.asc(),
+            lifecycle_events::occurred_at.desc(),
+            lifecycle_events::event_id.desc(),
+        ))
+        .select(EventRow::as_select())
+        .load(connection)
 }
 
 /// Loads the current unexpired lease addressed by its lease token.

@@ -123,6 +123,12 @@ pub struct WorkspacePoolRepositoryRow {
     pub repository_id: OriginRepositoryId,
 }
 
+#[derive(Debug, Clone)]
+pub struct PoolOriginRepository {
+    pub pool_id: PoolId,
+    pub repository: OriginRepositoryRow,
+}
+
 #[derive(Debug, Insertable)]
 #[diesel(table_name = workspace_pool_repositories)]
 /// Inserts one explicit pool-to-origin relationship.
@@ -159,6 +165,13 @@ pub struct WorkspaceClaimRow {
     pub id: ClaimId,
     pub workspace_id: WorkspaceId,
     pub claimed_at: Timestamp,
+}
+
+#[derive(Debug)]
+pub struct WorkspaceOpenSnapshot {
+    pub workspace: WorkspaceRow,
+    pub claim: Option<WorkspaceClaimRow>,
+    pub operation_lease: Option<OperationLeaseRow>,
 }
 
 #[derive(Debug, Insertable)]
@@ -261,6 +274,13 @@ pub struct NewOperationLease {
 /// The operation fact and current lease used by recovery checks.
 #[derive(Debug, Clone)]
 pub struct RunningOperation {
+    pub operation: OperationRow,
+    pub lease: OperationLeaseRow,
+}
+
+/// An operation fact paired with its retained current lease.
+#[derive(Debug, Clone)]
+pub struct LeasedOperation {
     pub operation: OperationRow,
     pub lease: OperationLeaseRow,
 }

@@ -20,6 +20,8 @@ pub enum Command {
     Release(ReleaseArgs),
     Config(ConfigArgs),
     Gc(GcArgs),
+    Status(StatusArgs),
+    Open(OpenArgs),
     Codex(CodexArgs),
 }
 
@@ -96,6 +98,33 @@ pub struct GcArgs {
 
     #[arg(long)]
     pub force: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct StatusArgs {
+    #[arg(long, value_enum, default_value_t = StatusView::Pools)]
+    pub view: StatusView,
+
+    #[arg(long, help = "Include reclaimed records in the workspace view")]
+    pub all: bool,
+
+    #[arg(long, help = "Print the workspace status snapshot as JSON")]
+    pub json: bool,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
+pub enum StatusView {
+    Pools,
+    Workspaces,
+}
+
+#[derive(Debug, Args)]
+pub struct OpenArgs {
+    #[arg(value_name = "WORKSPACE_ID")]
+    pub workspace_id: crate::domain::WorkspaceId,
+
+    #[arg(long, value_name = "PROGRAM", require_equals = true)]
+    pub program: Option<OsString>,
 }
 
 #[derive(Debug, Args)]
@@ -344,6 +373,54 @@ mod tests {
         assert!(arguments.dry_run);
         assert!(arguments.yes);
         assert!(arguments.force);
+    }
+
+    #[test]
+    fn parses_status_output_and_reclaimed_filters() {
+        let cli =
+            Cli::try_parse_from(["trees", "status", "--view", "workspaces", "--all", "--json"])
+                .expect("status command should parse");
+
+        let Command::Status(arguments) = cli.command else {
+            panic!("expected status command");
+        };
+        assert_eq!(arguments.view, StatusView::Workspaces);
+        assert!(arguments.all);
+        assert!(arguments.json);
+    }
+
+    #[test]
+    fn defaults_status_to_the_pool_view() {
+        let cli = Cli::try_parse_from(["trees", "status"]).expect("status command should parse");
+
+        let Command::Status(arguments) = cli.command else {
+            panic!("expected status command");
+        };
+        assert_eq!(arguments.view, StatusView::Pools);
+        assert!(!arguments.all);
+    }
+
+    #[test]
+    fn parses_workspace_open_with_an_explicit_program() {
+        let workspace_id = crate::domain::WorkspaceId::new();
+        let cli = Cli::try_parse_from([
+            "trees".to_owned(),
+            "open".to_owned(),
+            workspace_id.to_string(),
+            "--program=/usr/bin/env".to_owned(),
+        ])
+        .expect("open command should parse");
+
+        let Command::Open(arguments) = cli.command else {
+            panic!("expected open command");
+        };
+        assert_eq!(arguments.workspace_id, workspace_id);
+        assert_eq!(arguments.program, Some(OsString::from("/usr/bin/env")));
+    }
+
+    #[test]
+    fn rejects_an_invalid_workspace_open_identifier() {
+        assert!(Cli::try_parse_from(["trees", "open", "invalid"]).is_err());
     }
 
     #[test]
