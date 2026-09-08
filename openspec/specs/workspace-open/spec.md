@@ -1,4 +1,4 @@
-# workspace-open Specification
+# Workspace Open Specification
 
 ## Purpose
 

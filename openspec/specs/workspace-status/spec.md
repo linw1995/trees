@@ -1,4 +1,4 @@
-# workspace-status Specification
+# Workspace Status Specification
 
 ## Purpose
 
