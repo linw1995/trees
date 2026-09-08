@@ -79,8 +79,7 @@ meaning independently from color.
 
 The human workspace view contains these columns:
 
-- `STATE`: persisted workspace health.
-- `USAGE`: `claimed` or `unclaimed`.
+- `STATUS`: persisted workspace health followed by `claimed` or `unclaimed`.
 - `MODE`: `🤖` for automatic or `👤` for manual.
 - `REPOS`: attached repo worktrees over total repo-worktree count followed by
   shortest unique repository labels.
@@ -95,6 +94,17 @@ spacing is not a machine-readable compatibility contract.
 For workspace `REPOS`, the attached count is presented as the ready count. On
 an interactive terminal, ready and total are green and blue. Non-terminal
 output and `NO_COLOR` use the same `<ready>/<total>` value without ANSI escapes.
+
+Each repository label uses its persisted repo-worktree state. Ready labels are
+green without a suffix. Pending labels are yellow with `(pending)`. Dirty,
+missing, diverged, and failed labels are red with `(dirty)`, `(missing)`,
+`(mismatch)`, and `(error)`. Reclaimed labels are gray with `(removed)`.
+Non-terminal output retains these suffixes without color, so color is never the
+only indication of a problem.
+
+`STATUS` uses `<state>/<usage>`, such as `ready/claimed` or
+`degraded/unclaimed`. The JSON workspace projection remains normalized with
+separate state and claim fields.
 
 ### Emit View-Specific Versioned JSON
 

@@ -68,3 +68,10 @@
 - [x] 9.1 Color ready and total repo counts in the workspace view under the
   existing terminal-aware color policy
 - [x] 9.2 Update tests and documentation, then rerun the complete quality gates
+
+## 10. Workspace Status and Repo Labels
+
+- [ ] 10.1 Merge workspace state and usage into one status column
+- [ ] 10.2 Color repo labels by state and append friendly suffixes to non-ready
+  repositories
+- [ ] 10.3 Update tests and documentation, then rerun the complete quality gates

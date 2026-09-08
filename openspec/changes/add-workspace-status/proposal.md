@@ -20,6 +20,9 @@ not answer this capacity-planning question directly.
   interactive terminals while preserving plain output for pipelines.
 - Color ready and total repo-worktree counts green and blue in the workspace
   detail view under the same terminal policy.
+- Color each workspace repository label by its persisted state and append a
+  friendly state suffix to non-ready labels.
+- Merge workspace health and claim usage into one compact `STATUS` column.
 - Emit a versioned JSON document matching the selected view.
 - Keep status observational: it does not reconcile, recover, acquire, release,
   run Git, inspect the filesystem, or append lifecycle events.

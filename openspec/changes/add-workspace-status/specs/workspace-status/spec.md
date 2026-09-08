@@ -88,14 +88,22 @@ without ANSI escapes. The order SHALL define the meaning independently from
 color. `UPDATED` SHALL be the greatest `updated_at` among current capacity
 slots.
 
-The workspace human view SHALL render `STATE`, `USAGE`, `MODE`, `REPOS`,
-`RECONCILED`, and `PATH`. It SHALL omit current operation details. Workspace
-`MODE` SHALL render as `🤖` for automatic and `👤` for manual. Workspace `REPOS`
-SHALL render attached repo-worktree count over total count followed by shortest
-unique source-path labels. The attached count SHALL be presented as ready. On
-an interactive terminal, ready and total SHALL be green and blue. With
-non-terminal standard output or `NO_COLOR`, status SHALL emit the same
-`<ready>/<total>` value without ANSI escapes.
+The workspace human view SHALL render `STATUS`, `MODE`, `REPOS`, `RECONCILED`,
+and `PATH`. `STATUS` SHALL combine persisted workspace health and claim usage
+as `<state>/<claimed|unclaimed>`. It SHALL omit current operation details.
+Workspace `MODE` SHALL render as `🤖` for automatic and `👤` for manual.
+Workspace `REPOS` SHALL render attached repo-worktree count over total count
+followed by shortest unique source-path labels. The attached count SHALL be
+presented as ready. On an interactive terminal, ready and total SHALL be green
+and blue. With non-terminal standard output or `NO_COLOR`, status SHALL emit
+the same `<ready>/<total>` value without ANSI escapes.
+
+Each repository label SHALL reflect its persisted state. Attached labels SHALL
+be green without a suffix. Pending labels SHALL be yellow with `(pending)`.
+Dirty, missing, diverged, and failed labels SHALL be red with `(dirty)`,
+`(missing)`, `(mismatch)`, and `(error)` respectively. Reclaimed labels SHALL
+be gray with `(removed)`. Non-terminal output and `NO_COLOR` SHALL retain the
+same suffixes without ANSI escapes.
 
 Missing times SHALL render as `never`. Relative to `snapshot_at` in UTC, times
 SHALL render as `HH:MM` on the same date, `MM-DD HH:MM` within the same year,
@@ -120,6 +128,17 @@ spacing SHALL NOT be a machine-readable contract.
 - **WHEN** workspace status writes to an interactive terminal and two of three
   repo worktrees are attached
 - **THEN** `REPOS` renders `2/3` with `2` green and `3` blue
+
+#### Scenario: Identify a Problem Repository
+
+- **WHEN** one workspace repository is dirty
+- **THEN** its label is red on an interactive terminal and carries a `(dirty)`
+  suffix in colored and plain output
+
+#### Scenario: Merge Workspace State and Usage
+
+- **WHEN** a ready workspace has an active claim
+- **THEN** its human `STATUS` value is `ready/claimed`
 
 ### Requirement: Provide View-Specific Versioned JSON
 
