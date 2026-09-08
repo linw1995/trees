@@ -81,7 +81,8 @@ Human output contains one row per workspace with these columns:
 - `STATE`: persisted workspace health.
 - `USAGE`: `claimed` or `unclaimed`.
 - `MODE`: `🤖` for automatic or `👤` for manual.
-- `REPOS`: attached repo worktrees over total repo-worktree capacity.
+- `REPOS`: attached repo worktrees over total capacity, followed by compact
+  repository names.
 - `RECONCILED`: a compact UTC timestamp relative to `snapshot_at`, or `never`.
 - `PATH`: canonical workspace path.
 
@@ -91,7 +92,15 @@ the complete current operation projection for diagnostics and automation.
 
 `REPOS` uses `<available>/<capacity>`, where `available` counts repo worktrees
 whose persisted state is `attached`, and `capacity` counts all managed repo
-worktrees. This is persisted availability rather than a fresh Git assertion.
+worktrees. The counts are followed by comma-separated repository labels. This
+is persisted availability rather than a fresh Git assertion.
+
+Each repository label starts with the base name of its persisted `source_path`.
+When labels conflict within one workspace, only the conflicting labels expand
+by one parent component at a time until every label is unique. For example,
+`/teams/one/api` and `/teams/two/api` render as `one/api` and `two/api`; deeper
+conflicts continue expanding toward the path root. Repository order remains
+the deterministic repo-worktree order used by the snapshot.
 
 `RECONCILED` renders `HH:MM` when its UTC date matches `snapshot_at`,
 `MM-DD HH:MM` within the same UTC year, and `YYYY-MM-DD HH:MM` otherwise. The

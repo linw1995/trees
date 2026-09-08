@@ -31,3 +31,10 @@
   mode
 - [x] 4.2 Update rendering and integration tests, refresh documentation, and
   rerun the complete quality gates
+
+## 5. Repository Labels
+
+- [ ] 5.1 Append deterministic shortest-unique source-path suffixes to the
+  availability and capacity summary
+- [ ] 5.2 Cover base-name conflicts and recursive parent expansion, update
+  documentation, and rerun the complete quality gates

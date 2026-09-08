@@ -18,6 +18,8 @@ recent workspaces as a general inventory.
   repo-worktree data in versioned JSON.
 - Keep human output compact by omitting current operations, shortening
   timestamps, and representing automatic and manual modes with emoji.
+- Show repo names beside availability and capacity, using the shortest unique
+  source-path suffix within each workspace.
 - Exclude reclaimed workspace tombstones by default and include them with
   `--all`.
 - Keep status observational: it does not reconcile, recover, acquire, release,

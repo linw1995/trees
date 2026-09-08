@@ -94,8 +94,16 @@ them in JSON. Management mode SHALL render as `🤖` for `automatic` and `👤` 
 
 Repo availability SHALL count repo worktrees whose persisted state is
 `attached`; capacity SHALL count all managed repo worktrees. The value SHALL
-use `<available>/<capacity>`. It SHALL represent persisted state and SHALL NOT
-imply a fresh Git observation.
+start with `<available>/<capacity>`. It SHALL represent persisted state and
+SHALL NOT imply a fresh Git observation.
+
+The count SHALL be followed by comma-separated repository labels derived from
+persisted source paths. Each label SHALL use the shortest path suffix that is
+unique among repositories in that workspace. Labels SHALL begin as the source
+path base name. When two or more labels conflict, only those labels SHALL expand
+by one parent component and SHALL continue expanding toward the root until
+they are unique. Labels SHALL retain deterministic repo-worktree order. A
+workspace with no repo worktrees SHALL render only `0/0`.
 
 Missing reconciliation time SHALL render as `never`. Relative to the snapshot
 time in UTC, reconciliation time SHALL render as `HH:MM` on the same date,
@@ -109,6 +117,18 @@ machine-readable compatibility contract.
 - **WHEN** a workspace has attached, dirty, and missing repo worktrees
 - **THEN** its human row reports attached count over total count without hiding
   the workspace health state
+
+#### Scenario: Display Repository Base Names
+
+- **WHEN** every source repository base name in a workspace is unique
+- **THEN** the repo summary displays those base names after availability and
+  capacity
+
+#### Scenario: Expand Conflicting Repository Labels
+
+- **WHEN** two source repositories have the same base name
+- **THEN** their labels add parent components until each label is unique while
+  unrelated unique labels remain at their shortest suffix
 
 #### Scenario: Shorten a Reconciliation Time from Today
 
