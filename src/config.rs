@@ -1,24 +1,21 @@
-use std::fmt;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use crate::paths;
+use snafu::{ResultExt, Snafu};
 
 const WORKSPACES_DIR_KEY: &str = "workspaces_dir";
 
 pub fn workspaces_directory() -> Result<PathBuf, ConfigError> {
-    let configuration_path =
-        paths::configuration_path().map_err(|error| ConfigError::Path(error.to_string()))?;
+    let configuration_path = paths::configuration_path().context(PathSnafu)?;
     let table = load_table(&configuration_path)?;
-    let default = paths::default_managed_workspace_directory()
-        .map_err(|error| ConfigError::Path(error.to_string()))?;
+    let default = paths::default_managed_workspace_directory().context(PathSnafu)?;
     let default = normalize_existing_path(&configuration_path, default)?;
     configured_workspaces_directory(&configuration_path, &table, default)
 }
 
 pub fn set_workspaces_directory(path: &Path) -> Result<PathBuf, ConfigError> {
-    let configuration_path =
-        paths::configuration_path().map_err(|error| ConfigError::Path(error.to_string()))?;
+    let configuration_path = paths::configuration_path().context(PathSnafu)?;
     set_workspaces_directory_at(&configuration_path, path)
 }
 
@@ -78,19 +75,12 @@ fn set_workspaces_directory_at(
             path: configuration_path.to_owned(),
             reason: "configuration path has no parent directory".to_owned(),
         })?;
-    fs::create_dir_all(parent).map_err(|source| ConfigError::Io {
-        path: parent.to_owned(),
-        source,
+    fs::create_dir_all(parent).context(IoSnafu { path: parent })?;
+    let document = toml::to_string_pretty(&toml::Value::Table(table)).context(SerializeSnafu {
+        path: configuration_path,
     })?;
-    let document = toml::to_string_pretty(&toml::Value::Table(table)).map_err(|source| {
-        ConfigError::Serialize {
-            path: configuration_path.to_owned(),
-            source,
-        }
-    })?;
-    fs::write(configuration_path, document).map_err(|source| ConfigError::Io {
-        path: configuration_path.to_owned(),
-        source,
+    fs::write(configuration_path, document).context(IoSnafu {
+        path: configuration_path,
     })?;
     Ok(resolved)
 }
@@ -108,10 +98,7 @@ fn load_table(path: &Path) -> Result<toml::Table, ConfigError> {
             });
         }
     };
-    let value = toml::from_str::<toml::Value>(&document).map_err(|source| ConfigError::Parse {
-        path: path.to_owned(),
-        source,
-    })?;
+    let value = toml::from_str::<toml::Value>(&document).context(ParseSnafu { path })?;
     value
         .as_table()
         .cloned()
@@ -137,9 +124,8 @@ fn normalize_existing_path(
     path: PathBuf,
 ) -> Result<PathBuf, ConfigError> {
     if path.exists() {
-        fs::canonicalize(&path).map_err(|source| ConfigError::Io {
-            path: configuration_path.to_owned(),
-            source,
+        fs::canonicalize(&path).context(IoSnafu {
+            path: configuration_path,
         })
     } else {
         Ok(path)
@@ -162,72 +148,27 @@ fn normalize_path(path: PathBuf) -> PathBuf {
     normalized
 }
 
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
 pub enum ConfigError {
-    Path(String),
+    #[snafu(display("failed to resolve configuration path: {source}"))]
+    Path { source: paths::PathError },
+    #[snafu(display("configuration filesystem operation failed for {}: {source}", path.display()))]
     Io {
         path: PathBuf,
         source: std::io::Error,
     },
+    #[snafu(display("failed to parse configuration {}: {source}", path.display()))]
     Parse {
         path: PathBuf,
         source: toml::de::Error,
     },
+    #[snafu(display("failed to serialize configuration {}: {source}", path.display()))]
     Serialize {
         path: PathBuf,
         source: toml::ser::Error,
     },
-    Invalid {
-        path: PathBuf,
-        reason: String,
-    },
-}
-
-impl fmt::Display for ConfigError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Path(error) => write!(formatter, "failed to resolve configuration path: {error}"),
-            Self::Io { path, source } => {
-                write!(
-                    formatter,
-                    "configuration filesystem operation failed for {}: {source}",
-                    path.display()
-                )
-            }
-            Self::Parse { path, source } => {
-                write!(
-                    formatter,
-                    "failed to parse configuration {}: {source}",
-                    path.display()
-                )
-            }
-            Self::Serialize { path, source } => {
-                write!(
-                    formatter,
-                    "failed to serialize configuration {}: {source}",
-                    path.display()
-                )
-            }
-            Self::Invalid { path, reason } => {
-                write!(
-                    formatter,
-                    "invalid configuration {}: {reason}",
-                    path.display()
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for ConfigError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Io { source, .. } => Some(source),
-            Self::Parse { source, .. } => Some(source),
-            Self::Serialize { source, .. } => Some(source),
-            Self::Path(_) | Self::Invalid { .. } => None,
-        }
-    }
+    #[snafu(display("invalid configuration {}: {reason}", path.display()))]
+    Invalid { path: PathBuf, reason: String },
 }
 
 #[cfg(test)]
@@ -294,7 +235,9 @@ mod tests {
         let parse_source = toml::from_str::<toml::Value>("[").expect_err("TOML should be invalid");
         let serialize_source = toml::to_string(&f64::NAN).expect_err("NaN should not serialize");
         let errors = [
-            ConfigError::Path("path unavailable".to_owned()),
+            ConfigError::Path {
+                source: paths::PathError::HomeDirectoryUnavailable,
+            },
             ConfigError::Io {
                 path: path.clone(),
                 source: std::io::Error::other("read failed"),

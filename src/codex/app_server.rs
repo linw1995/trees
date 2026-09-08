@@ -1,5 +1,4 @@
 use std::collections::VecDeque;
-use std::fmt;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
@@ -9,6 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
+use snafu::{ResultExt, Snafu};
 
 const STDERR_TAIL_BYTES: usize = 8 * 1024;
 
@@ -44,19 +44,25 @@ impl AppServerProcess {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|source| AppServerError::Spawn { executable, source })?;
+            .context(SpawnSnafu { executable })?;
 
         let stdin = child.stdin.take().ok_or_else(|| {
             let _ = child.kill();
-            AppServerError::Transport("app-server standard input was not piped".to_owned())
+            AppServerError::Transport {
+                message: "app-server standard input was not piped".to_owned(),
+            }
         })?;
         let stdout = child.stdout.take().ok_or_else(|| {
             let _ = child.kill();
-            AppServerError::Transport("app-server standard output was not piped".to_owned())
+            AppServerError::Transport {
+                message: "app-server standard output was not piped".to_owned(),
+            }
         })?;
         let stderr = child.stderr.take().ok_or_else(|| {
             let _ = child.kill();
-            AppServerError::Transport("app-server standard error was not piped".to_owned())
+            AppServerError::Transport {
+                message: "app-server standard error was not piped".to_owned(),
+            }
         })?;
 
         let (line_sender, line_receiver) = mpsc::channel();
@@ -93,7 +99,7 @@ impl AppServerProcess {
         let deadline = Instant::now() + timeout;
 
         loop {
-            if let Some(status) = self.child.try_wait().map_err(AppServerError::Io)? {
+            if let Some(status) = self.child.try_wait().context(IoSnafu)? {
                 return Ok(status);
             }
             if Instant::now() >= deadline {
@@ -152,11 +158,7 @@ impl<W: Write> JsonRpcSession<W> {
         loop {
             let line = self.receive_line(method, deadline)?;
             let message: Value =
-                serde_json::from_str(&line).map_err(|source| AppServerError::MalformedMessage {
-                    method: method.to_owned(),
-                    line,
-                    source,
-                })?;
+                serde_json::from_str(&line).context(MalformedMessageSnafu { method, line })?;
 
             if message.get("id").and_then(Value::as_u64) != Some(id) {
                 if message.get("method").is_some() && message.get("id").is_some() {
@@ -190,10 +192,12 @@ impl<W: Write> JsonRpcSession<W> {
         let writer = self
             .writer
             .as_mut()
-            .ok_or_else(|| AppServerError::Transport("app-server input is closed".to_owned()))?;
-        serde_json::to_writer(&mut *writer, &message).map_err(AppServerError::Json)?;
-        writer.write_all(b"\n").map_err(AppServerError::Io)?;
-        writer.flush().map_err(AppServerError::Io)
+            .ok_or_else(|| AppServerError::Transport {
+                message: "app-server input is closed".to_owned(),
+            })?;
+        serde_json::to_writer(&mut *writer, &message).context(JsonSnafu)?;
+        writer.write_all(b"\n").context(IoSnafu)?;
+        writer.flush().context(IoSnafu)
     }
 
     fn receive_line(&self, method: &str, deadline: Instant) -> Result<String, AppServerError> {
@@ -206,13 +210,13 @@ impl<W: Write> JsonRpcSession<W> {
 
         match self.lines.recv_timeout(remaining) {
             Ok(Ok(line)) => Ok(line),
-            Ok(Err(error)) => Err(AppServerError::Io(error)),
+            Ok(Err(source)) => Err(AppServerError::Io { source }),
             Err(RecvTimeoutError::Timeout) => Err(AppServerError::Timeout {
                 method: method.to_owned(),
             }),
-            Err(RecvTimeoutError::Disconnected) => Err(AppServerError::Transport(
-                "app-server output reader disconnected".to_owned(),
-            )),
+            Err(RecvTimeoutError::Disconnected) => Err(AppServerError::Transport {
+                message: "app-server output reader disconnected".to_owned(),
+            }),
         }
     }
 
@@ -296,87 +300,43 @@ fn spawn_stderr_reader(stderr: impl Read + Send + 'static, tail: StderrTail) {
     });
 }
 
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
 pub enum AppServerError {
+    #[snafu(display("failed to start {}: {source}", executable.display()))]
     Spawn {
         executable: PathBuf,
         source: io::Error,
     },
-    Io(io::Error),
-    Json(serde_json::Error),
+    #[snafu(display("app-server IO failed: {source}"))]
+    Io { source: io::Error },
+    #[snafu(display("failed to encode app-server request: {source}"))]
+    Json { source: serde_json::Error },
+    #[snafu(display("app-server returned malformed JSON for {method}: {source}: {line}"))]
     MalformedMessage {
         method: String,
         line: String,
         source: serde_json::Error,
     },
-    Remote {
-        method: String,
-        error: String,
-    },
-    Timeout {
-        method: String,
-    },
-    Transport(String),
-    UnexpectedServerRequest {
-        method: String,
-    },
-    ShutdownTimeout {
-        stderr: String,
-    },
+    #[snafu(display("app-server rejected {method}: {error}"))]
+    Remote { method: String, error: String },
+    #[snafu(display("app-server request timed out: {method}"))]
+    Timeout { method: String },
+    #[snafu(display("app-server transport failed: {message}"))]
+    Transport { message: String },
+    #[snafu(display("app-server sent unsupported setup request: {method}"))]
+    UnexpectedServerRequest { method: String },
+    #[snafu(display(
+        "app-server did not exit after standard input closed{}",
+        shutdown_timeout_suffix(stderr)
+    ))]
+    ShutdownTimeout { stderr: String },
 }
 
-impl fmt::Display for AppServerError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Spawn { executable, source } => {
-                write!(
-                    formatter,
-                    "failed to start {}: {source}",
-                    executable.display()
-                )
-            }
-            Self::Io(error) => write!(formatter, "app-server IO failed: {error}"),
-            Self::Json(error) => write!(formatter, "failed to encode app-server request: {error}"),
-            Self::MalformedMessage {
-                method,
-                line,
-                source,
-            } => write!(
-                formatter,
-                "app-server returned malformed JSON for {method}: {source}: {line}"
-            ),
-            Self::Remote { method, error } => {
-                write!(formatter, "app-server rejected {method}: {error}")
-            }
-            Self::Timeout { method } => write!(formatter, "app-server request timed out: {method}"),
-            Self::Transport(error) => write!(formatter, "app-server transport failed: {error}"),
-            Self::UnexpectedServerRequest { method } => write!(
-                formatter,
-                "app-server sent unsupported setup request: {method}"
-            ),
-            Self::ShutdownTimeout { stderr } => {
-                if stderr.is_empty() {
-                    formatter.write_str("app-server did not exit after standard input closed")
-                } else {
-                    write!(
-                        formatter,
-                        "app-server did not exit after standard input closed: {stderr}"
-                    )
-                }
-            }
-        }
-    }
-}
-
-impl std::error::Error for AppServerError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Spawn { source, .. } => Some(source),
-            Self::Io(error) => Some(error),
-            Self::Json(error) => Some(error),
-            Self::MalformedMessage { source, .. } => Some(source),
-            _ => None,
-        }
+fn shutdown_timeout_suffix(stderr: &str) -> String {
+    if stderr.is_empty() {
+        String::new()
+    } else {
+        format!(": {stderr}")
     }
 }
 
@@ -470,10 +430,13 @@ mod tests {
                 executable: PathBuf::from("codex"),
                 source: io::Error::new(io::ErrorKind::NotFound, "missing"),
             },
-            AppServerError::Io(io::Error::new(io::ErrorKind::BrokenPipe, "closed")),
-            AppServerError::Json(
-                serde_json::from_str::<Value>("not-json").expect_err("JSON should be invalid"),
-            ),
+            AppServerError::Io {
+                source: io::Error::new(io::ErrorKind::BrokenPipe, "closed"),
+            },
+            AppServerError::Json {
+                source: serde_json::from_str::<Value>("not-json")
+                    .expect_err("JSON should be invalid"),
+            },
             AppServerError::MalformedMessage {
                 method: "initialize".to_owned(),
                 line: "not-json".to_owned(),
@@ -487,7 +450,9 @@ mod tests {
             AppServerError::Timeout {
                 method: "initialize".to_owned(),
             },
-            AppServerError::Transport("closed".to_owned()),
+            AppServerError::Transport {
+                message: "closed".to_owned(),
+            },
             AppServerError::UnexpectedServerRequest {
                 method: "thread/start".to_owned(),
             },

@@ -1,8 +1,9 @@
 use std::env;
-use std::fmt;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
+
+use snafu::{ResultExt, Snafu};
 
 use crate::domain::WorkspaceId;
 
@@ -11,29 +12,16 @@ const DATABASE_NAME: &str = "db.sqlite";
 const CONFIGURATION_FILE_NAME: &str = "config.toml";
 const WORKSPACES_DIRECTORY_NAME: &str = "workspaces";
 
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
 pub enum PathError {
+    #[snafu(display("the user home directory is unavailable"))]
     HomeDirectoryUnavailable,
-    Configuration(String),
+    #[snafu(display("the workspace directory configuration is invalid: {source}"))]
+    Configuration {
+        #[snafu(source(from(crate::config::ConfigError, Box::new)))]
+        source: Box<crate::config::ConfigError>,
+    },
 }
-
-impl fmt::Display for PathError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::HomeDirectoryUnavailable => {
-                formatter.write_str("the user home directory is unavailable")
-            }
-            Self::Configuration(error) => {
-                write!(
-                    formatter,
-                    "the workspace directory configuration is invalid: {error}"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for PathError {}
 
 pub fn state_directory() -> Result<PathBuf, PathError> {
     Ok(platform_state_base_impl()?.join(APPLICATION_NAME))
@@ -44,8 +32,7 @@ pub fn database_path() -> Result<PathBuf, PathError> {
 }
 
 pub fn managed_workspace_directory() -> Result<PathBuf, PathError> {
-    crate::config::workspaces_directory()
-        .map_err(|error| PathError::Configuration(error.to_string()))
+    crate::config::workspaces_directory().context(ConfigurationSnafu)
 }
 
 pub fn default_managed_workspace_directory() -> Result<PathBuf, PathError> {
@@ -76,63 +63,23 @@ pub fn generated_workspace_path_below(
 
 pub fn ensure_state_directory() -> Result<PathBuf, StateDirectoryError> {
     let path = state_directory()?;
-    if let Err(source) = fs::create_dir_all(&path) {
-        return Err(StateDirectoryError {
-            kind: StateDirectoryErrorKind::Io { path, source },
-        });
-    }
+    fs::create_dir_all(&path).context(IoSnafu { path: &path })?;
 
     Ok(path)
 }
 
-#[derive(Debug)]
-pub struct StateDirectoryError {
-    kind: StateDirectoryErrorKind,
+#[derive(Debug, Snafu)]
+pub enum StateDirectoryError {
+    #[snafu(transparent)]
+    Path { source: PathError },
+    #[snafu(display("failed to create state directory {}: {source}", path.display()))]
+    Io { path: PathBuf, source: io::Error },
 }
 
 impl StateDirectoryError {
     #[cfg(test)]
     pub(crate) fn new(path: PathBuf, source: io::Error) -> Self {
-        Self {
-            kind: StateDirectoryErrorKind::Io { path, source },
-        }
-    }
-}
-
-#[derive(Debug)]
-enum StateDirectoryErrorKind {
-    Path(PathError),
-    Io { path: PathBuf, source: io::Error },
-}
-
-impl fmt::Display for StateDirectoryError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.kind {
-            StateDirectoryErrorKind::Path(error) => error.fmt(formatter),
-            StateDirectoryErrorKind::Io { path, source } => write!(
-                formatter,
-                "failed to create state directory {}: {}",
-                path.display(),
-                source
-            ),
-        }
-    }
-}
-
-impl std::error::Error for StateDirectoryError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match &self.kind {
-            StateDirectoryErrorKind::Path(error) => Some(error),
-            StateDirectoryErrorKind::Io { source, .. } => Some(source),
-        }
-    }
-}
-
-impl From<PathError> for StateDirectoryError {
-    fn from(error: PathError) -> Self {
-        Self {
-            kind: StateDirectoryErrorKind::Path(error),
-        }
+        Self::Io { path, source }
     }
 }
 

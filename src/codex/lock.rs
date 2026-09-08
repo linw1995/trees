@@ -1,9 +1,9 @@
-use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
+use snafu::{ResultExt, Snafu};
 
 use crate::paths::{self, StateDirectoryError};
 use crate::validation::{self, ValidationError};
@@ -15,10 +15,8 @@ pub struct WorkspaceLock {
 
 impl WorkspaceLock {
     pub fn acquire(workspace_path: &Path) -> Result<Self, WorkspaceLockError> {
-        let workspace_path = validation::resolve_workspace_path(workspace_path)
-            .map_err(WorkspaceLockError::Validation)?;
-        let state_directory =
-            paths::ensure_state_directory().map_err(WorkspaceLockError::StateDirectory)?;
+        let workspace_path = validation::resolve_workspace_path(workspace_path)?;
+        let state_directory = paths::ensure_state_directory()?;
         let lock_path = state_directory.join(lock_file_name(&workspace_path.into_path_buf()));
         Self::acquire_at(lock_path)
     }
@@ -30,13 +28,12 @@ impl WorkspaceLock {
             .write(true)
             .truncate(false)
             .open(&lock_path)
-            .map_err(|source| WorkspaceLockError::Io {
-                path: lock_path.clone(),
-                source,
-            })?;
+            .context(IoSnafu { path: &lock_path })?;
         file.try_lock_exclusive().map_err(|source| {
             if source.kind() == io::ErrorKind::WouldBlock {
-                WorkspaceLockError::Busy(lock_path.clone())
+                WorkspaceLockError::Busy {
+                    path: lock_path.clone(),
+                }
             } else {
                 WorkspaceLockError::Io {
                     path: lock_path.clone(),
@@ -59,44 +56,19 @@ fn lock_file_name(workspace_path: &Path) -> String {
     format!("codex-{encoded}.lock")
 }
 
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
 pub enum WorkspaceLockError {
-    Validation(ValidationError),
-    StateDirectory(StateDirectoryError),
-    Busy(PathBuf),
+    #[snafu(transparent)]
+    Validation { source: ValidationError },
+    #[snafu(transparent)]
+    StateDirectory { source: StateDirectoryError },
+    #[snafu(display(
+        "workspace already has an active Codex client (lock: {})",
+        path.display()
+    ))]
+    Busy { path: PathBuf },
+    #[snafu(display("failed to lock workspace {}: {source}", path.display()))]
     Io { path: PathBuf, source: io::Error },
-}
-
-impl fmt::Display for WorkspaceLockError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Validation(error) => error.fmt(formatter),
-            Self::StateDirectory(error) => error.fmt(formatter),
-            Self::Busy(path) => write!(
-                formatter,
-                "workspace already has an active Codex client (lock: {})",
-                path.display()
-            ),
-            Self::Io { path, source } => {
-                write!(
-                    formatter,
-                    "failed to lock workspace {}: {source}",
-                    path.display()
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for WorkspaceLockError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Validation(error) => Some(error),
-            Self::StateDirectory(error) => Some(error),
-            Self::Io { source, .. } => Some(source),
-            Self::Busy(_) => None,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -114,7 +86,7 @@ mod tests {
         let first = WorkspaceLock::acquire_at(lock_path.clone()).expect("first lock should work");
         let error = WorkspaceLock::acquire_at(lock_path.clone())
             .expect_err("second lock holder should fail");
-        assert!(matches!(error, WorkspaceLockError::Busy(_)));
+        assert!(matches!(error, WorkspaceLockError::Busy { .. }));
 
         drop(first);
         let second = WorkspaceLock::acquire_at(lock_path.clone()).expect("lock should release");

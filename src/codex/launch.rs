@@ -1,11 +1,11 @@
 use std::ffi::OsString;
-use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::time::Duration;
 
 use serde_json::{json, Value};
+use snafu::{ResultExt, Snafu};
 
 use crate::codex::app_server::{AppServerError, AppServerProcess, RpcClient};
 use crate::codex::args::merge_codex_args;
@@ -53,30 +53,28 @@ pub struct PreparedResume {
 }
 
 pub fn launch(request: LaunchRequest) -> Result<ExitStatus, CodexLaunchError> {
-    let _lock = WorkspaceLock::acquire(&request.workspace_path).map_err(CodexLaunchError::Lock)?;
+    let _lock = WorkspaceLock::acquire(&request.workspace_path)?;
     let codex_bin = request.codex_bin.clone();
     let prepared = prepare_launch(request)?;
     handoff(&codex_bin, &prepared)
 }
 
 pub fn resume(request: ResumeRequest) -> Result<ExitStatus, CodexLaunchError> {
-    let _lock = WorkspaceLock::acquire(&request.workspace_path).map_err(CodexLaunchError::Lock)?;
+    let _lock = WorkspaceLock::acquire(&request.workspace_path)?;
     let codex_bin = request.codex_bin.clone();
     let prepared = prepare_resume(request)?;
     resume_handoff(&codex_bin, &prepared)
 }
 
 pub fn prepare_launch(request: LaunchRequest) -> Result<PreparedLaunch, CodexLaunchError> {
-    let mut connection = crate::database::open_default().map_err(CodexLaunchError::DatabaseOpen)?;
-    let workspace =
-        prepare(&mut connection, &request.workspace_path).map_err(CodexLaunchError::Workspace)?;
+    let mut connection = crate::database::open_default().context(DatabaseOpenSnafu)?;
+    let workspace = prepare(&mut connection, &request.workspace_path)?;
     prepare_with_app_server_and_args(&request.codex_bin, &workspace, request.codex_args)
 }
 
 pub fn prepare_resume(request: ResumeRequest) -> Result<PreparedResume, CodexLaunchError> {
-    let mut connection = crate::database::open_default().map_err(CodexLaunchError::DatabaseOpen)?;
-    let workspace =
-        prepare(&mut connection, &request.workspace_path).map_err(CodexLaunchError::Workspace)?;
+    let mut connection = crate::database::open_default().context(DatabaseOpenSnafu)?;
+    let workspace = prepare(&mut connection, &request.workspace_path)?;
     prepare_resume_with_app_server(&request.codex_bin, &workspace, request.codex_args)
 }
 
@@ -93,11 +91,10 @@ fn prepare_with_app_server_and_args(
     workspace: &PreparedWorkspace,
     codex_args: Vec<OsString>,
 ) -> Result<PreparedLaunch, CodexLaunchError> {
-    let mut app_server = AppServerProcess::spawn(codex_bin).map_err(CodexLaunchError::AppServer)?;
+    let mut app_server = AppServerProcess::spawn(codex_bin).context(AppServerSnafu)?;
     let setup_result = (|| {
         let project = ProjectSynchronizer::new(&mut app_server, SETUP_REQUEST_TIMEOUT)
-            .synchronize(&workspace.id, &workspace.name, &workspace.roots)
-            .map_err(CodexLaunchError::Project)?;
+            .synchronize(&workspace.id, &workspace.name, &workspace.roots)?;
         let developer_instructions =
             workspace_developer_instructions(&mut app_server, workspace, SETUP_REQUEST_TIMEOUT)?;
         let thread = start_thread_with_instructions(
@@ -107,8 +104,7 @@ fn prepare_with_app_server_and_args(
             &workspace.roots,
             Some(&developer_instructions),
             SETUP_REQUEST_TIMEOUT,
-        )
-        .map_err(CodexLaunchError::Thread)?;
+        )?;
         Ok::<PreparedLaunch, CodexLaunchError>(prepared_launch(
             workspace,
             project,
@@ -121,8 +117,8 @@ fn prepare_with_app_server_and_args(
     let shutdown_result = app_server.shutdown(SETUP_SHUTDOWN_TIMEOUT);
     match (setup_result, shutdown_result) {
         (Ok(launch), Ok(status)) if status.success() => Ok(launch),
-        (Ok(_), Ok(status)) => Err(CodexLaunchError::SetupProcessExit(status)),
-        (Ok(_), Err(error)) => Err(CodexLaunchError::Shutdown(error)),
+        (Ok(_), Ok(status)) => Err(CodexLaunchError::SetupProcessExit { status }),
+        (Ok(_), Err(source)) => Err(CodexLaunchError::Shutdown { source }),
         (Err(error), Ok(_)) => Err(error),
         (Err(error), Err(shutdown)) => Err(CodexLaunchError::SetupAndShutdown {
             setup: Box::new(error),
@@ -136,11 +132,10 @@ fn prepare_resume_with_app_server(
     workspace: &PreparedWorkspace,
     codex_args: Vec<OsString>,
 ) -> Result<PreparedResume, CodexLaunchError> {
-    let mut app_server = AppServerProcess::spawn(codex_bin).map_err(CodexLaunchError::AppServer)?;
+    let mut app_server = AppServerProcess::spawn(codex_bin).context(AppServerSnafu)?;
     let setup_result = (|| {
         let project = ProjectSynchronizer::new(&mut app_server, SETUP_REQUEST_TIMEOUT)
-            .synchronize(&workspace.id, &workspace.name, &workspace.roots)
-            .map_err(CodexLaunchError::Project)?;
+            .synchronize(&workspace.id, &workspace.name, &workspace.roots)?;
         let developer_instructions =
             workspace_developer_instructions(&mut app_server, workspace, SETUP_REQUEST_TIMEOUT)?;
         Ok::<PreparedResume, CodexLaunchError>(PreparedResume {
@@ -156,8 +151,8 @@ fn prepare_resume_with_app_server(
     let shutdown_result = app_server.shutdown(SETUP_SHUTDOWN_TIMEOUT);
     match (setup_result, shutdown_result) {
         (Ok(resume), Ok(status)) if status.success() => Ok(resume),
-        (Ok(_), Ok(status)) => Err(CodexLaunchError::SetupProcessExit(status)),
-        (Ok(_), Err(error)) => Err(CodexLaunchError::Shutdown(error)),
+        (Ok(_), Ok(status)) => Err(CodexLaunchError::SetupProcessExit { status }),
+        (Ok(_), Err(source)) => Err(CodexLaunchError::Shutdown { source }),
         (Err(error), Ok(_)) => Err(error),
         (Err(error), Err(shutdown)) => Err(CodexLaunchError::SetupAndShutdown {
             setup: Box::new(error),
@@ -173,23 +168,21 @@ fn workspace_developer_instructions<R: RpcClient>(
 ) -> Result<String, CodexLaunchError> {
     let response = rpc
         .request("config/read", json!({}), timeout)
-        .map_err(CodexLaunchError::Config)?;
+        .context(ConfigSnafu)?;
     let config = response
         .get("config")
         .and_then(Value::as_object)
-        .ok_or_else(|| {
-            CodexLaunchError::InvalidConfigResponse(
-                "config/read response did not contain a config object".to_owned(),
-            )
+        .ok_or_else(|| CodexLaunchError::InvalidConfigResponse {
+            message: "config/read response did not contain a config object".to_owned(),
         })?;
     let existing = match config.get("developer_instructions") {
         None | Some(Value::Null) => None,
         Some(Value::String(value)) if value.trim().is_empty() => None,
         Some(Value::String(value)) => Some(value.as_str()),
         Some(_) => {
-            return Err(CodexLaunchError::InvalidConfigResponse(
-                "config.developer_instructions was not a string or null".to_owned(),
-            ));
+            return Err(CodexLaunchError::InvalidConfigResponse {
+                message: "config.developer_instructions was not a string or null".to_owned(),
+            });
         }
     };
     Ok(merge_workspace_manifest(existing, workspace))
@@ -244,8 +237,7 @@ pub fn handoff(
         &prepared.cwd,
         &prepared.runtime_roots,
         &prepared.developer_instructions,
-    )
-    .map_err(CodexLaunchError::Arguments)?;
+    )?;
     let mut command = Command::new(codex_bin);
     command.arg("resume").arg(&prepared.thread_id);
     command.args(codex_args);
@@ -253,11 +245,10 @@ pub fn handoff(
     command
         .current_dir(&prepared.cwd)
         .status()
-        .map_err(|source| CodexLaunchError::Handoff {
-            executable: codex_bin.to_owned(),
-            project_id: prepared.project_id.clone(),
-            thread_id: prepared.thread_id.clone(),
-            source,
+        .context(HandoffSnafu {
+            executable: codex_bin,
+            project_id: &prepared.project_id,
+            thread_id: &prepared.thread_id,
         })
 }
 
@@ -270,119 +261,74 @@ pub fn resume_handoff(
         &prepared.cwd,
         &prepared.runtime_roots,
         &prepared.developer_instructions,
-    )
-    .map_err(CodexLaunchError::Arguments)?;
+    )?;
     let mut command = Command::new(codex_bin);
     command.arg("resume").args(codex_args);
 
     command
         .current_dir(&prepared.cwd)
         .status()
-        .map_err(|source| CodexLaunchError::ResumeHandoff {
-            executable: codex_bin.to_owned(),
-            project_id: prepared.project_id.clone(),
-            source,
+        .context(ResumeHandoffSnafu {
+            executable: codex_bin,
+            project_id: &prepared.project_id,
         })
 }
 
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
 pub enum CodexLaunchError {
-    DatabaseOpen(crate::database::DatabaseError),
-    Workspace(WorkspacePreparationError),
-    Lock(WorkspaceLockError),
-    Arguments(crate::codex::args::CodexArgumentError),
-    AppServer(AppServerError),
-    Config(AppServerError),
-    InvalidConfigResponse(String),
-    Project(ProjectSyncError),
-    Thread(ThreadStartError),
-    SetupProcessExit(std::process::ExitStatus),
-    Shutdown(AppServerError),
+    #[snafu(display("failed to open Trees database: {source}"))]
+    DatabaseOpen {
+        source: crate::database::DatabaseError,
+    },
+    #[snafu(transparent)]
+    Workspace { source: WorkspacePreparationError },
+    #[snafu(transparent)]
+    Lock { source: WorkspaceLockError },
+    #[snafu(transparent)]
+    Arguments {
+        source: crate::codex::args::CodexArgumentError,
+    },
+    #[snafu(display("{source}"))]
+    AppServer { source: AppServerError },
+    #[snafu(display("{source}"))]
+    Config { source: AppServerError },
+    #[snafu(display("{message}"))]
+    InvalidConfigResponse { message: String },
+    #[snafu(transparent)]
+    Project { source: ProjectSyncError },
+    #[snafu(transparent)]
+    Thread { source: ThreadStartError },
+    #[snafu(display("setup app-server exited unsuccessfully: {status}"))]
+    SetupProcessExit { status: std::process::ExitStatus },
+    #[snafu(display("failed to shut down setup app-server: {source}"))]
+    Shutdown { source: AppServerError },
+    #[snafu(display(
+        "failed to resume Codex thread {thread_id} for project {project_id} using {}: {source}",
+        executable.display()
+    ))]
     Handoff {
         executable: PathBuf,
         project_id: String,
         thread_id: String,
         source: io::Error,
     },
+    #[snafu(display(
+        "failed to open a Codex resume picker for project {project_id} using {}: {source}",
+        executable.display()
+    ))]
     ResumeHandoff {
         executable: PathBuf,
         project_id: String,
         source: io::Error,
     },
+    #[snafu(display(
+        "Codex setup failed: {setup}; setup app-server shutdown also failed: {shutdown}"
+    ))]
     SetupAndShutdown {
+        #[snafu(source)]
         setup: Box<CodexLaunchError>,
         shutdown: AppServerError,
     },
-}
-
-impl fmt::Display for CodexLaunchError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::DatabaseOpen(error) => {
-                write!(formatter, "failed to open Trees database: {error}")
-            }
-            Self::Workspace(error) => error.fmt(formatter),
-            Self::Lock(error) => error.fmt(formatter),
-            Self::Arguments(error) => error.fmt(formatter),
-            Self::AppServer(error) => error.fmt(formatter),
-            Self::Config(error) => error.fmt(formatter),
-            Self::InvalidConfigResponse(message) => formatter.write_str(message),
-            Self::Project(error) => error.fmt(formatter),
-            Self::Thread(error) => error.fmt(formatter),
-            Self::SetupProcessExit(status) => {
-                write!(
-                    formatter,
-                    "setup app-server exited unsuccessfully: {status}"
-                )
-            }
-            Self::Shutdown(error) => {
-                write!(formatter, "failed to shut down setup app-server: {error}")
-            }
-            Self::Handoff {
-                executable,
-                project_id,
-                thread_id,
-                source,
-            } => write!(
-                formatter,
-                "failed to resume Codex thread {thread_id} for project {project_id} using {}: {source}",
-                executable.display()
-            ),
-            Self::ResumeHandoff {
-                executable,
-                project_id,
-                source,
-            } => write!(
-                formatter,
-                "failed to open a Codex resume picker for project {project_id} using {}: {source}",
-                executable.display()
-            ),
-            Self::SetupAndShutdown { setup, shutdown } => write!(
-                formatter,
-                "Codex setup failed: {setup}; setup app-server shutdown also failed: {shutdown}"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for CodexLaunchError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::DatabaseOpen(error) => Some(error),
-            Self::Workspace(error) => Some(error),
-            Self::Lock(error) => Some(error),
-            Self::Arguments(error) => Some(error),
-            Self::AppServer(error) => Some(error),
-            Self::Config(error) => Some(error),
-            Self::Project(error) => Some(error),
-            Self::Thread(error) => Some(error),
-            Self::Shutdown(error) => Some(error),
-            Self::Handoff { source, .. } => Some(source),
-            Self::ResumeHandoff { source, .. } => Some(source),
-            Self::SetupAndShutdown { setup, .. } => Some(setup),
-            Self::SetupProcessExit(_) | Self::InvalidConfigResponse(_) => None,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -832,16 +778,42 @@ printf '%s\n' 'not-json'
     #[test]
     fn formats_launch_errors_and_exposes_sources() {
         let errors = [
-            CodexLaunchError::DatabaseOpen(crate::database::DatabaseError::Path(
-                crate::paths::PathError::HomeDirectoryUnavailable,
-            )),
-            CodexLaunchError::Workspace(WorkspacePreparationError::NoWorktrees),
-            CodexLaunchError::AppServer(AppServerError::Transport("closed".to_owned())),
-            CodexLaunchError::Config(AppServerError::Transport("closed".to_owned())),
-            CodexLaunchError::InvalidConfigResponse("invalid config".to_owned()),
-            CodexLaunchError::Project(ProjectSyncError::InvalidInput("invalid project".to_owned())),
-            CodexLaunchError::Thread(ThreadStartError::InvalidInput("invalid thread".to_owned())),
-            CodexLaunchError::Shutdown(AppServerError::Transport("closed".to_owned())),
+            CodexLaunchError::DatabaseOpen {
+                source: crate::database::DatabaseError::Path {
+                    source: crate::paths::PathError::HomeDirectoryUnavailable,
+                },
+            },
+            CodexLaunchError::Workspace {
+                source: WorkspacePreparationError::NoWorktrees,
+            },
+            CodexLaunchError::AppServer {
+                source: AppServerError::Transport {
+                    message: "closed".to_owned(),
+                },
+            },
+            CodexLaunchError::Config {
+                source: AppServerError::Transport {
+                    message: "closed".to_owned(),
+                },
+            },
+            CodexLaunchError::InvalidConfigResponse {
+                message: "invalid config".to_owned(),
+            },
+            CodexLaunchError::Project {
+                source: ProjectSyncError::InvalidInput {
+                    message: "invalid project".to_owned(),
+                },
+            },
+            CodexLaunchError::Thread {
+                source: ThreadStartError::InvalidInput {
+                    message: "invalid thread".to_owned(),
+                },
+            },
+            CodexLaunchError::Shutdown {
+                source: AppServerError::Transport {
+                    message: "closed".to_owned(),
+                },
+            },
             CodexLaunchError::Handoff {
                 executable: PathBuf::from("codex"),
                 project_id: "project-id".to_owned(),
@@ -849,10 +821,14 @@ printf '%s\n' 'not-json'
                 source: io::Error::new(io::ErrorKind::NotFound, "missing"),
             },
             CodexLaunchError::SetupAndShutdown {
-                setup: Box::new(CodexLaunchError::Thread(ThreadStartError::InvalidInput(
-                    "invalid thread".to_owned(),
-                ))),
-                shutdown: AppServerError::Transport("closed".to_owned()),
+                setup: Box::new(CodexLaunchError::Thread {
+                    source: ThreadStartError::InvalidInput {
+                        message: "invalid thread".to_owned(),
+                    },
+                }),
+                shutdown: AppServerError::Transport {
+                    message: "closed".to_owned(),
+                },
             },
         ];
 
@@ -868,7 +844,7 @@ printf '%s\n' 'not-json'
         let status = std::process::Command::new("false")
             .status()
             .expect("false should run");
-        let error = CodexLaunchError::SetupProcessExit(status);
+        let error = CodexLaunchError::SetupProcessExit { status };
 
         assert!(error.to_string().contains("setup app-server"));
         assert!(std::error::Error::source(&error).is_none());

@@ -1,8 +1,8 @@
-use std::fmt;
 use std::path::{Path, PathBuf};
 
 use diesel::result::{DatabaseErrorKind, Error as DieselError};
 use diesel::sqlite::SqliteConnection;
+use snafu::{ResultExt, Snafu};
 
 use crate::domain::{
     CanonicalPath, JsonDocument, LeaseId, OperationId, OperationState, Timestamp, WorkspaceId,
@@ -28,17 +28,18 @@ pub fn prepare(
     connection: &mut SqliteConnection,
     workspace_path: &Path,
 ) -> Result<PreparedWorkspace, WorkspacePreparationError> {
-    let path = validation::resolve_workspace_path(workspace_path)
-        .map_err(WorkspacePreparationError::Validation)?;
+    let path = validation::resolve_workspace_path(workspace_path)?;
     let workspace = find_workspace_by_path(connection, &path)
-        .map_err(WorkspacePreparationError::Database)?
-        .ok_or_else(|| WorkspacePreparationError::NotManaged(path.clone()))?;
+        .context(DatabaseSnafu)?
+        .ok_or_else(|| WorkspacePreparationError::NotManaged { path: path.clone() })?;
 
     match reconciliation::recover_expired_operation(connection, &workspace.id)
-        .map_err(WorkspacePreparationError::Reconciliation)?
+        .context(ReconciliationSnafu)?
     {
         RecoveryOutcome::LeaseActive => {
-            return Err(WorkspacePreparationError::OperationActive(workspace.id));
+            return Err(WorkspacePreparationError::OperationActive {
+                workspace_id: workspace.id,
+            });
         }
         RecoveryOutcome::NoRunningOperation
         | RecoveryOutcome::Succeeded
@@ -56,11 +57,11 @@ pub fn prepare(
         Ok(summary) => summary,
         Err(error) => {
             let _ = finish_reconciliation_operation(connection, &lease_id, OperationState::Failed);
-            return Err(WorkspacePreparationError::Reconciliation(error));
+            return Err(WorkspacePreparationError::Reconciliation { source: error });
         }
     };
     finish_reconciliation_operation(connection, &lease_id, OperationState::Succeeded)
-        .map_err(WorkspacePreparationError::Database)?;
+        .context(DatabaseSnafu)?;
 
     if summary.workspace_state != WorkspaceState::Ready {
         return Err(WorkspacePreparationError::NotReady {
@@ -69,8 +70,7 @@ pub fn prepare(
         });
     }
 
-    let repositories = list_repo_worktrees(connection, &workspace.id)
-        .map_err(WorkspacePreparationError::Database)?;
+    let repositories = list_repo_worktrees(connection, &workspace.id).context(DatabaseSnafu)?;
     let roots = validate_worktree_roots(&repositories)?;
     let name = path
         .as_path()
@@ -97,7 +97,7 @@ fn start_reconciliation_operation(
         "codex_reconciliation",
         Timestamp::after_seconds(300),
         "reconcile workspace",
-        JsonDocument::parse(r#"{"command":"codex"}"#).map_err(WorkspacePreparationError::Json)?,
+        JsonDocument::parse(r#"{"command":"codex"}"#)?,
     );
     with_short_transaction(connection, |connection| {
         persist_operation_intent(connection, &intent)?;
@@ -105,9 +105,9 @@ fn start_reconciliation_operation(
     })
     .map_err(|error| match error {
         DieselError::DatabaseError(DatabaseErrorKind::UniqueViolation, _) => {
-            WorkspacePreparationError::OperationActive(workspace_id)
+            WorkspacePreparationError::OperationActive { workspace_id }
         }
-        error => WorkspacePreparationError::Database(error),
+        source => WorkspacePreparationError::Database { source },
     })?;
     Ok((intent.id, intent.lease_id))
 }
@@ -154,73 +154,40 @@ fn validate_worktree_roots(
         .collect()
 }
 
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
 pub enum WorkspacePreparationError {
-    Validation(ValidationError),
-    Database(DieselError),
-    Reconciliation(ReconciliationError),
-    Json(crate::domain::JsonDocumentError),
-    NotManaged(CanonicalPath),
+    #[snafu(transparent)]
+    Validation { source: ValidationError },
+    #[snafu(display("database operation failed: {source}"))]
+    Database { source: DieselError },
+    #[snafu(display("reconciliation failed: {source}"))]
+    Reconciliation { source: ReconciliationError },
+    #[snafu(transparent)]
+    Json {
+        source: crate::domain::JsonDocumentError,
+    },
+    #[snafu(display("workspace is not managed: {path}"))]
+    NotManaged { path: CanonicalPath },
+    #[snafu(display("workspace is not ready: {path} ({state})"))]
     NotReady {
         path: CanonicalPath,
         state: WorkspaceState,
     },
-    OperationActive(WorkspaceId),
+    #[snafu(display("workspace has an active operation: {workspace_id}"))]
+    OperationActive { workspace_id: WorkspaceId },
+    #[snafu(display("workspace has no tracked worktrees"))]
     NoWorktrees,
-    InvalidWorktree {
-        path: PathBuf,
-        reason: String,
-    },
-}
-
-impl fmt::Display for WorkspacePreparationError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Validation(error) => error.fmt(formatter),
-            Self::Database(error) => write!(formatter, "database operation failed: {error}"),
-            Self::Reconciliation(error) => write!(formatter, "reconciliation failed: {error}"),
-            Self::Json(error) => error.fmt(formatter),
-            Self::NotManaged(path) => write!(formatter, "workspace is not managed: {path}"),
-            Self::NotReady { path, state } => {
-                write!(formatter, "workspace is not ready: {} ({state})", path)
-            }
-            Self::OperationActive(workspace_id) => {
-                write!(
-                    formatter,
-                    "workspace has an active operation: {workspace_id}"
-                )
-            }
-            Self::NoWorktrees => formatter.write_str("workspace has no tracked worktrees"),
-            Self::InvalidWorktree { path, reason } => {
-                write!(
-                    formatter,
-                    "invalid managed worktree {}: {reason}",
-                    path.display()
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for WorkspacePreparationError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Validation(error) => Some(error),
-            Self::Database(error) => Some(error),
-            Self::Reconciliation(error) => Some(error),
-            Self::Json(error) => Some(error),
-            _ => None,
-        }
-    }
+    #[snafu(display("invalid managed worktree {}: {reason}", path.display()))]
+    InvalidWorktree { path: PathBuf, reason: String },
 }
 
 impl From<OperationIntentError> for WorkspacePreparationError {
     fn from(error: OperationIntentError) -> Self {
         match error {
-            OperationIntentError::WorkspaceBusy(workspace_id) => {
-                Self::OperationActive(workspace_id)
+            OperationIntentError::WorkspaceBusy { workspace_id } => {
+                Self::OperationActive { workspace_id }
             }
-            OperationIntentError::Database(error) => Self::Database(error),
+            OperationIntentError::Database { source } => Self::Database { source },
         }
     }
 }
@@ -236,18 +203,28 @@ mod tests {
         let json_error =
             crate::domain::JsonDocument::parse("not-json").expect_err("JSON should be invalid");
         let errors = [
-            WorkspacePreparationError::Validation(ValidationError::NoRepositories),
-            WorkspacePreparationError::Database(DieselError::NotFound),
-            WorkspacePreparationError::Reconciliation(ReconciliationError::Database(
-                DieselError::NotFound,
-            )),
-            WorkspacePreparationError::Json(json_error),
-            WorkspacePreparationError::NotManaged(canonical_path.clone()),
+            WorkspacePreparationError::Validation {
+                source: ValidationError::NoRepositories,
+            },
+            WorkspacePreparationError::Database {
+                source: DieselError::NotFound,
+            },
+            WorkspacePreparationError::Reconciliation {
+                source: ReconciliationError::Database {
+                    source: DieselError::NotFound,
+                },
+            },
+            WorkspacePreparationError::Json { source: json_error },
+            WorkspacePreparationError::NotManaged {
+                path: canonical_path.clone(),
+            },
             WorkspacePreparationError::NotReady {
                 path: canonical_path,
                 state: WorkspaceState::Degraded,
             },
-            WorkspacePreparationError::OperationActive(WorkspaceId::new()),
+            WorkspacePreparationError::OperationActive {
+                workspace_id: WorkspaceId::new(),
+            },
             WorkspacePreparationError::NoWorktrees,
             WorkspacePreparationError::InvalidWorktree {
                 path,

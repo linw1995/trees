@@ -1,7 +1,7 @@
 use diesel::prelude::*;
 use diesel::result::{DatabaseErrorKind, Error, QueryResult};
 use diesel::sqlite::SqliteConnection;
-use std::fmt;
+use snafu::Snafu;
 
 use crate::claim::WorkspaceClaim;
 use crate::domain::{
@@ -1200,9 +1200,11 @@ pub fn begin_operation(
     })
     .map_err(|error| match error {
         Error::DatabaseError(DatabaseErrorKind::UniqueViolation, _) => {
-            OperationIntentError::WorkspaceBusy(intent.workspace_id)
+            OperationIntentError::WorkspaceBusy {
+                workspace_id: intent.workspace_id,
+            }
         }
-        error => OperationIntentError::Database(error),
+        source => OperationIntentError::Database { source },
     })
 }
 
@@ -1215,47 +1217,28 @@ pub fn try_begin_operation(
     })
     .map_err(|error| match error {
         Error::DatabaseError(DatabaseErrorKind::UniqueViolation, _) => {
-            OperationIntentError::WorkspaceBusy(intent.workspace_id)
+            OperationIntentError::WorkspaceBusy {
+                workspace_id: intent.workspace_id,
+            }
         }
         Error::DatabaseError(_, information)
             if information.message().contains("locked")
                 || information.message().contains("busy") =>
         {
-            OperationIntentError::WorkspaceBusy(intent.workspace_id)
+            OperationIntentError::WorkspaceBusy {
+                workspace_id: intent.workspace_id,
+            }
         }
-        error => OperationIntentError::Database(error),
+        source => OperationIntentError::Database { source },
     })
 }
 
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
 pub enum OperationIntentError {
-    WorkspaceBusy(WorkspaceId),
-    Database(diesel::result::Error),
-}
-
-impl fmt::Display for OperationIntentError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::WorkspaceBusy(workspace_id) => {
-                write!(
-                    formatter,
-                    "workspace already has a running operation: {workspace_id}"
-                )
-            }
-            Self::Database(error) => {
-                write!(formatter, "failed to persist operation intent: {error}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for OperationIntentError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::WorkspaceBusy(_) => None,
-            Self::Database(error) => Some(error),
-        }
-    }
+    #[snafu(display("workspace already has a running operation: {workspace_id}"))]
+    WorkspaceBusy { workspace_id: WorkspaceId },
+    #[snafu(display("failed to persist operation intent: {source}"))]
+    Database { source: diesel::result::Error },
 }
 
 pub fn find_operation(
@@ -2426,7 +2409,8 @@ mod tests {
             .expect("first operation should start");
         assert!(matches!(
             begin_operation(&mut connection, &intent(first_workspace_id)),
-            Err(OperationIntentError::WorkspaceBusy(id)) if id == first_workspace_id
+            Err(OperationIntentError::WorkspaceBusy { workspace_id })
+                if workspace_id == first_workspace_id
         ));
         begin_operation(&mut connection, &intent(second_workspace_id))
             .expect("different workspace should start concurrently");

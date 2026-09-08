@@ -1,15 +1,22 @@
 use std::ffi::{OsStr, OsString};
 use std::io::{self, IsTerminal, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{ExitCode, ExitStatus};
 
 use clap::Parser;
+use snafu::{ResultExt, Snafu};
 
 fn main() -> ExitCode {
-    run(trees::cli::Cli::parse())
+    match run(trees::cli::Cli::parse()) {
+        Ok(exit_code) => exit_code,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
-fn run(cli: trees::cli::Cli) -> ExitCode {
+fn run(cli: trees::cli::Cli) -> Result<ExitCode, CliError> {
     match cli.command {
         trees::cli::Command::Create(arguments) => run_create(arguments),
         trees::cli::Command::Release(arguments) => run_release(arguments),
@@ -22,50 +29,37 @@ fn run(cli: trees::cli::Cli) -> ExitCode {
     }
 }
 
-fn run_create(arguments: trees::cli::CreateArgs) -> ExitCode {
+fn run_create(arguments: trees::cli::CreateArgs) -> Result<ExitCode, CliError> {
     let trees::cli::CreateArgs {
         workspace_path,
         repositories,
         json,
         open,
     } = arguments;
-    let open = match resolve_open_program(open) {
-        Ok(open) => open,
-        Err(error) => {
-            eprintln!("Error: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let open = resolve_open_program(open)?;
     match workspace_path {
         Some(workspace_path) => {
-            match trees::workspace::create(trees::workspace::CreateRequest {
+            let result = trees::workspace::create(trees::workspace::CreateRequest {
                 workspace_path,
                 repositories,
-            }) {
-                Ok(result) => {
-                    if let Some(program) = open.as_deref() {
-                        return open_workspace(program, result.workspace_path.as_path());
-                    }
-                    if json {
-                        return print_json(&result);
-                    }
-                    println!("Created workspace: {}", result.workspace_path);
-                    for path in result.worktree_paths {
-                        println!("Attached worktree: {}", path.display());
-                    }
-                    ExitCode::SUCCESS
-                }
-                Err(error) => {
-                    eprintln!("Error: {error}");
-                    ExitCode::FAILURE
-                }
+            })?;
+            if let Some(program) = open.as_deref() {
+                return open_workspace(program, result.workspace_path.as_path());
             }
+            if json {
+                return print_json(&result);
+            }
+            println!("Created workspace: {}", result.workspace_path);
+            for path in result.worktree_paths {
+                println!("Attached worktree: {}", path.display());
+            }
+            Ok(ExitCode::SUCCESS)
         }
         None => run_automatic_create(repositories, json, open.as_deref()),
     }
 }
 
-fn resolve_open_program(open: Option<Option<OsString>>) -> Result<Option<OsString>, String> {
+fn resolve_open_program(open: Option<Option<OsString>>) -> Result<Option<OsString>, CliError> {
     match open {
         None => Ok(None),
         Some(program) => resolve_required_program(program, "--open").map(Some),
@@ -74,14 +68,14 @@ fn resolve_open_program(open: Option<Option<OsString>>) -> Result<Option<OsStrin
 
 fn resolve_required_program(
     program: Option<OsString>,
-    option_name: &str,
-) -> Result<OsString, String> {
+    option_name: &'static str,
+) -> Result<OsString, CliError> {
     match program {
         Some(program) if !program.is_empty() => Ok(program),
-        Some(_) => Err(format!("{option_name} program must not be empty")),
+        Some(_) => EmptyProgramSnafu { option_name }.fail(),
         None => std::env::var_os("SHELL")
             .filter(|shell| !shell.is_empty())
-            .ok_or_else(|| format!("$SHELL is unset or empty; use {option_name}=<PROGRAM>")),
+            .ok_or_else(|| CliError::ShellUnavailable { option_name }),
     }
 }
 
@@ -89,24 +83,11 @@ fn run_automatic_create(
     repositories: Vec<std::path::PathBuf>,
     json: bool,
     open: Option<&OsStr>,
-) -> ExitCode {
-    let plan =
-        match trees::workspace::prepare_automatic(&trees::workspace::AutomaticCreateRequest {
-            repositories,
-        }) {
-            Ok(plan) => plan,
-            Err(error) => {
-                eprintln!("Error: {error}");
-                return ExitCode::FAILURE;
-            }
-        };
-    let mut connection = match trees::database::open_default() {
-        Ok(connection) => connection,
-        Err(error) => {
-            eprintln!("Error: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
+) -> Result<ExitCode, CliError> {
+    let plan = trees::workspace::prepare_automatic(&trees::workspace::AutomaticCreateRequest {
+        repositories,
+    })?;
+    let mut connection = trees::database::open_default()?;
     run_automatic_allocation(&mut connection, &plan, json, open)
 }
 
@@ -115,115 +96,79 @@ fn run_automatic_allocation(
     plan: &trees::workspace::AutomaticAllocationPlan,
     json: bool,
     open: Option<&OsStr>,
-) -> ExitCode {
-    match trees::workspace::allocate_automatic_workspace(connection, plan) {
-        Ok(result) => {
-            if let Some(program) = open {
-                return open_workspace(program, result.workspace_path.as_path());
-            }
-            if json {
-                print_json(&result)
-            } else {
-                print_automatic_claim_result(&result);
-                ExitCode::SUCCESS
-            }
-        }
-        Err(error) => {
-            eprintln!("Error: {error}");
-            ExitCode::FAILURE
-        }
+) -> Result<ExitCode, CliError> {
+    let result = trees::workspace::allocate_automatic_workspace(connection, plan)?;
+    if let Some(program) = open {
+        return open_workspace(program, result.workspace_path.as_path());
+    }
+    if json {
+        print_json(&result)
+    } else {
+        print_automatic_claim_result(&result);
+        Ok(ExitCode::SUCCESS)
     }
 }
 
 #[cfg(unix)]
-fn open_workspace(program: &OsStr, workspace_path: &Path) -> ExitCode {
+fn open_workspace(program: &OsStr, workspace_path: &Path) -> Result<ExitCode, CliError> {
     use std::os::unix::process::CommandExt;
 
     let error = std::process::Command::new(program)
         .current_dir(workspace_path)
         .exec();
-    eprintln!(
-        "Error: failed to open {} in workspace {}: {}",
-        Path::new(program).display(),
-        workspace_path.display(),
-        error
-    );
-    ExitCode::FAILURE
+    Err(CliError::OpenWorkspace {
+        program: PathBuf::from(program),
+        workspace_path: workspace_path.to_owned(),
+        source: error,
+    })
 }
 
-fn run_open(arguments: trees::cli::OpenArgs) -> ExitCode {
-    let program = match resolve_required_program(arguments.program, "--program") {
-        Ok(program) => program,
-        Err(error) => {
-            eprintln!("Error: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let mut connection = match trees::database::open_read_only() {
-        Ok(connection) => connection,
-        Err(error) => {
-            eprintln!("Error: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
+fn run_open(arguments: trees::cli::OpenArgs) -> Result<ExitCode, CliError> {
+    let program = resolve_required_program(arguments.program, "--program")?;
+    let mut connection = trees::database::open_read_only()?;
     let workspace_path =
-        match trees::workspace_open::resolve_target(&mut connection, &arguments.workspace_id) {
-            Ok(path) => path,
-            Err(error) => {
-                eprintln!("Error: {error}");
-                return ExitCode::FAILURE;
-            }
-        };
+        trees::workspace_open::resolve_target(&mut connection, &arguments.workspace_id)?;
     drop(connection);
     open_workspace(&program, workspace_path.as_path())
 }
 
 #[cfg(not(unix))]
-fn open_workspace(program: &OsStr, workspace_path: &Path) -> ExitCode {
+fn open_workspace(program: &OsStr, workspace_path: &Path) -> Result<ExitCode, CliError> {
     match std::process::Command::new(program)
         .current_dir(workspace_path)
         .status()
     {
-        Ok(status) => exit_code(status),
-        Err(error) => {
-            eprintln!(
-                "Error: failed to open {} in workspace {}: {}",
-                Path::new(program).display(),
-                workspace_path.display(),
-                error
-            );
-            ExitCode::FAILURE
-        }
+        Ok(status) => Ok(exit_code(status)),
+        Err(source) => Err(CliError::OpenWorkspace {
+            program: PathBuf::from(program),
+            workspace_path: workspace_path.to_owned(),
+            source,
+        }),
     }
 }
 
-fn run_release(arguments: trees::cli::ReleaseArgs) -> ExitCode {
-    match release_automatic(&arguments) {
-        Ok(result) => {
-            println!("workspace_path={}", result.workspace_path);
-            println!("claim_id={}", result.claim_id);
-            println!("released_at={}", result.released_at);
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("Error: {error}");
-            ExitCode::FAILURE
-        }
-    }
+fn run_release(arguments: trees::cli::ReleaseArgs) -> Result<ExitCode, CliError> {
+    let result = release_automatic(&arguments)?;
+    println!("workspace_path={}", result.workspace_path);
+    println!("claim_id={}", result.claim_id);
+    println!("released_at={}", result.released_at);
+    Ok(ExitCode::SUCCESS)
 }
 
 fn release_automatic(
     arguments: &trees::cli::ReleaseArgs,
-) -> Result<trees::workspace::ReleaseResult, String> {
+) -> Result<trees::workspace::ReleaseResult, CliError> {
     let target = release_target(arguments)?;
-    let mut connection = trees::database::open_default().map_err(|error| error.to_string())?;
-    trees::workspace::release_automatic_workspace_by_target(&mut connection, target)
-        .map_err(|error| error.to_string())
+    let mut connection = trees::database::open_default()?;
+    Ok(trees::workspace::release_automatic_workspace_by_target(
+        &mut connection,
+        target,
+    )?)
 }
 
 fn release_target(
     arguments: &trees::cli::ReleaseArgs,
-) -> Result<trees::workspace::ReleaseTarget, String> {
+) -> Result<trees::workspace::ReleaseTarget, CliError> {
     match arguments.workspace_dir.as_ref() {
         Some(path) => workspace_path_release_target(path),
         None => match arguments.claim_id.as_deref() {
@@ -235,55 +180,43 @@ fn release_target(
 
 fn workspace_path_release_target(
     path: &std::path::Path,
-) -> Result<trees::workspace::ReleaseTarget, String> {
-    trees::validation::resolve_workspace_path(path)
-        .map(trees::workspace::ReleaseTarget::WorkspacePath)
-        .map_err(|error| error.to_string())
+) -> Result<trees::workspace::ReleaseTarget, CliError> {
+    Ok(trees::workspace::ReleaseTarget::WorkspacePath(
+        trees::validation::resolve_workspace_path(path)?,
+    ))
 }
 
-fn current_directory_release_target() -> Result<trees::workspace::ReleaseTarget, String> {
-    trees::domain::CanonicalPath::resolve(".")
-        .map(trees::workspace::ReleaseTarget::CurrentDirectory)
-        .map_err(|error| error.to_string())
+fn current_directory_release_target() -> Result<trees::workspace::ReleaseTarget, CliError> {
+    Ok(trees::workspace::ReleaseTarget::CurrentDirectory(
+        trees::domain::CanonicalPath::resolve(".")?,
+    ))
 }
 
-fn claim_release_target(claim_id: &str) -> Result<trees::workspace::ReleaseTarget, String> {
-    claim_id
-        .parse::<trees::domain::ClaimId>()
-        .map(trees::workspace::ReleaseTarget::ClaimId)
-        .map_err(|error| format!("invalid claim ID: {error}"))
+fn claim_release_target(claim_id: &str) -> Result<trees::workspace::ReleaseTarget, CliError> {
+    Ok(trees::workspace::ReleaseTarget::ClaimId(
+        claim_id
+            .parse::<trees::domain::ClaimId>()
+            .context(ClaimIdSnafu)?,
+    ))
 }
 
-fn run_config(arguments: trees::cli::ConfigArgs) -> ExitCode {
+fn run_config(arguments: trees::cli::ConfigArgs) -> Result<ExitCode, CliError> {
     match arguments.command {
         trees::cli::ConfigCommand::Set(arguments) => match arguments.setting {
             trees::cli::ConfigSetting::WorkspacesDir => {
-                match trees::config::set_workspaces_directory(&arguments.value) {
-                    Ok(path) => {
-                        println!("workspaces_dir={}", path.display());
-                        ExitCode::SUCCESS
-                    }
-                    Err(error) => {
-                        eprintln!("Error: {error}");
-                        ExitCode::FAILURE
-                    }
-                }
+                let path = trees::config::set_workspaces_directory(&arguments.value)?;
+                println!("workspaces_dir={}", path.display());
+                Ok(ExitCode::SUCCESS)
             }
         },
     }
 }
 
-fn run_gc(arguments: trees::cli::GcArgs) -> ExitCode {
-    match run_gc_command(&arguments) {
-        Ok(exit_code) => exit_code,
-        Err(error) => {
-            eprintln!("Error: {error}");
-            ExitCode::FAILURE
-        }
-    }
+fn run_gc(arguments: trees::cli::GcArgs) -> Result<ExitCode, CliError> {
+    run_gc_command(&arguments)
 }
 
-fn run_gc_command(arguments: &trees::cli::GcArgs) -> Result<ExitCode, String> {
+fn run_gc_command(arguments: &trees::cli::GcArgs) -> Result<ExitCode, CliError> {
     let scan = load_gc_scan(arguments)?;
     print_gc_scan(&scan, arguments.force);
     run_gc_after_scan(arguments, &scan)
@@ -292,7 +225,7 @@ fn run_gc_command(arguments: &trees::cli::GcArgs) -> Result<ExitCode, String> {
 fn run_gc_after_scan(
     arguments: &trees::cli::GcArgs,
     scan: &trees::gc::GcScan,
-) -> Result<ExitCode, String> {
+) -> Result<ExitCode, CliError> {
     if arguments.dry_run {
         return Ok(ExitCode::SUCCESS);
     }
@@ -300,17 +233,19 @@ fn run_gc_after_scan(
         arguments.force,
         arguments.yes,
         scan.execution_candidate_count(arguments.force),
-    ) {
-        Ok(GcConfirmation::Proceed) => Ok(execute_gc(arguments)),
-        Ok(GcConfirmation::Cancelled) => Ok(ExitCode::SUCCESS),
-        Err(exit_code) => Ok(exit_code),
+    )? {
+        GcConfirmation::Proceed => execute_gc(arguments),
+        GcConfirmation::Cancelled => Ok(ExitCode::SUCCESS),
     }
 }
 
-fn load_gc_scan(arguments: &trees::cli::GcArgs) -> Result<trees::gc::GcScan, String> {
-    let mut connection = trees::database::open_read_only().map_err(|error| error.to_string())?;
-    trees::gc::scan_with_force(&mut connection, arguments.older_than, arguments.force)
-        .map_err(|error| error.to_string())
+fn load_gc_scan(arguments: &trees::cli::GcArgs) -> Result<trees::gc::GcScan, CliError> {
+    let mut connection = trees::database::open_read_only()?;
+    Ok(trees::gc::scan_with_force(
+        &mut connection,
+        arguments.older_than,
+        arguments.force,
+    )?)
 }
 
 fn print_gc_scan(scan: &trees::gc::GcScan, force: bool) {
@@ -335,7 +270,7 @@ enum GcConfirmation {
     Cancelled,
 }
 
-fn confirm_gc(force: bool, yes: bool, candidate_count: usize) -> Result<GcConfirmation, ExitCode> {
+fn confirm_gc(force: bool, yes: bool, candidate_count: usize) -> Result<GcConfirmation, CliError> {
     if force {
         eprintln!("Warning: --force may remove dirty worktrees and unexpected workspace content.");
     } else if yes || candidate_count == 0 {
@@ -346,23 +281,16 @@ fn confirm_gc(force: bool, yes: bool, candidate_count: usize) -> Result<GcConfir
     Ok(GcConfirmation::Proceed)
 }
 
-fn confirm_gc_interactively(candidate_count: usize) -> Result<GcConfirmation, ExitCode> {
+fn confirm_gc_interactively(candidate_count: usize) -> Result<GcConfirmation, CliError> {
     if !io::stdin().is_terminal() {
-        eprintln!(
-            "Error: interactive confirmation is unavailable; use --dry-run, --yes, or --force"
-        );
-        return Err(ExitCode::FAILURE);
+        return InteractiveConfirmationUnavailableSnafu.fail();
     }
     print!("Reclaim {candidate_count} workspaces? [y/N] ");
-    if let Err(error) = io::stdout().flush() {
-        eprintln!("Error: failed to flush confirmation prompt: {error}");
-        return Err(ExitCode::FAILURE);
-    }
+    io::stdout().flush().context(FlushConfirmationSnafu)?;
     let mut answer = String::new();
-    if let Err(error) = io::stdin().read_line(&mut answer) {
-        eprintln!("Error: failed to read confirmation: {error}");
-        return Err(ExitCode::FAILURE);
-    }
+    io::stdin()
+        .read_line(&mut answer)
+        .context(ReadConfirmationSnafu)?;
     if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
         println!("cancelled=true");
         return Ok(GcConfirmation::Cancelled);
@@ -370,14 +298,8 @@ fn confirm_gc_interactively(candidate_count: usize) -> Result<GcConfirmation, Ex
     Ok(GcConfirmation::Proceed)
 }
 
-fn execute_gc(arguments: &trees::cli::GcArgs) -> ExitCode {
-    let report = match execute_gc_report(arguments) {
-        Ok(report) => report,
-        Err(error) => {
-            eprintln!("Error: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
+fn execute_gc(arguments: &trees::cli::GcArgs) -> Result<ExitCode, CliError> {
+    let report = execute_gc_report(arguments)?;
     println!("unclaimed={}", report.scan.counts.unclaimed);
     println!("claimed={}", report.scan.counts.claimed);
     println!("reclaimed={}", report.reclaimed.len());
@@ -387,30 +309,27 @@ fn execute_gc(arguments: &trees::cli::GcArgs) -> ExitCode {
         for failure in report.failed {
             eprintln!("GC failed: {}: {}", failure.workspace_path, failure.error);
         }
-        return ExitCode::FAILURE;
+        return Ok(ExitCode::FAILURE);
     }
-    ExitCode::SUCCESS
+    Ok(ExitCode::SUCCESS)
 }
 
 fn execute_gc_report(
     arguments: &trees::cli::GcArgs,
-) -> Result<trees::gc::GcExecutionReport, String> {
-    let mut connection = trees::database::open_default().map_err(|error| error.to_string())?;
-    trees::gc::execute(&mut connection, arguments.older_than, arguments.force)
-        .map_err(|error| error.to_string())
+) -> Result<trees::gc::GcExecutionReport, CliError> {
+    let mut connection = trees::database::open_default()?;
+    Ok(trees::gc::execute(
+        &mut connection,
+        arguments.older_than,
+        arguments.force,
+    )?)
 }
 
-fn run_remove(arguments: trees::cli::RemoveArgs) -> ExitCode {
-    match run_remove_command(&arguments) {
-        Ok(exit_code) => exit_code,
-        Err(error) => {
-            eprintln!("Error: {error}");
-            ExitCode::FAILURE
-        }
-    }
+fn run_remove(arguments: trees::cli::RemoveArgs) -> Result<ExitCode, CliError> {
+    run_remove_command(&arguments)
 }
 
-fn run_remove_command(arguments: &trees::cli::RemoveArgs) -> Result<ExitCode, String> {
+fn run_remove_command(arguments: &trees::cli::RemoveArgs) -> Result<ExitCode, CliError> {
     let preflight = load_removal_preflight(arguments)?;
     println!("workspace_id={}", preflight.workspace.id);
     println!("workspace_path={}", preflight.workspace.canonical_path);
@@ -429,13 +348,16 @@ fn run_remove_command(arguments: &trees::cli::RemoveArgs) -> Result<ExitCode, St
 
 fn load_removal_preflight(
     arguments: &trees::cli::RemoveArgs,
-) -> Result<trees::gc::RemovalPreflight, String> {
-    let mut connection = trees::database::open_read_only().map_err(|error| error.to_string())?;
-    trees::gc::scan_removal(&mut connection, &arguments.workspace_id, arguments.force)
-        .map_err(|error| error.to_string())
+) -> Result<trees::gc::RemovalPreflight, CliError> {
+    let mut connection = trees::database::open_read_only()?;
+    Ok(trees::gc::scan_removal(
+        &mut connection,
+        &arguments.workspace_id,
+        arguments.force,
+    )?)
 }
 
-fn confirm_removal(force: bool, yes: bool) -> Result<GcConfirmation, String> {
+fn confirm_removal(force: bool, yes: bool) -> Result<GcConfirmation, CliError> {
     if force {
         eprintln!("Warning: --force may remove dirty worktrees and unexpected workspace content.");
         return Ok(GcConfirmation::Proceed);
@@ -444,18 +366,14 @@ fn confirm_removal(force: bool, yes: bool) -> Result<GcConfirmation, String> {
         return Ok(GcConfirmation::Proceed);
     }
     if !io::stdin().is_terminal() {
-        return Err(
-            "interactive confirmation is unavailable; use --dry-run, --yes, or --force".to_owned(),
-        );
+        return InteractiveConfirmationUnavailableSnafu.fail();
     }
     print!("Remove this workspace? [y/N] ");
-    io::stdout()
-        .flush()
-        .map_err(|error| format!("failed to flush confirmation prompt: {error}"))?;
+    io::stdout().flush().context(FlushConfirmationSnafu)?;
     let mut answer = String::new();
     io::stdin()
         .read_line(&mut answer)
-        .map_err(|error| format!("failed to read confirmation: {error}"))?;
+        .context(ReadConfirmationSnafu)?;
     if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
         Ok(GcConfirmation::Proceed)
     } else {
@@ -464,11 +382,10 @@ fn confirm_removal(force: bool, yes: bool) -> Result<GcConfirmation, String> {
     }
 }
 
-fn execute_removal(arguments: &trees::cli::RemoveArgs) -> Result<ExitCode, String> {
-    let mut connection = trees::database::open_default().map_err(|error| error.to_string())?;
+fn execute_removal(arguments: &trees::cli::RemoveArgs) -> Result<ExitCode, CliError> {
+    let mut connection = trees::database::open_default()?;
     let report =
-        trees::gc::remove_workspace(&mut connection, &arguments.workspace_id, arguments.force)
-            .map_err(|error| error.to_string())?;
+        trees::gc::remove_workspace(&mut connection, &arguments.workspace_id, arguments.force)?;
     println!("removed={}", report.removed);
     if !report.removed {
         println!("reason={}", report.reason);
@@ -483,10 +400,9 @@ fn execute_removal(arguments: &trees::cli::RemoveArgs) -> Result<ExitCode, Strin
     })
 }
 
-fn run_status(arguments: trees::cli::StatusArgs) -> ExitCode {
+fn run_status(arguments: trees::cli::StatusArgs) -> Result<ExitCode, CliError> {
     if arguments.all && arguments.view != trees::cli::StatusView::Workspaces {
-        eprintln!("Error: --all requires --view workspaces");
-        return ExitCode::FAILURE;
+        return InvalidStatusArgumentsSnafu.fail();
     }
     match arguments.view {
         trees::cli::StatusView::Pools => run_pool_status(arguments.json),
@@ -494,14 +410,8 @@ fn run_status(arguments: trees::cli::StatusArgs) -> ExitCode {
     }
 }
 
-fn run_pool_status(json: bool) -> ExitCode {
-    let snapshot = match load_pool_status_snapshot() {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            eprintln!("Error: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
+fn run_pool_status(json: bool) -> Result<ExitCode, CliError> {
+    let snapshot = load_pool_status_snapshot()?;
     if json {
         print_json(&snapshot)
     } else {
@@ -509,30 +419,23 @@ fn run_pool_status(json: bool) -> ExitCode {
             "{}",
             trees::status::render_pools_human(&snapshot, status_color_enabled())
         );
-        ExitCode::SUCCESS
+        Ok(ExitCode::SUCCESS)
     }
 }
 
-fn load_pool_status_snapshot() -> Result<trees::status::PoolStatusSnapshot, String> {
+fn load_pool_status_snapshot() -> Result<trees::status::PoolStatusSnapshot, CliError> {
     let mut connection = match trees::database::open_read_only() {
         Ok(connection) => connection,
-        Err(trees::database::DatabaseError::ReadOnlyDatabaseMissing(_)) => {
+        Err(trees::database::DatabaseError::ReadOnlyDatabaseMissing { .. }) => {
             return Ok(trees::status::PoolStatusSnapshot::empty());
         }
-        Err(error) => return Err(error.to_string()),
+        Err(source) => return Err(source.into()),
     };
-    trees::status::load_pool_snapshot(&mut connection)
-        .map_err(|error| format!("failed to load workspace pool status: {error}"))
+    trees::status::load_pool_snapshot(&mut connection).context(PoolStatusSnafu)
 }
 
-fn run_workspace_status(include_reclaimed: bool, json: bool) -> ExitCode {
-    let snapshot = match load_workspace_status_snapshot(include_reclaimed) {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            eprintln!("Error: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
+fn run_workspace_status(include_reclaimed: bool, json: bool) -> Result<ExitCode, CliError> {
+    let snapshot = load_workspace_status_snapshot(include_reclaimed)?;
     if json {
         print_json(&snapshot)
     } else {
@@ -540,7 +443,7 @@ fn run_workspace_status(include_reclaimed: bool, json: bool) -> ExitCode {
             "{}",
             trees::status::render_workspaces_human(&snapshot, status_color_enabled())
         );
-        ExitCode::SUCCESS
+        Ok(ExitCode::SUCCESS)
     }
 }
 
@@ -550,16 +453,15 @@ fn status_color_enabled() -> bool {
 
 fn load_workspace_status_snapshot(
     include_reclaimed: bool,
-) -> Result<trees::status::StatusSnapshot, String> {
+) -> Result<trees::status::StatusSnapshot, CliError> {
     let mut connection = match trees::database::open_read_only() {
         Ok(connection) => connection,
-        Err(trees::database::DatabaseError::ReadOnlyDatabaseMissing(_)) => {
+        Err(trees::database::DatabaseError::ReadOnlyDatabaseMissing { .. }) => {
             return Ok(trees::status::StatusSnapshot::empty());
         }
-        Err(error) => return Err(error.to_string()),
+        Err(source) => return Err(source.into()),
     };
-    trees::status::load_snapshot(&mut connection, include_reclaimed)
-        .map_err(|error| format!("failed to load workspace status: {error}"))
+    trees::status::load_snapshot(&mut connection, include_reclaimed).context(WorkspaceStatusSnafu)
 }
 
 fn print_automatic_claim_result(result: &trees::workspace::AutomaticClaimResult) {
@@ -579,20 +481,13 @@ fn bash_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-fn print_json<T: serde::Serialize>(value: &T) -> ExitCode {
-    match serde_json::to_string(value) {
-        Ok(output) => {
-            println!("{output}");
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("Error: failed to serialize JSON output: {error}");
-            ExitCode::FAILURE
-        }
-    }
+fn print_json<T: serde::Serialize>(value: &T) -> Result<ExitCode, CliError> {
+    let output = serde_json::to_string(value).context(SerializeJsonSnafu)?;
+    println!("{output}");
+    Ok(ExitCode::SUCCESS)
 }
 
-fn run_codex(arguments: trees::cli::CodexArgs) -> ExitCode {
+fn run_codex(arguments: trees::cli::CodexArgs) -> Result<ExitCode, CliError> {
     let trees::cli::CodexArgs {
         codex_bin,
         subcommand,
@@ -603,13 +498,7 @@ fn run_codex(arguments: trees::cli::CodexArgs) -> ExitCode {
         None => &codex_args,
         Some(trees::cli::CodexSubcommand::Resume(resume)) => &resume.codex_args,
     };
-    let workspace_path = match trees::codex::args::workspace_path_from_codex_args(native_args) {
-        Ok(path) => path,
-        Err(error) => {
-            eprintln!("Error: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let workspace_path = trees::codex::args::workspace_path_from_codex_args(native_args)?;
 
     let result = match subcommand {
         None => trees::codex::launch::launch(trees::codex::launch::LaunchRequest {
@@ -626,13 +515,7 @@ fn run_codex(arguments: trees::cli::CodexArgs) -> ExitCode {
         }
     };
 
-    match result {
-        Ok(status) => exit_code(status),
-        Err(error) => {
-            eprintln!("Error: {error}");
-            ExitCode::FAILURE
-        }
-    }
+    Ok(exit_code(result?))
 }
 
 fn exit_code(status: ExitStatus) -> ExitCode {
@@ -644,6 +527,74 @@ fn exit_code(status: ExitStatus) -> ExitCode {
         Some(code) if (0..=u8::MAX as i32).contains(&code) => ExitCode::from(code as u8),
         _ => ExitCode::FAILURE,
     }
+}
+
+#[derive(Debug, Snafu)]
+enum CliError {
+    #[snafu(display("{option_name} program must not be empty"))]
+    EmptyProgram { option_name: &'static str },
+    #[snafu(display("$SHELL is unset or empty; use {option_name}=<PROGRAM>"))]
+    ShellUnavailable { option_name: &'static str },
+    #[snafu(display(
+        "failed to open {} in workspace {}: {source}",
+        program.display(),
+        workspace_path.display()
+    ))]
+    OpenWorkspace {
+        program: PathBuf,
+        workspace_path: PathBuf,
+        source: io::Error,
+    },
+    #[snafu(transparent)]
+    Database {
+        source: trees::database::DatabaseError,
+    },
+    #[snafu(transparent)]
+    Workspace {
+        source: trees::workspace::WorkspaceError,
+    },
+    #[snafu(transparent)]
+    Validation {
+        source: trees::validation::ValidationError,
+    },
+    #[snafu(transparent)]
+    CanonicalPath {
+        source: trees::domain::CanonicalPathError,
+    },
+    #[snafu(display("invalid claim ID: {source}"))]
+    ClaimId {
+        source: trees::domain::IdentifierError,
+    },
+    #[snafu(transparent)]
+    Config { source: trees::config::ConfigError },
+    #[snafu(transparent)]
+    WorkspaceOpen {
+        source: trees::workspace_open::WorkspaceOpenError,
+    },
+    #[snafu(transparent)]
+    Gc { source: trees::gc::GcError },
+    #[snafu(display("interactive confirmation is unavailable; use --dry-run, --yes, or --force"))]
+    InteractiveConfirmationUnavailable,
+    #[snafu(display("failed to flush confirmation prompt: {source}"))]
+    FlushConfirmation { source: io::Error },
+    #[snafu(display("failed to read confirmation: {source}"))]
+    ReadConfirmation { source: io::Error },
+    #[snafu(display("--all requires --view workspaces"))]
+    InvalidStatusArguments,
+    #[snafu(display("failed to load workspace pool status: {source}"))]
+    PoolStatus { source: diesel::result::Error },
+    #[snafu(display("failed to load workspace status: {source}"))]
+    WorkspaceStatus { source: diesel::result::Error },
+    #[snafu(display("failed to serialize JSON output: {source}"))]
+    SerializeJson { source: serde_json::Error },
+    #[snafu(transparent)]
+    CodexArguments {
+        source: trees::codex::args::CodexArgumentError,
+    },
+    #[snafu(transparent)]
+    CodexLaunch {
+        source: trees::codex::launch::CodexLaunchError,
+    },
 }
 
 #[cfg(test)]
@@ -667,7 +618,7 @@ mod tests {
         ])
         .expect("create command should parse");
 
-        assert_eq!(run(cli), ExitCode::FAILURE);
+        assert!(run(cli).is_err());
     }
 
     #[test]
@@ -682,7 +633,10 @@ mod tests {
             Some(value) => std::env::set_var("SHELL", value),
             None => std::env::remove_var("SHELL"),
         }
-        assert_eq!(resolved, Ok(Some(OsString::from("/bin/test-shell"))));
+        assert_eq!(
+            resolved.expect("default open program should resolve"),
+            Some(OsString::from("/bin/test-shell"))
+        );
     }
 
     #[test]
@@ -697,16 +651,18 @@ mod tests {
             std::env::set_var("SHELL", value);
         }
         assert_eq!(
-            resolved,
-            Err("$SHELL is unset or empty; use --open=<PROGRAM>".to_owned())
+            resolved.expect_err("unset shell should fail").to_string(),
+            "$SHELL is unset or empty; use --open=<PROGRAM>"
         );
     }
 
     #[test]
     fn rejects_an_empty_explicit_open_program() {
         assert_eq!(
-            resolve_open_program(Some(Some(OsString::new()))),
-            Err("--open program must not be empty".to_owned())
+            resolve_open_program(Some(Some(OsString::new())))
+                .expect_err("empty program should fail")
+                .to_string(),
+            "--open program must not be empty"
         );
     }
 
