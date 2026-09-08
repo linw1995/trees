@@ -76,6 +76,16 @@ pub struct RepoWorktreeStatus {
     pub last_observed_at: Timestamp,
 }
 
+impl StatusSnapshot {
+    pub fn empty() -> Self {
+        Self {
+            schema_version: STATUS_SCHEMA_VERSION,
+            snapshot_at: Timestamp::now(),
+            workspaces: Vec::new(),
+        }
+    }
+}
+
 pub fn load_snapshot(
     connection: &mut SqliteConnection,
     include_reclaimed: bool,
@@ -105,6 +115,110 @@ pub fn load_snapshot(
             repositories,
         )
     })
+}
+
+pub fn render_human(snapshot: &StatusSnapshot) -> String {
+    if snapshot.workspaces.is_empty() {
+        return "No workspaces.".to_owned();
+    }
+
+    let headers = [
+        "STATE",
+        "USAGE",
+        "OPERATION",
+        "MODE",
+        "REPOS",
+        "RECONCILED",
+        "PATH",
+    ];
+    let rows = snapshot
+        .workspaces
+        .iter()
+        .map(|workspace| {
+            [
+                workspace.state.to_string(),
+                if workspace.claim.is_some() {
+                    "claimed".to_owned()
+                } else {
+                    "unclaimed".to_owned()
+                },
+                operation_summary(workspace.current_operation.as_ref()),
+                workspace.management_mode.to_string(),
+                repository_summary(&workspace.repo_worktrees),
+                workspace
+                    .last_reconciled_at
+                    .as_ref()
+                    .map_or_else(|| "never".to_owned(), ToString::to_string),
+                workspace.path.to_string(),
+            ]
+        })
+        .collect::<Vec<_>>();
+    let widths = std::array::from_fn::<_, 7, _>(|column| {
+        rows.iter()
+            .map(|row| row[column].len())
+            .max()
+            .unwrap_or(0)
+            .max(headers[column].len())
+    });
+    let mut lines = Vec::with_capacity(rows.len() + 1);
+    lines.push(format_table_row(&headers, &widths));
+    for row in &rows {
+        lines.push(format_table_row(row, &widths));
+    }
+    lines.join("\n")
+}
+
+fn format_table_row<S: AsRef<str>>(columns: &[S; 7], widths: &[usize; 7]) -> String {
+    let mut output = String::new();
+    for (index, column) in columns.iter().enumerate() {
+        let value = column.as_ref();
+        output.push_str(value);
+        if index + 1 < columns.len() {
+            output.push_str(&" ".repeat(widths[index] - value.len() + 2));
+        }
+    }
+    output
+}
+
+fn operation_summary(operation: Option<&CurrentOperationStatus>) -> String {
+    operation.map_or_else(
+        || "none".to_owned(),
+        |operation| {
+            let lease_status = match operation.lease_status {
+                LeaseStatus::Active => "active",
+                LeaseStatus::Expired => "expired",
+                LeaseStatus::Inconsistent => "inconsistent",
+            };
+            format!("{lease_status}:{}", operation.kind)
+        },
+    )
+}
+
+fn repository_summary(repositories: &[RepoWorktreeStatus]) -> String {
+    let states = [
+        RepoWorktreeState::Pending,
+        RepoWorktreeState::Attached,
+        RepoWorktreeState::Dirty,
+        RepoWorktreeState::Missing,
+        RepoWorktreeState::Diverged,
+        RepoWorktreeState::Failed,
+        RepoWorktreeState::Reclaimed,
+    ];
+    let counts = states
+        .into_iter()
+        .filter_map(|state| {
+            let count = repositories
+                .iter()
+                .filter(|repository| repository.state == state)
+                .count();
+            (count > 0).then(|| format!("{state}={count}"))
+        })
+        .collect::<Vec<_>>();
+    if counts.is_empty() {
+        repositories.len().to_string()
+    } else {
+        format!("{}({})", repositories.len(), counts.join(","))
+    }
 }
 
 fn assemble_snapshot(
@@ -431,6 +545,61 @@ mod tests {
         );
         drop(connection);
         fs::remove_file(database_path).expect("temporary database should be removable");
+    }
+
+    #[test]
+    fn renders_empty_and_deterministic_human_output() {
+        assert_eq!(render_human(&StatusSnapshot::empty()), "No workspaces.");
+
+        let workspace_id = WorkspaceId::new();
+        let snapshot = StatusSnapshot {
+            schema_version: STATUS_SCHEMA_VERSION,
+            snapshot_at: Timestamp::parse("2026-09-08T12:00:00Z").unwrap(),
+            workspaces: vec![WorkspaceStatus {
+                workspace_id,
+                path: path("/status/example"),
+                management_mode: WorkspaceManagementMode::Automatic,
+                state: WorkspaceState::Degraded,
+                created_at: Timestamp::parse("2026-09-01T00:00:00Z").unwrap(),
+                updated_at: Timestamp::parse("2026-09-08T10:00:00Z").unwrap(),
+                last_reconciled_at: Some(Timestamp::parse("2026-09-08T10:00:00Z").unwrap()),
+                last_released_at: None,
+                reclaimed_at: None,
+                pool_id: None,
+                claim: Some(ClaimStatus {
+                    claim_id: ClaimId::new(),
+                    claimed_at: Timestamp::parse("2026-09-08T09:00:00Z").unwrap(),
+                }),
+                current_operation: None,
+                repo_worktrees: vec![RepoWorktreeStatus {
+                    repo_worktree_id: RepoWorktreeId::new(),
+                    origin_repository_id: OriginRepositoryId::new(),
+                    source_path: path("/origins/example"),
+                    worktree_path: path("/status/example/repo"),
+                    state: RepoWorktreeState::Dirty,
+                    last_head: None,
+                    last_observed_at: Timestamp::parse("2026-09-08T10:00:00Z").unwrap(),
+                }],
+            }],
+        };
+
+        let output = render_human(&snapshot);
+
+        assert_eq!(
+            output,
+            "STATE     USAGE    OPERATION  MODE       REPOS       RECONCILED            PATH\n\
+             degraded  claimed  none       automatic  1(dirty=1)  2026-09-08T10:00:00Z  /status/example"
+        );
+    }
+
+    #[test]
+    fn serializes_the_versioned_json_contract() {
+        let snapshot = StatusSnapshot::empty();
+        let value = serde_json::to_value(snapshot).expect("status snapshot should serialize");
+
+        assert_eq!(value["schema_version"], STATUS_SCHEMA_VERSION);
+        assert!(value["snapshot_at"].is_string());
+        assert_eq!(value["workspaces"], serde_json::json!([]));
     }
 
     fn operation(workspace_id: WorkspaceId, lease_expires_at: Timestamp) -> OperationIntent {

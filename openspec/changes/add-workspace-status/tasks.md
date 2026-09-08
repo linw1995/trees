@@ -9,10 +9,10 @@
 
 ## 2. CLI and Rendering
 
-- [ ] 2.1 Add `trees status [--all] [--json]` parsing and dispatch
-- [ ] 2.2 Render deterministic human summaries, including empty state and
+- [x] 2.1 Add `trees status [--all] [--json]` parsing and dispatch
+- [x] 2.2 Render deterministic human summaries, including empty state and
   reclaimed filtering
-- [ ] 2.3 Render the versioned JSON envelope without non-JSON stdout output
+- [x] 2.3 Render the versioned JSON envelope without non-JSON stdout output
 
 ## 3. Verification and Documentation
 

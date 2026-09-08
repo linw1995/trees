@@ -20,6 +20,7 @@ pub enum Command {
     Release(ReleaseArgs),
     Config(ConfigArgs),
     Gc(GcArgs),
+    Status(StatusArgs),
     Codex(CodexArgs),
 }
 
@@ -96,6 +97,15 @@ pub struct GcArgs {
 
     #[arg(long)]
     pub force: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct StatusArgs {
+    #[arg(long, help = "Include reclaimed workspace records")]
+    pub all: bool,
+
+    #[arg(long, help = "Print the workspace status snapshot as JSON")]
+    pub json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -344,6 +354,18 @@ mod tests {
         assert!(arguments.dry_run);
         assert!(arguments.yes);
         assert!(arguments.force);
+    }
+
+    #[test]
+    fn parses_status_output_and_reclaimed_filters() {
+        let cli = Cli::try_parse_from(["trees", "status", "--all", "--json"])
+            .expect("status command should parse");
+
+        let Command::Status(arguments) = cli.command else {
+            panic!("expected status command");
+        };
+        assert!(arguments.all);
+        assert!(arguments.json);
     }
 
     #[test]

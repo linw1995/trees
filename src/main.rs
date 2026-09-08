@@ -15,6 +15,7 @@ fn run(cli: trees::cli::Cli) -> ExitCode {
         trees::cli::Command::Release(arguments) => run_release(arguments),
         trees::cli::Command::Config(arguments) => run_config(arguments),
         trees::cli::Command::Gc(arguments) => run_gc(arguments),
+        trees::cli::Command::Status(arguments) => run_status(arguments),
         trees::cli::Command::Codex(arguments) => run_codex(arguments),
     }
 }
@@ -360,6 +361,34 @@ fn execute_gc_report(
     let mut connection = trees::database::open_default().map_err(|error| error.to_string())?;
     trees::gc::execute(&mut connection, arguments.older_than, arguments.force)
         .map_err(|error| error.to_string())
+}
+
+fn run_status(arguments: trees::cli::StatusArgs) -> ExitCode {
+    let snapshot = match load_status_snapshot(arguments.all) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if arguments.json {
+        print_json(&snapshot)
+    } else {
+        println!("{}", trees::status::render_human(&snapshot));
+        ExitCode::SUCCESS
+    }
+}
+
+fn load_status_snapshot(include_reclaimed: bool) -> Result<trees::status::StatusSnapshot, String> {
+    let mut connection = match trees::database::open_read_only() {
+        Ok(connection) => connection,
+        Err(trees::database::DatabaseError::ReadOnlyDatabaseMissing(_)) => {
+            return Ok(trees::status::StatusSnapshot::empty());
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    trees::status::load_snapshot(&mut connection, include_reclaimed)
+        .map_err(|error| format!("failed to load workspace status: {error}"))
 }
 
 fn print_automatic_claim_result(result: &trees::workspace::AutomaticClaimResult) {
