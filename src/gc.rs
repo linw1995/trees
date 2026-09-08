@@ -258,6 +258,19 @@ pub struct RemovalReport {
     pub error: Option<String>,
 }
 
+struct StartedRemoval {
+    operation: crate::storage::OperationRow,
+    lease_id: crate::domain::LeaseId,
+}
+
+enum PreparedRemoval {
+    Ready {
+        workspace: crate::storage::WorkspaceRow,
+        plan: RemovalPlan,
+    },
+    Complete(RemovalReport),
+}
+
 enum GcCandidateResult {
     Reclaimed(CanonicalPath),
     Skipped(GcSkipped),
@@ -407,11 +420,8 @@ pub fn remove_workspace(
 ) -> Result<RemovalReport, GcError> {
     let preflight = scan_removal(connection, workspace_id, force)?;
     let workspace_path = preflight.workspace.canonical_path.clone();
-    if preflight.reason == GcCandidateReason::ExpiredOperation {
-        reconciliation::recover_expired_operation(connection, workspace_id)
-            .map_err(GcError::Reconciliation)?;
-    } else if preflight.reason != GcCandidateReason::Eligible {
-        return Ok(removal_rejected(workspace_path, preflight.reason));
+    if let Some(report) = admit_removal_preflight(connection, workspace_id, preflight)? {
+        return Ok(report);
     }
 
     let refreshed = find_workspace(connection, workspace_id).map_err(GcError::Database)?;
@@ -421,7 +431,47 @@ pub fn remove_workspace(
             GcCandidateReason::Reclaimed,
         ));
     }
-    let details_json = removal_details(&refreshed.canonical_path, force, None);
+    let Some(started) = begin_removal_operation(connection, workspace_id, &refreshed, force)?
+    else {
+        return Ok(removal_rejected(
+            workspace_path,
+            GcCandidateReason::ActiveOperation,
+        ));
+    };
+    if let Some(report) =
+        reconcile_started_removal(connection, workspace_id, &workspace_path, &started, force)?
+    {
+        return Ok(report);
+    }
+    match prepare_started_removal(connection, workspace_id, &started.lease_id, force)? {
+        PreparedRemoval::Ready { workspace, plan } => {
+            execute_prepared_removal(connection, workspace_id, started, workspace, plan, force)
+        }
+        PreparedRemoval::Complete(report) => Ok(report),
+    }
+}
+
+fn admit_removal_preflight(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+    preflight: RemovalPreflight,
+) -> Result<Option<RemovalReport>, GcError> {
+    if preflight.reason == GcCandidateReason::ExpiredOperation {
+        reconciliation::recover_expired_operation(connection, workspace_id)
+            .map_err(GcError::Reconciliation)?;
+        return Ok(None);
+    }
+    Ok((preflight.reason != GcCandidateReason::Eligible)
+        .then(|| removal_rejected(preflight.workspace.canonical_path, preflight.reason)))
+}
+
+fn begin_removal_operation(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+    workspace: &crate::storage::WorkspaceRow,
+    force: bool,
+) -> Result<Option<StartedRemoval>, GcError> {
+    let details_json = removal_details(&workspace.canonical_path, force, None);
     let intent = OperationIntent::new(
         *workspace_id,
         "remove",
@@ -430,98 +480,173 @@ pub fn remove_workspace(
         details_json.clone(),
     );
     let lease_id = intent.lease_id;
-    let operation = match begin_operation(connection, &intent) {
-        Ok(operation) => operation,
-        Err(OperationIntentError::WorkspaceBusy(_)) => {
-            return Ok(removal_rejected(
-                workspace_path,
-                GcCandidateReason::ActiveOperation,
-            ));
-        }
-        Err(OperationIntentError::Database(error)) => return Err(GcError::Database(error)),
-    };
+    match begin_operation(connection, &intent) {
+        Ok(operation) => Ok(Some(StartedRemoval {
+            operation,
+            lease_id,
+        })),
+        Err(OperationIntentError::WorkspaceBusy(_)) => Ok(None),
+        Err(OperationIntentError::Database(error)) => Err(GcError::Database(error)),
+    }
+}
 
+fn reconcile_started_removal(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+    workspace_path: &CanonicalPath,
+    started: &StartedRemoval,
+    force: bool,
+) -> Result<Option<RemovalReport>, GcError> {
     if let Err(error) = reconciliation::reconcile_workspace_with_lease(
         connection,
         workspace_id,
-        &operation.id,
-        &lease_id,
+        &started.operation.id,
+        &started.lease_id,
     ) {
         let error_text = error.to_string();
         finish_removal_failure(
             connection,
-            &lease_id,
+            &started.lease_id,
             workspace_id,
-            removal_details(&workspace_path, force, Some(&error_text)),
+            removal_details(workspace_path, force, Some(&error_text)),
             &error_text,
         )?;
-        return Ok(removal_failed(
-            workspace_path,
+        return Ok(Some(removal_failed(
+            workspace_path.clone(),
             GcCandidateReason::GitError,
             error_text,
-        ));
+        )));
     }
+    Ok(None)
+}
 
+fn prepare_started_removal(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+    lease_id: &crate::domain::LeaseId,
+    force: bool,
+) -> Result<PreparedRemoval, GcError> {
     let workspace = find_workspace(connection, workspace_id).map_err(GcError::Database)?;
     let reason = removal_reason_while_owned(connection, &workspace, force)?;
     if reason != GcCandidateReason::Eligible {
-        finish_removal_skip(
+        return finish_skipped_removal(
             connection,
-            &lease_id,
             workspace_id,
-            removal_details(&workspace.canonical_path, force, None),
+            lease_id,
+            workspace,
+            force,
             reason,
-        )?;
-        return Ok(removal_rejected(workspace.canonical_path, reason));
+        );
     }
 
     let repositories = list_repo_worktrees(connection, workspace_id).map_err(GcError::Database)?;
-    let removal_plan = match prepare_removal(&workspace, &repositories, force) {
-        Ok(plan) => plan,
+    match prepare_removal(&workspace, &repositories, force) {
+        Ok(plan) => Ok(PreparedRemoval::Ready { workspace, plan }),
         Err(reason) => {
-            finish_removal_skip(
-                connection,
-                &lease_id,
-                workspace_id,
-                removal_details(&workspace.canonical_path, force, None),
-                reason,
-            )?;
-            return Ok(removal_rejected(workspace.canonical_path, reason));
+            finish_skipped_removal(connection, workspace_id, lease_id, workspace, force, reason)
         }
-    };
-    if let Err(error) = remove_physical_workspace(&removal_plan, force, || {
-        renew_gc_lease(connection, &lease_id)
+    }
+}
+
+fn finish_skipped_removal(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+    lease_id: &crate::domain::LeaseId,
+    workspace: crate::storage::WorkspaceRow,
+    force: bool,
+    reason: GcCandidateReason,
+) -> Result<PreparedRemoval, GcError> {
+    finish_removal_skip(
+        connection,
+        lease_id,
+        workspace_id,
+        removal_details(&workspace.canonical_path, force, None),
+        reason,
+    )?;
+    Ok(PreparedRemoval::Complete(removal_rejected(
+        workspace.canonical_path,
+        reason,
+    )))
+}
+
+fn execute_prepared_removal(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+    started: StartedRemoval,
+    workspace: crate::storage::WorkspaceRow,
+    removal_plan: RemovalPlan,
+    force: bool,
+) -> Result<RemovalReport, GcError> {
+    if let Some(report) = remove_workspace_physical_state(
+        connection,
+        workspace_id,
+        &started,
+        &workspace,
+        &removal_plan,
+        force,
+    )? {
+        return Ok(report);
+    }
+    persist_removed_workspace(
+        connection,
+        workspace_id,
+        &started.lease_id,
+        workspace,
+        force,
+    )
+}
+
+fn remove_workspace_physical_state(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+    started: &StartedRemoval,
+    workspace: &crate::storage::WorkspaceRow,
+    removal_plan: &RemovalPlan,
+    force: bool,
+) -> Result<Option<RemovalReport>, GcError> {
+    if let Err(error) = remove_physical_workspace(removal_plan, force, || {
+        renew_gc_lease(connection, &started.lease_id)
     }) {
         let error_text = error.to_string();
         let _ = reconciliation::reconcile_workspace_with_lease(
             connection,
             workspace_id,
-            &operation.id,
-            &lease_id,
+            &started.operation.id,
+            &started.lease_id,
         );
         finish_removal_failure(
             connection,
-            &lease_id,
+            &started.lease_id,
             workspace_id,
             removal_details(&workspace.canonical_path, force, Some(&error_text)),
             &error_text,
         )?;
-        return Ok(removal_failed(
-            workspace.canonical_path,
+        return Ok(Some(removal_failed(
+            workspace.canonical_path.clone(),
             GcCandidateReason::GitError,
             error_text,
-        ));
+        )));
     }
+    Ok(None)
+}
+
+fn persist_removed_workspace(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+    lease_id: &crate::domain::LeaseId,
+    workspace: crate::storage::WorkspaceRow,
+    force: bool,
+) -> Result<RemovalReport, GcError> {
     if let Err(error) = record_workspace_explicitly_removed(
         connection,
-        &lease_id,
+        lease_id,
         workspace_id,
         Some(removal_details(&workspace.canonical_path, force, None)),
     ) {
         let error_text = error.to_string();
         finish_removal_failure(
             connection,
-            &lease_id,
+            lease_id,
             workspace_id,
             removal_details(&workspace.canonical_path, force, Some(&error_text)),
             &error_text,
