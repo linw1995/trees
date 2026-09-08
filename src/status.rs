@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
@@ -189,7 +190,60 @@ fn repository_summary(repositories: &[RepoWorktreeStatus]) -> String {
         .iter()
         .filter(|repository| repository.state == RepoWorktreeState::Attached)
         .count();
-    format!("{available}/{}", repositories.len())
+    let capacity = repositories.len();
+    if capacity == 0 {
+        return "0/0".to_owned();
+    }
+    let labels = shortest_unique_repository_labels(repositories);
+    format!("{available}/{capacity} {}", labels.join(","))
+}
+
+fn shortest_unique_repository_labels(repositories: &[RepoWorktreeStatus]) -> Vec<String> {
+    let components = repositories
+        .iter()
+        .map(|repository| {
+            let parts = repository
+                .source_path
+                .as_path()
+                .iter()
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>();
+            if parts.is_empty() {
+                vec![repository.source_path.as_path().as_os_str().to_owned()]
+            } else {
+                parts
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut depths = vec![1; components.len()];
+
+    loop {
+        let labels = components
+            .iter()
+            .zip(&depths)
+            .map(|(parts, depth)| {
+                parts[parts.len().saturating_sub(*depth)..]
+                    .iter()
+                    .collect::<PathBuf>()
+                    .display()
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        let counts = labels.iter().fold(HashMap::new(), |mut counts, label| {
+            *counts.entry(label).or_insert(0_usize) += 1;
+            counts
+        });
+        let mut expanded = false;
+        for ((label, depth), parts) in labels.iter().zip(&mut depths).zip(&components) {
+            if counts[label] > 1 && *depth < parts.len() {
+                *depth += 1;
+                expanded = true;
+            }
+        }
+        if !expanded {
+            return labels;
+        }
+    }
 }
 
 fn compact_timestamp(timestamp: &Timestamp, snapshot_at: &Timestamp) -> String {
@@ -589,8 +643,8 @@ mod tests {
 
         assert_eq!(
             output,
-            "STATE     USAGE    MODE  REPOS  RECONCILED  PATH\n\
-             degraded  claimed  🤖    0/1    10:00       /status/example"
+            "STATE     USAGE    MODE  REPOS        RECONCILED  PATH\n\
+             degraded  claimed  🤖    0/1 example  10:00       /status/example"
         );
     }
 
@@ -619,6 +673,48 @@ mod tests {
             ),
             "2025-12-31 23:59"
         );
+    }
+
+    #[test]
+    fn renders_shortest_unique_repository_labels() {
+        let unique = vec![
+            repository("/origins/api", RepoWorktreeState::Attached),
+            repository("/origins/web", RepoWorktreeState::Attached),
+        ];
+        assert_eq!(repository_summary(&unique), "2/2 api,web");
+
+        let conflicting = vec![
+            repository("/teams/one/api", RepoWorktreeState::Attached),
+            repository("/teams/two/api", RepoWorktreeState::Attached),
+            repository("/teams/two/web", RepoWorktreeState::Dirty),
+        ];
+        assert_eq!(repository_summary(&conflicting), "2/3 one/api,two/api,web");
+
+        let recursive = vec![
+            repository("/org/red/services/api", RepoWorktreeState::Attached),
+            repository("/org/blue/services/api", RepoWorktreeState::Dirty),
+        ];
+        assert_eq!(
+            repository_summary(&recursive),
+            "1/2 red/services/api,blue/services/api"
+        );
+        assert_eq!(repository_summary(&[]), "0/0");
+    }
+
+    fn repository(source_path: &str, state: RepoWorktreeState) -> RepoWorktreeStatus {
+        RepoWorktreeStatus {
+            repo_worktree_id: RepoWorktreeId::new(),
+            origin_repository_id: OriginRepositoryId::new(),
+            source_path: path(source_path),
+            worktree_path: CanonicalPath::from_absolute(format!(
+                "/worktrees/{}",
+                RepoWorktreeId::new()
+            ))
+            .expect("test worktree path should be absolute"),
+            state,
+            last_head: None,
+            last_observed_at: Timestamp::now(),
+        }
     }
 
     #[test]
