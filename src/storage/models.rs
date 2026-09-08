@@ -167,6 +167,13 @@ pub struct WorkspaceClaimRow {
     pub claimed_at: Timestamp,
 }
 
+#[derive(Debug)]
+pub struct WorkspaceOpenSnapshot {
+    pub workspace: WorkspaceRow,
+    pub claim: Option<WorkspaceClaimRow>,
+    pub operation_lease: Option<OperationLeaseRow>,
+}
+
 #[derive(Debug, Insertable)]
 #[diesel(table_name = workspace_claims)]
 pub struct NewWorkspaceClaim {

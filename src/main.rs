@@ -16,6 +16,7 @@ fn run(cli: trees::cli::Cli) -> ExitCode {
         trees::cli::Command::Config(arguments) => run_config(arguments),
         trees::cli::Command::Gc(arguments) => run_gc(arguments),
         trees::cli::Command::Status(arguments) => run_status(arguments),
+        trees::cli::Command::Open(arguments) => run_open(arguments),
         trees::cli::Command::Codex(arguments) => run_codex(arguments),
     }
 }
@@ -66,12 +67,20 @@ fn run_create(arguments: trees::cli::CreateArgs) -> ExitCode {
 fn resolve_open_program(open: Option<Option<OsString>>) -> Result<Option<OsString>, String> {
     match open {
         None => Ok(None),
-        Some(Some(program)) if !program.is_empty() => Ok(Some(program)),
-        Some(Some(_)) => Err("--open program must not be empty".to_owned()),
-        Some(None) => std::env::var_os("SHELL")
+        Some(program) => resolve_required_program(program, "--open").map(Some),
+    }
+}
+
+fn resolve_required_program(
+    program: Option<OsString>,
+    option_name: &str,
+) -> Result<OsString, String> {
+    match program {
+        Some(program) if !program.is_empty() => Ok(program),
+        Some(_) => Err(format!("{option_name} program must not be empty")),
+        None => std::env::var_os("SHELL")
             .filter(|shell| !shell.is_empty())
-            .map(Some)
-            .ok_or_else(|| "$SHELL is unset or empty; use --open=<PROGRAM>".to_owned()),
+            .ok_or_else(|| format!("$SHELL is unset or empty; use {option_name}=<PROGRAM>")),
     }
 }
 
@@ -139,6 +148,33 @@ fn open_workspace(program: &OsStr, workspace_path: &Path) -> ExitCode {
         error
     );
     ExitCode::FAILURE
+}
+
+fn run_open(arguments: trees::cli::OpenArgs) -> ExitCode {
+    let program = match resolve_required_program(arguments.program, "--program") {
+        Ok(program) => program,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut connection = match trees::database::open_read_only() {
+        Ok(connection) => connection,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let workspace_path =
+        match trees::workspace_open::resolve_target(&mut connection, &arguments.workspace_id) {
+            Ok(path) => path,
+            Err(error) => {
+                eprintln!("Error: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+    drop(connection);
+    open_workspace(&program, workspace_path.as_path())
 }
 
 #[cfg(not(unix))]

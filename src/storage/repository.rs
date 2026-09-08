@@ -20,7 +20,7 @@ use super::models::{
     NewOriginRepository, NewRepoWorktree, NewWorkspace, NewWorkspaceClaim, NewWorkspacePool,
     NewWorkspacePoolRepository, OperationIntent, OperationLeaseRow, OperationRow,
     OriginRepositoryRow, PoolOriginRepository, RepoWorktreeRow, WorkspaceClaimRow,
-    WorkspacePoolRepositoryRow, WorkspacePoolRow, WorkspaceRow,
+    WorkspaceOpenSnapshot, WorkspacePoolRepositoryRow, WorkspacePoolRow, WorkspaceRow,
 };
 use super::transaction::{
     with_immediate_transaction, with_retrying_short_transaction, with_short_transaction,
@@ -122,6 +122,58 @@ pub fn find_workspace(
         .find(workspace_id)
         .select(WorkspaceRow::as_select())
         .first(connection)
+}
+
+pub fn find_workspace_open_snapshot(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+) -> QueryResult<Option<WorkspaceOpenSnapshot>> {
+    workspaces::table
+        .left_join(workspace_claims::table)
+        .left_join(operation_leases::table)
+        .filter(workspaces::id.eq(workspace_id))
+        .select((
+            WorkspaceRow::as_select(),
+            (
+                workspace_claims::id,
+                workspace_claims::workspace_id,
+                workspace_claims::claimed_at,
+            )
+                .nullable(),
+            (
+                operation_leases::id,
+                operation_leases::operation_id,
+                operation_leases::workspace_id,
+                operation_leases::lease_expires_at,
+            )
+                .nullable(),
+        ))
+        .first::<(
+            WorkspaceRow,
+            Option<(ClaimId, WorkspaceId, Timestamp)>,
+            Option<(LeaseId, OperationId, WorkspaceId, Timestamp)>,
+        )>(connection)
+        .optional()
+        .map(|row| {
+            row.map(
+                |(workspace, claim, operation_lease)| WorkspaceOpenSnapshot {
+                    workspace,
+                    claim: claim.map(|(id, workspace_id, claimed_at)| WorkspaceClaimRow {
+                        id,
+                        workspace_id,
+                        claimed_at,
+                    }),
+                    operation_lease: operation_lease.map(
+                        |(id, operation_id, workspace_id, lease_expires_at)| OperationLeaseRow {
+                            id,
+                            operation_id,
+                            workspace_id,
+                            lease_expires_at,
+                        },
+                    ),
+                },
+            )
+        })
 }
 
 pub fn find_origin_repository_by_identity(

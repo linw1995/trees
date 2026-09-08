@@ -21,6 +21,7 @@ pub enum Command {
     Config(ConfigArgs),
     Gc(GcArgs),
     Status(StatusArgs),
+    Open(OpenArgs),
     Codex(CodexArgs),
 }
 
@@ -115,6 +116,15 @@ pub struct StatusArgs {
 pub enum StatusView {
     Pools,
     Workspaces,
+}
+
+#[derive(Debug, Args)]
+pub struct OpenArgs {
+    #[arg(value_name = "WORKSPACE_ID")]
+    pub workspace_id: crate::domain::WorkspaceId,
+
+    #[arg(long, value_name = "PROGRAM", require_equals = true)]
+    pub program: Option<OsString>,
 }
 
 #[derive(Debug, Args)]
@@ -388,6 +398,29 @@ mod tests {
         };
         assert_eq!(arguments.view, StatusView::Pools);
         assert!(!arguments.all);
+    }
+
+    #[test]
+    fn parses_workspace_open_with_an_explicit_program() {
+        let workspace_id = crate::domain::WorkspaceId::new();
+        let cli = Cli::try_parse_from([
+            "trees".to_owned(),
+            "open".to_owned(),
+            workspace_id.to_string(),
+            "--program=/usr/bin/env".to_owned(),
+        ])
+        .expect("open command should parse");
+
+        let Command::Open(arguments) = cli.command else {
+            panic!("expected open command");
+        };
+        assert_eq!(arguments.workspace_id, workspace_id);
+        assert_eq!(arguments.program, Some(OsString::from("/usr/bin/env")));
+    }
+
+    #[test]
+    fn rejects_an_invalid_workspace_open_identifier() {
+        assert!(Cli::try_parse_from(["trees", "open", "invalid"]).is_err());
     }
 
     #[test]

@@ -85,9 +85,9 @@
 
 - [x] 12.1 Replace the human workspace path with its stable ID while retaining
   canonical paths in JSON
-- [ ] 12.2 Add `trees open <workspace-id> [--program=<PROGRAM>]` with shared
+- [x] 12.2 Add `trees open <workspace-id> [--program=<PROGRAM>]` with shared
   program resolution and process handoff
-- [ ] 12.3 Enforce reclaimed, operation-lease, and automatic-claim admission
+- [x] 12.3 Enforce reclaimed, operation-lease, and automatic-claim admission
   without lifecycle mutation
 - [ ] 12.4 Add integration tests and documentation for workspace open
 
