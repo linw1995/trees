@@ -238,18 +238,13 @@ pub fn render_workspaces_human(snapshot: &StatusSnapshot, color: bool) -> String
         return "No workspaces.".to_owned();
     }
 
-    let headers = ["STATE", "USAGE", "MODE", "REPOS", "RECONCILED", "PATH"];
+    let headers = ["STATUS", "MODE", "REPOS", "RECONCILED", "PATH"];
     let rows = snapshot
         .workspaces
         .iter()
         .map(|workspace| {
             [
-                workspace.state.to_string(),
-                if workspace.claim.is_some() {
-                    "claimed".to_owned()
-                } else {
-                    "unclaimed".to_owned()
-                },
+                workspace_status_summary(workspace),
                 mode_symbol(workspace.management_mode).to_owned(),
                 repository_summary(&workspace.repo_worktrees, color),
                 workspace.last_reconciled_at.as_ref().map_or_else(
@@ -315,6 +310,10 @@ fn display_width(value: &str) -> usize {
 }
 
 fn colored_count(value: usize, ansi_color: u8) -> String {
+    colorize(&value.to_string(), ansi_color)
+}
+
+fn colorize(value: &str, ansi_color: u8) -> String {
     format!("\u{1b}[{ansi_color}m{value}\u{1b}[0m")
 }
 
@@ -323,6 +322,15 @@ fn mode_symbol(mode: WorkspaceManagementMode) -> &'static str {
         WorkspaceManagementMode::Automatic => "🤖",
         WorkspaceManagementMode::Manual => "👤",
     }
+}
+
+fn workspace_status_summary(workspace: &WorkspaceStatus) -> String {
+    let usage = if workspace.claim.is_some() {
+        "claimed"
+    } else {
+        "unclaimed"
+    };
+    format!("{}/{usage}", workspace.state)
 }
 
 fn repository_summary(repositories: &[RepoWorktreeStatus], color: bool) -> String {
@@ -343,6 +351,11 @@ fn repository_summary(repositories: &[RepoWorktreeStatus], color: bool) -> Strin
         .map(|repository| repository.source_path.clone())
         .collect::<Vec<_>>();
     let labels = shortest_unique_path_labels(&paths);
+    let labels = repositories
+        .iter()
+        .zip(labels)
+        .map(|(repository, label)| repository_label(&label, repository.state, color))
+        .collect::<Vec<_>>();
     let counts = if color {
         format!(
             "{}/{}",
@@ -353,6 +366,24 @@ fn repository_summary(repositories: &[RepoWorktreeStatus], color: bool) -> Strin
         format!("{ready}/{capacity}")
     };
     format!("{counts} {}", labels.join(","))
+}
+
+fn repository_label(label: &str, state: RepoWorktreeState, color: bool) -> String {
+    let (suffix, ansi_color) = match state {
+        RepoWorktreeState::Attached => (None, 32),
+        RepoWorktreeState::Pending => (Some("pending"), 33),
+        RepoWorktreeState::Dirty => (Some("dirty"), 31),
+        RepoWorktreeState::Missing => (Some("missing"), 31),
+        RepoWorktreeState::Diverged => (Some("mismatch"), 31),
+        RepoWorktreeState::Failed => (Some("error"), 31),
+        RepoWorktreeState::Reclaimed => (Some("removed"), 90),
+    };
+    let display = suffix.map_or_else(|| label.to_owned(), |suffix| format!("{label}({suffix})"));
+    if color {
+        colorize(&display, ansi_color)
+    } else {
+        display
+    }
 }
 
 fn shortest_unique_path_labels(paths: &[CanonicalPath]) -> Vec<String> {
@@ -1034,8 +1065,8 @@ mod tests {
 
         assert_eq!(
             output,
-            "STATE     USAGE    MODE  REPOS        RECONCILED  PATH\n\
-             degraded  claimed  🤖    0/1 example  10:00       /status/example"
+            "STATUS            MODE  REPOS               RECONCILED  PATH\n\
+             degraded/claimed  🤖    0/1 example(dirty)  10:00       /status/example"
         );
     }
 
@@ -1083,7 +1114,7 @@ mod tests {
         ];
         assert_eq!(
             repository_summary(&conflicting, false),
-            "2/3 one/api,two/api,web"
+            "2/3 one/api,two/api,web(dirty)"
         );
 
         let recursive = vec![
@@ -1092,9 +1123,33 @@ mod tests {
         ];
         assert_eq!(
             repository_summary(&recursive, false),
-            "1/2 red/services/api,blue/services/api"
+            "1/2 red/services/api,blue/services/api(dirty)"
         );
         assert_eq!(repository_summary(&[], false), "0/0");
+    }
+
+    #[test]
+    fn labels_problem_repositories_with_friendly_states() {
+        let repositories = [
+            repository("/origins/ready", RepoWorktreeState::Attached),
+            repository("/origins/pending", RepoWorktreeState::Pending),
+            repository("/origins/dirty", RepoWorktreeState::Dirty),
+            repository("/origins/missing", RepoWorktreeState::Missing),
+            repository("/origins/mismatch", RepoWorktreeState::Diverged),
+            repository("/origins/error", RepoWorktreeState::Failed),
+            repository("/origins/removed", RepoWorktreeState::Reclaimed),
+        ];
+
+        assert_eq!(
+            repository_summary(&repositories, false),
+            "1/7 ready,pending(pending),dirty(dirty),missing(missing),\
+             mismatch(mismatch),error(error),removed(removed)"
+        );
+        let colored = repository_summary(&repositories, true);
+        assert!(colored.contains("\u{1b}[32mready\u{1b}[0m"));
+        assert!(colored.contains("\u{1b}[33mpending(pending)\u{1b}[0m"));
+        assert!(colored.contains("\u{1b}[31mdirty(dirty)\u{1b}[0m"));
+        assert!(colored.contains("\u{1b}[90mremoved(removed)\u{1b}[0m"));
     }
 
     fn repository(source_path: &str, state: RepoWorktreeState) -> RepoWorktreeStatus {

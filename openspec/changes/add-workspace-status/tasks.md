@@ -71,7 +71,7 @@
 
 ## 10. Workspace Status and Repo Labels
 
-- [ ] 10.1 Merge workspace state and usage into one status column
-- [ ] 10.2 Color repo labels by state and append friendly suffixes to non-ready
+- [x] 10.1 Merge workspace state and usage into one status column
+- [x] 10.2 Color repo labels by state and append friendly suffixes to non-ready
   repositories
 - [ ] 10.3 Update tests and documentation, then rerun the complete quality gates
