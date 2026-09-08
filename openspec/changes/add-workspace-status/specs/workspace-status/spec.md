@@ -92,7 +92,10 @@ The workspace human view SHALL render `STATE`, `USAGE`, `MODE`, `REPOS`,
 `RECONCILED`, and `PATH`. It SHALL omit current operation details. Workspace
 `MODE` SHALL render as `🤖` for automatic and `👤` for manual. Workspace `REPOS`
 SHALL render attached repo-worktree count over total count followed by shortest
-unique source-path labels.
+unique source-path labels. The attached count SHALL be presented as ready. On
+an interactive terminal, ready and total SHALL be green and blue. With
+non-terminal standard output or `NO_COLOR`, status SHALL emit the same
+`<ready>/<total>` value without ANSI escapes.
 
 Missing times SHALL render as `never`. Relative to `snapshot_at` in UTC, times
 SHALL render as `HH:MM` on the same date, `MM-DD HH:MM` within the same year,
@@ -111,6 +114,12 @@ spacing SHALL NOT be a machine-readable contract.
 
 - **WHEN** status uses the workspace view
 - **THEN** each human row contains the canonical path identifying that slot
+
+#### Scenario: Color Workspace Repo Readiness
+
+- **WHEN** workspace status writes to an interactive terminal and two of three
+  repo worktrees are attached
+- **THEN** `REPOS` renders `2/3` with `2` green and `3` blue
 
 ### Requirement: Provide View-Specific Versioned JSON
 

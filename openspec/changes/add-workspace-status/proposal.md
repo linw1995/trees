@@ -18,6 +18,8 @@ not answer this capacity-planning question directly.
   canonical paths and lifecycle details in the workspace view.
 - Color available, total, and abnormal capacity counts green, blue, and red on
   interactive terminals while preserving plain output for pipelines.
+- Color ready and total repo-worktree counts green and blue in the workspace
+  detail view under the same terminal policy.
 - Emit a versioned JSON document matching the selected view.
 - Keep status observational: it does not reconcile, recover, acquire, release,
   run Git, inspect the filesystem, or append lifecycle events.

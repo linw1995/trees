@@ -92,6 +92,10 @@ date, `MM-DD HH:MM` within the same year, and `YYYY-MM-DD HH:MM` otherwise.
 The renderer accounts for terminal display width when aligning emoji. Table
 spacing is not a machine-readable compatibility contract.
 
+For workspace `REPOS`, the attached count is presented as the ready count. On
+an interactive terminal, ready and total are green and blue. Non-terminal
+output and `NO_COLOR` use the same `<ready>/<total>` value without ANSI escapes.
+
 ### Emit View-Specific Versioned JSON
 
 `--json` emits exactly one JSON document. Both envelopes contain

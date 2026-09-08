@@ -62,3 +62,9 @@
   available-total-abnormal capacity value and terminal-aware colors
 - [x] 8.2 Update pool JSON, tests, and documentation, then rerun the complete
   quality gates
+
+## 9. Workspace Repo Colors
+
+- [ ] 9.1 Color ready and total repo counts in the workspace view under the
+  existing terminal-aware color policy
+- [ ] 9.2 Update tests and documentation, then rerun the complete quality gates
