@@ -101,10 +101,12 @@ trees status --json
 The human-readable view reports workspace health, claim usage, management mode,
 repo availability and capacity, a compact UTC reconciliation time, and the
 canonical path. Repo availability counts worktrees whose persisted state is
-`attached`. Automatic mode is shown as `🤖`, while manual mode is shown as
-`👤`. Reclaimed workspace records are hidden by default; `--all` includes them.
-`--json` emits a versioned snapshot with complete workspace, claim, current
-operation, and repo-worktree details.
+`attached`. The count is followed by repository source-path base names. A base
+name conflict expands only the conflicting labels with parent components until
+they are unique within the workspace. Automatic mode is shown as `🤖`, while
+manual mode is shown as `👤`. Reclaimed workspace records are hidden by
+default; `--all` includes them. `--json` emits a versioned snapshot with
+complete workspace, claim, current operation, and repo-worktree details.
 
 Status reads one consistent SQLite snapshot. It does not reconcile, recover an
 expired operation, run Git, inspect workspace files, or assert that an
