@@ -74,9 +74,9 @@
 - [x] 10.1 Merge workspace state and usage into one status column
 - [x] 10.2 Color repo labels by state and append friendly suffixes to non-ready
   repositories
-- [ ] 10.3 Update tests and documentation, then rerun the complete quality gates
+- [x] 10.3 Update tests and documentation, then rerun the complete quality gates
 
 ## 11. Workspace Claim Indicator
 
 - [x] 11.1 Replace claimed and unclaimed text with an optional `🔒` claim marker
-- [ ] 11.2 Update tests and documentation, then rerun the complete quality gates
+- [x] 11.2 Update tests and documentation, then rerun the complete quality gates
