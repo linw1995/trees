@@ -11,12 +11,13 @@ use trees::gc;
 use trees::git;
 use trees::storage::{
     begin_operation, find_origin_repository_by_identity, find_running_operation, find_workspace,
-    find_workspace_by_path, find_workspace_pool_by_id, list_repo_worktrees,
+    find_workspace_by_path, find_workspace_claim, find_workspace_pool_by_id, list_repo_worktrees,
     list_workspace_pool_repositories, OperationIntent,
 };
 use trees::workspace::{
     allocate_automatic_workspace, create_with_connection, prepare_automatic, prepare_create,
     provision_automatic, release_automatic_workspace, AutomaticCreateRequest, CreateRequest,
+    WorkspaceError,
 };
 
 fn test_root() -> PathBuf {
@@ -145,6 +146,104 @@ fn reuses_the_same_automatic_slot_across_acquire_release_cycles() {
         second.claim_id,
     )
     .expect("second allocation should be released");
+    cleanup_fixture(fixture);
+}
+
+#[test]
+fn aligns_a_reused_slot_to_upstream_head_for_a_workspace_repo_input() {
+    let mut fixture = automatic_fixture();
+    fs::write(fixture.source.as_path().join("README"), "upstream update\n")
+        .expect("upstream repository should be updated");
+    run_git(
+        fixture.source.as_path(),
+        &["commit", "-qam", "upstream update"],
+    );
+    let upstream_head = git::inspect_repository(&fixture.source)
+        .expect("upstream repository should be inspectable")
+        .head;
+    let mut plan = prepare_automatic(&AutomaticCreateRequest {
+        repositories: vec![fixture.worktree_path.clone()],
+    })
+    .expect("workspace repo input should resolve upstream");
+    plan.workspace_root = fixture.plan.workspace_root.clone();
+
+    let allocation = allocate_automatic_workspace(&mut fixture.connection, &plan)
+        .expect("idle slot should be acquired");
+
+    assert_eq!(allocation.workspace_path, fixture.workspace.canonical_path);
+    let worktree = git::find_worktree(&fixture.source, &fixture.worktree_path)
+        .expect("reused worktree should remain attached");
+    assert_eq!(worktree.head.as_deref(), Some(upstream_head.as_str()));
+    let persisted = list_repo_worktrees(&mut fixture.connection, &fixture.workspace.id)
+        .expect("worktree snapshot should be readable");
+    assert_eq!(
+        persisted[0].last_head.as_deref(),
+        Some(upstream_head.as_str())
+    );
+
+    release_automatic_workspace(
+        &mut fixture.connection,
+        &allocation.workspace_path,
+        allocation.claim_id,
+    )
+    .expect("workspace should be released");
+    cleanup_fixture(fixture);
+}
+
+#[test]
+fn fails_acquire_when_upstream_alignment_would_overwrite_an_ignored_file() {
+    let mut fixture = automatic_fixture();
+    let original_head = fixture.plan.repositories[0].head.clone();
+    fs::write(
+        fixture.source.as_path().join(".git/info/exclude"),
+        "generated\n",
+    )
+    .expect("exclude file should be updated");
+    fs::write(fixture.worktree_path.join("generated"), "local\n")
+        .expect("workspace file should be written");
+    fs::write(fixture.source.as_path().join("generated"), "upstream\n")
+        .expect("upstream file should be written");
+    run_git(fixture.source.as_path(), &["add", "-f", "generated"]);
+    run_git(
+        fixture.source.as_path(),
+        &["commit", "-qm", "track generated file"],
+    );
+    let upstream_head = git::inspect_repository(&fixture.source)
+        .expect("upstream repository should be inspectable")
+        .head;
+    let mut plan = prepare_automatic(&AutomaticCreateRequest {
+        repositories: vec![fixture.source.as_path().to_owned()],
+    })
+    .expect("upstream input should be prepared");
+    plan.workspace_root = fixture.plan.workspace_root.clone();
+
+    let error = allocate_automatic_workspace(&mut fixture.connection, &plan)
+        .expect_err("conflicting alignment should fail create");
+
+    assert!(matches!(
+        error,
+        WorkspaceError::Git(git::GitError::CommandFailed { .. })
+    ));
+    assert!(
+        find_workspace_claim(&mut fixture.connection, &fixture.workspace.id)
+            .expect("claim lookup should succeed")
+            .is_none()
+    );
+    let worktree = git::find_worktree(&fixture.source, &fixture.worktree_path)
+        .expect("workspace should remain attached");
+    assert_eq!(worktree.head.as_deref(), Some(original_head.as_str()));
+    assert_eq!(
+        fs::read_to_string(fixture.worktree_path.join("generated"))
+            .expect("workspace file should remain readable"),
+        "local\n"
+    );
+    assert_eq!(
+        git::inspect_repository(&fixture.source)
+            .expect("upstream repository should remain inspectable")
+            .head,
+        upstream_head
+    );
+
     cleanup_fixture(fixture);
 }
 
