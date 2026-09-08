@@ -238,7 +238,8 @@ fn status_renders_ordered_persisted_state_and_preserves_storage() {
     let human = String::from_utf8(human.stdout).expect("human output should be UTF-8");
     assert!(human.starts_with("REPOS"));
     assert!(human.contains("example"));
-    assert!(human.contains("0/1"));
+    assert!(human.contains("0/1/0"));
+    assert!(!human.contains('\u{1b}'));
     assert!(!human.contains("degraded"));
     assert!(!human.contains(manual_path.as_path().to_str().unwrap()));
     assert!(!human.contains(automatic_path.as_path().to_str().unwrap()));
@@ -276,9 +277,10 @@ fn status_renders_ordered_persisted_state_and_preserves_storage() {
     let pools_value: serde_json::Value =
         serde_json::from_slice(&pools_json.stdout).expect("pool JSON should be valid");
     assert_eq!(pools_value["view"], "pools");
-    assert_eq!(pools_value["pools"][0]["allocated"], 1);
+    assert!(pools_value["pools"][0].get("allocated").is_none());
     assert_eq!(pools_value["pools"][0]["available"], 0);
     assert_eq!(pools_value["pools"][0]["capacity"], 1);
+    assert_eq!(pools_value["pools"][0]["abnormal"], 0);
 
     let json = command(&root)
         .args(["status", "--view", "workspaces", "--all", "--json"])
