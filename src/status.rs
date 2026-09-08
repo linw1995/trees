@@ -325,12 +325,11 @@ fn mode_symbol(mode: WorkspaceManagementMode) -> &'static str {
 }
 
 fn workspace_status_summary(workspace: &WorkspaceStatus) -> String {
-    let usage = if workspace.claim.is_some() {
-        "claimed"
+    if workspace.claim.is_some() {
+        format!("{} 🔒", workspace.state)
     } else {
-        "unclaimed"
-    };
-    format!("{}/{usage}", workspace.state)
+        workspace.state.to_string()
+    }
 }
 
 fn repository_summary(repositories: &[RepoWorktreeStatus], color: bool) -> String {
@@ -1065,8 +1064,8 @@ mod tests {
 
         assert_eq!(
             output,
-            "STATUS            MODE  REPOS               RECONCILED  PATH\n\
-             degraded/claimed  🤖    0/1 example(dirty)  10:00       /status/example"
+            "STATUS       MODE  REPOS               RECONCILED  PATH\n\
+             degraded 🔒  🤖    0/1 example(dirty)  10:00       /status/example"
         );
     }
 

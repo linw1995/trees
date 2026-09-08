@@ -78,5 +78,5 @@
 
 ## 11. Workspace Claim Indicator
 
-- [ ] 11.1 Replace claimed and unclaimed text with an optional `🔒` claim marker
+- [x] 11.1 Replace claimed and unclaimed text with an optional `🔒` claim marker
 - [ ] 11.2 Update tests and documentation, then rerun the complete quality gates
