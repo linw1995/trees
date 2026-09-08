@@ -1,163 +1,132 @@
 ## Context
 
-The lifecycle database already contains workspace snapshots, active claims,
-operation facts and leases, latest operation events, and repo-worktree
-snapshots. Those records deliberately separate health, usage, and mutation
-ownership. A status command needs to preserve that separation and must not
-turn an inspection into an operation boundary with recovery side effects.
+Automatic workspaces are slots in a UUID-backed pool defined by an exact set
+of origin repositories. The primary status question is pool capacity: total
+slots for each repository set, claimed slots, and slots available in the
+current database snapshot. Individual workspace snapshots remain useful for
+diagnosis but should be an explicit detail view rather than the default.
 
 ## Goals / Non-Goals
 
 **Goals:**
 
-- Provide one fast inventory of all current managed workspaces.
-- Make health, usage, operation activity, and observation freshness separately
-  visible.
-- Provide deterministic human output and a versioned machine-readable form.
-- Read a transaction-consistent SQLite snapshot without changing external
-  or persisted state.
+- Make the default view one row per automatic repository-set pool.
+- Report allocated, available, and total current slot counts.
+- Retain an explicit per-workspace detail view.
+- Keep human output compact and provide versioned JSON for both views.
+- Read one consistent SQLite snapshot without changing persisted or external
+  state.
 
 **Non-Goals:**
 
+- Treat manual workspaces as allocatable pool capacity.
+- Count reclaimed tombstones as current capacity.
 - Reconcile persisted state with Git or the filesystem.
-- Assert that an unclaimed workspace is currently reusable.
+- Assert live reusability without access-boundary checks.
 - Show lifecycle history or completed operations.
-- Add interactive watching, filtering, sorting options, or a single-workspace
-  selector in the first version.
-- Replace `gc --dry-run` as the authoritative reclamation preview.
 
 ## Decisions
 
-### Use a Top-Level Status Command
+### Select an Explicit View
 
-The interface is `trees status [--all] [--json]`. With no options, it lists all
-non-reclaimed manual and automatic workspaces. `--all` also includes
-reclaimed tombstones. An empty or not-yet-created lifecycle database is a
-successful empty result; an unreadable, corrupt, or incompatible database is
-an error.
+The interface is `trees status [--view pools|workspaces] [--all] [--json]`.
+`--view` defaults to `pools`. The pool view reports automatic allocation and
+capacity. The workspace view retains individual manual and automatic records.
+`--all` is valid only with `--view workspaces` and includes reclaimed workspace
+tombstones there.
 
-The command intentionally has no positional default tied to the current
-directory. Its primary purpose is a global inventory, and implicit current
-workspace selection would make the same invocation change meaning based on
-the caller's directory. A future detail command or selector can be added
-without changing this contract.
+The default is pool-oriented because automatic create allocates by exact
+repository set rather than by a caller-selected workspace path. Making the
+workspace view explicit prevents physical slot details from obscuring the
+capacity question.
 
-### Keep Health, Usage, and Operation State Orthogonal
+### Define Pool Counts as Disjoint Slot Classes
 
-Each projection retains the persisted workspace health state and management
-mode. Usage is derived only from active claim presence and is rendered as
-`claimed` or `unclaimed`. Current operation information is derived from the
-operation lease, its operation fact, its latest operation event, and the
-snapshot time.
+Each pool uses current non-reclaimed automatic workspaces as its capacity.
+`allocated` counts slots with an active workspace claim. `available` counts
+slots whose persisted workspace state is `ready`, with no active claim and no
+retained operation lease. These sets are disjoint. Remaining capacity is
+unavailable because it is unhealthy, incomplete, or has an operation without
+a claim.
 
-An operation lease is `active` when its latest operation state is `running` and
-its expiry is later than the snapshot time. It is `expired` when the latest
-state is `running` and its expiry is at or before the snapshot time. It is
-`inconsistent` when a lease remains for a terminal operation. Absence of a
-lease is rendered as no current operation. Status reports these facts but does
-not take over or remove an expired or inconsistent lease.
+Availability is a persisted scheduling hint, not a live reusability promise.
+Automatic allocation still performs reconciliation before returning a slot.
 
-The command does not expose an `available` or `reusable` boolean. Reusability
-requires fresh Git and filesystem checks at an access boundary, so deriving it
-from a possibly stale database snapshot would overstate what status knows.
+### Identify Pools by Repository Set
 
-### Read One Consistent Snapshot
+The pool view loads repositories from the explicit pool-to-origin relations.
+Repositories within a pool are ordered by canonical source path. Each display
+label starts with the source-path base name. Conflicting labels expand by one
+parent component at a time until they are unique within the repository set.
 
-Status captures one `snapshot_at` timestamp and loads workspaces, claims,
-current operation leases and facts, latest operation states, and associated
-repo worktrees inside one read-only SQLite transaction. The projection layer
-uses `snapshot_at` for every lease-expiry comparison. It performs no write,
-starts no workspace operation, and invokes no Git or filesystem observation.
+Pools use lexicographical order based on their canonical source-path list, with
+pool ID as a deterministic tiebreaker. Pools without current
+non-reclaimed automatic slots are omitted.
 
-Repository queries should batch related rows and assemble the projection by
-workspace ID rather than issuing one query per relationship for each
-workspace. Paths use lexicographical order, and repo worktrees within each
-workspace are ordered by worktree path, making human and JSON output stable.
+### Render Compact Pool and Detailed Workspace Tables
 
-### Provide a Human Summary and Versioned JSON
+The human pool view contains these columns:
 
-Human output contains one row per workspace with these columns:
+- `REPOS`: comma-separated shortest unique repository labels.
+- `ALLOCATED`: slots with active claims.
+- `AVAILABLE/CAPACITY`: persisted available slots over current slots.
+- `UPDATED`: the latest workspace `updated_at` in the pool, rendered compactly.
+
+The human workspace view contains these columns:
 
 - `STATE`: persisted workspace health.
 - `USAGE`: `claimed` or `unclaimed`.
 - `MODE`: `🤖` for automatic or `👤` for manual.
-- `REPOS`: attached repo worktrees over total capacity, followed by compact
-  repository names.
-- `RECONCILED`: a compact UTC timestamp relative to `snapshot_at`, or `never`.
+- `REPOS`: attached repo worktrees over total repo-worktree count followed by
+  shortest unique repository labels.
+- `RECONCILED`: compact persisted reconciliation time or `never`.
+- `PATH`: canonical workspace path.
 
-The human summary omits current operation details because completed operations
-normally have no retained lease, making the column mostly empty. It also omits
-the canonical workspace path because repository labels provide the intended
-compact identity. JSON retains the complete path and current operation
-projection for diagnostics and automation.
+Compact timestamps use UTC relative to `snapshot_at`: `HH:MM` on the same
+date, `MM-DD HH:MM` within the same year, and `YYYY-MM-DD HH:MM` otherwise.
+The renderer accounts for terminal display width when aligning emoji. Table
+spacing is not a machine-readable compatibility contract.
 
-`REPOS` uses `<available>/<capacity>`, where `available` counts repo worktrees
-whose persisted state is `attached`, and `capacity` counts all managed repo
-worktrees. The counts are followed by comma-separated repository labels. This
-is persisted availability rather than a fresh Git assertion.
+### Emit View-Specific Versioned JSON
 
-Each repository label starts with the base name of its persisted `source_path`.
-When labels conflict within one workspace, only the conflicting labels expand
-by one parent component at a time until every label is unique. For example,
-`/teams/one/api` and `/teams/two/api` render as `one/api` and `two/api`; deeper
-conflicts continue expanding toward the path root. Repository order remains
-the deterministic repo-worktree order used by the snapshot.
+`--json` emits exactly one JSON document. Both envelopes contain
+`schema_version`, `view`, and `snapshot_at`.
 
-`RECONCILED` renders `HH:MM` when its UTC date matches `snapshot_at`,
-`MM-DD HH:MM` within the same UTC year, and `YYYY-MM-DD HH:MM` otherwise. The
-renderer accounts for terminal display width when aligning emoji. Output uses
-no color-dependent meaning, and the emoji mapping is documented. Column
-spacing is presentation detail rather than a parsing contract. When no rows
-match, it prints `No workspaces.` and exits successfully.
+The pool envelope contains `pools`. Each pool object contains `pool_id`, an
+ordered `repositories` array, `allocated`, `available`, `capacity`, and
+nullable `updated_at`. Each repository contains `origin_repository_id`,
+`source_path`, and its computed `label`.
 
-`--json` emits exactly one JSON document on standard output with this envelope:
+The workspace envelope contains `workspaces` and retains the complete existing
+workspace, claim, current operation, and repo-worktree projection. Canonical
+paths and operation details therefore remain available without widening the
+default human view.
 
-```json
-{
-  "schema_version": 1,
-  "snapshot_at": "2026-09-08T12:00:00.000Z",
-  "workspaces": []
-}
-```
+### Read Without Side Effects
 
-Each workspace object contains `workspace_id`, `path`, `management_mode`,
-`state`, `created_at`, `updated_at`, `last_reconciled_at`, `last_released_at`,
-`reclaimed_at`, nullable `pool_id`, nullable `claim`, nullable
-`current_operation`, and a `repo_worktrees` array. Claim objects contain
-`claim_id` and `claimed_at`. Operation objects contain `operation_id`, `kind`,
-`state`, `lease_id`, `lease_expires_at`, and `lease_status`. Repo-worktree
-objects contain `repo_worktree_id`, `origin_repository_id`, `source_path`,
-`worktree_path`, `state`, `last_head`, and `last_observed_at`.
-Identifiers and timestamps are JSON strings, absent optional values are JSON
-`null`, and the workspace array follows the same canonical-path order as human
-output. Human diagnostics go to standard error and never contaminate JSON
-standard output.
-
-### Treat Reported Problems as Data
-
-Degraded workspaces, dirty or missing worktrees, active claims, and expired or
-inconsistent operation leases do not make the command fail. They are the state
-the command was asked to report. Status returns a nonzero exit only when it
-cannot load or serialize the snapshot.
+Each selected view captures one `snapshot_at` and loads all required pool,
+workspace, claim, lease, event, relation, and origin rows with batched queries
+inside one read-only SQLite transaction. Status does not reconcile, recover,
+acquire, release, run Git, inspect the filesystem, or append lifecycle events.
 
 ## Risks / Trade-Offs
 
-- [Persisted state may be stale after external Git changes] → Show
-  `last_reconciled_at` and per-worktree observation times, and avoid an
-  availability claim.
-- [A full inventory can grow large] → Keep human output at workspace summary
-  granularity, batch database reads, and reserve pagination or filters for a
-  later change backed by measured need.
-- [Versioned JSON can become a compatibility burden] → Add an explicit schema
-  version and evolve it intentionally rather than treating table formatting as
-  an API.
-- [Leaked terminal leases reveal an otherwise hidden invariant violation] →
-  Render them as `inconsistent` without attempting to repair them.
+- [Persisted availability can be stale after external Git changes] → Keep the
+  access-boundary reconciliation requirement and document the metric as a
+  persisted scheduling hint.
+- [Pool aggregation can hide an unhealthy individual slot] → Preserve the
+  explicit workspace detail view.
+- [Two JSON views require consumers to branch] → Include an explicit `view`
+  discriminator and keep one schema version while the command is unreleased.
+- [Repository labels can collide] → Expand only conflicting labels to their
+  shortest unique source-path suffix.
 
 ## Migration Plan
 
-No data migration is required. Rolling back removes the command and its query
-projection while leaving all lifecycle records unchanged.
+No data migration is required. The command has not been released, so its JSON
+version 1 contract can adopt the view discriminator without a compatibility
+transition. Rolling back removes the query and rendering code without changing
+lifecycle records.
 
 ## Open Questions
 

@@ -39,9 +39,19 @@
 - [x] 5.2 Cover base-name conflicts and recursive parent expansion, update
   documentation, and rerun the complete quality gates
 
-## 6. Human Path Removal
+## 6. Human Path Placement
 
-- [x] 6.1 Remove the canonical workspace path from human output while retaining
-  it in JSON
-- [ ] 6.2 Update output tests and documentation, then rerun the complete quality
-  gates
+- [ ] 6.1 Keep canonical workspace paths out of the pool view and retain them
+  only in the explicit workspace detail view
+- [ ] 6.2 Update output tests and documentation for the view-specific path
+  contract
+
+## 7. Pool Allocation View
+
+- [ ] 7.1 Add automatic repository-pool allocation, availability, and capacity
+  projections alongside the existing workspace projection
+- [ ] 7.2 Add `--view pools|workspaces`, default to pools, and restrict `--all`
+  to the workspace view
+- [ ] 7.3 Emit versioned JSON matching the selected pool or workspace view
+- [ ] 7.4 Update integration tests and documentation, then rerun the complete
+  quality gates

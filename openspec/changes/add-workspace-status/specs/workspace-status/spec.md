@@ -1,188 +1,166 @@
 ## ADDED Requirements
 
-### Requirement: List Persisted Workspace Status
+### Requirement: Select Pool or Workspace Status
 
-The CLI SHALL provide `trees status [--all] [--json]`. By default, the command
-SHALL list every managed workspace whose persisted state is not `reclaimed`,
-including both `automatic` and `manual` management modes. With `--all`, it
-SHALL also list reclaimed workspace tombstones. Workspaces SHALL be ordered by
-canonical workspace path, and repo worktrees within a workspace SHALL be
-ordered by canonical worktree path.
+The CLI SHALL provide `trees status [--view pools|workspaces] [--all]
+[--json]`. The view SHALL default to `pools`. The pool view SHALL contain only
+automatic repository-set pools with at least one current non-reclaimed
+workspace. The workspace view SHALL contain individual automatic and manual
+workspaces, exclude reclaimed records by default, and include reclaimed
+tombstones with `--all`. The CLI SHALL reject `--all` unless the selected view
+is `workspaces`.
 
-#### Scenario: List Current Managed Workspaces
+#### Scenario: Default to Pool Allocation Status
 
-- **WHEN** status is invoked without options and lifecycle storage contains
-  automatic, manual, and reclaimed workspaces
-- **THEN** it reports the automatic and manual workspaces in canonical-path
-  order and omits the reclaimed workspaces
+- **WHEN** status is invoked without a view
+- **THEN** it reports automatic repository-set pool allocation and capacity
 
-#### Scenario: Include Reclaimed Tombstones
+#### Scenario: Select Workspace Details
 
-- **WHEN** status is invoked with `--all`
-- **THEN** it additionally reports workspaces whose persisted state is
-  `reclaimed`
+- **WHEN** status is invoked with `--view workspaces`
+- **THEN** it reports individual non-reclaimed manual and automatic workspaces
 
-#### Scenario: Report an Empty Installation
+#### Scenario: Include Reclaimed Workspace Details
 
-- **WHEN** status is invoked before the lifecycle database has been created or
-  no workspaces match
-- **THEN** it succeeds with an empty result and does not create the database
+- **WHEN** status is invoked with `--view workspaces --all`
+- **THEN** it additionally reports reclaimed workspace tombstones
 
-### Requirement: Separate Health, Usage, and Operation Activity
+#### Scenario: Reject All for Pool Status
 
-Each reported workspace SHALL retain its persisted health state and management
-mode. Status SHALL independently report usage as `claimed` when an active
-workspace claim exists and `unclaimed` otherwise. When an operation lease
-exists, status SHALL report the operation identity, kind, latest state, lease
-identity, lease expiry, and a lease status derived against one snapshot time.
-It SHALL classify a running operation lease as `active` when its expiry is
-later than the snapshot time and `expired` otherwise. It SHALL classify a lease
-retained for a terminal operation as `inconsistent`. It SHALL NOT report an
-unclaimed workspace as available or reusable without access-boundary
-reconciliation.
+- **WHEN** status is invoked with `--view pools --all` or `--all` without an
+  explicit workspace view
+- **THEN** it fails before opening lifecycle storage
 
-#### Scenario: Report a Claimed Healthy Workspace
+### Requirement: Aggregate Automatic Pool Allocation
 
-- **WHEN** a ready workspace has an active claim and no operation lease
-- **THEN** status reports health `ready`, usage `claimed`, the claim details,
-  and no current operation
+Each pool row SHALL represent one exact persisted repository-set pool.
+Capacity SHALL count its automatic workspaces whose state is not `reclaimed`.
+Allocated SHALL count capacity slots with an active workspace claim. Available
+SHALL count capacity slots whose persisted state is `ready` and which have
+neither an active workspace claim nor a retained operation lease. Allocated and
+available SHALL be disjoint. Status SHALL NOT describe persisted availability
+as live reusability.
 
-#### Scenario: Report an Expired Running Operation
+#### Scenario: Count Allocated and Available Slots
 
-- **WHEN** a workspace has a running operation whose lease expiry is at or
-  before the status snapshot time
-- **THEN** status reports the operation lease as `expired` without recovering
-  or taking over the operation
+- **WHEN** a pool contains two claimed slots, three ready slots without claims
+  or operation leases, and one unclaimed degraded slot
+- **THEN** status reports allocated `2`, available `3`, and capacity `6`
 
-#### Scenario: Avoid an Unsupported Reusability Claim
+#### Scenario: Exclude an Active Unclaimed Operation
 
-- **WHEN** an automatic workspace is ready, unclaimed, and has no current
-  operation in SQLite
-- **THEN** status reports those facts without asserting that current Git and
-  filesystem state make the workspace reusable
+- **WHEN** a ready unclaimed slot has a retained operation lease
+- **THEN** it contributes to capacity but not allocated or available
 
-### Requirement: Read Status Without Side Effects
+#### Scenario: Exclude Reclaimed and Manual Workspaces
 
-Status SHALL capture one snapshot timestamp and load workspace, claim,
-operation lease, operation fact, latest operation state, and repo-worktree
-records in one read-only SQLite transaction. All lease-expiry classifications
-SHALL use that timestamp. Status SHALL NOT open lifecycle storage for writing
-or append an event. It SHALL NOT acquire or release a claim or start or recover
-an operation. It SHALL NOT invoke Git or inspect workspace filesystem contents.
+- **WHEN** lifecycle storage contains reclaimed automatic workspaces and manual
+  workspaces with the same repositories as a pool
+- **THEN** neither contributes to that pool's current capacity
 
-#### Scenario: Preserve State During Inspection
+### Requirement: Display Repository Sets Compactly
 
-- **WHEN** status reports degraded workspaces or expired operation leases
-- **THEN** database contents, Git metadata, and workspace filesystem contents
-  remain unchanged
+The pool view SHALL load repositories through persisted pool-to-origin
+relations and order them by canonical source path. Each repository label SHALL
+use the shortest source-path suffix unique within that pool. Labels SHALL begin
+as source-path base names. Conflicting labels SHALL expand by one parent
+component at a time until unique. Pools SHALL use lexicographical order based
+on their canonical source-path lists and then pool ID.
 
-#### Scenario: Observe One Database Snapshot
+#### Scenario: Display Unique Repository Base Names
 
-- **WHEN** another process commits a claim or operation change while status is
-  loading its report
-- **THEN** every relationship in the returned report comes from one consistent
-  SQLite snapshot rather than a mixture of states before and after that commit
-
-### Requirement: Render a Human Workspace Summary
-
-Without `--json`, status SHALL render one row per workspace containing the
-persisted workspace state, claim usage, management mode, repo-worktree
-availability and capacity, repository labels, and last reconciliation time. It
-SHALL omit current operation details and the canonical workspace path from
-human output while retaining them in JSON. Management mode SHALL render as
-`🤖` for `automatic` and `👤` for `manual`, and column alignment SHALL account
-for terminal display width.
-
-Repo availability SHALL count repo worktrees whose persisted state is
-`attached`; capacity SHALL count all managed repo worktrees. The value SHALL
-start with `<available>/<capacity>`. It SHALL represent persisted state and
-SHALL NOT imply a fresh Git observation.
-
-The count SHALL be followed by comma-separated repository labels derived from
-persisted source paths. Each label SHALL use the shortest path suffix that is
-unique among repositories in that workspace. Labels SHALL begin as the source
-path base name. When two or more labels conflict, only those labels SHALL expand
-by one parent component and SHALL continue expanding toward the root until
-they are unique. Labels SHALL retain deterministic repo-worktree order. A
-workspace with no repo worktrees SHALL render only `0/0`.
-
-Missing reconciliation time SHALL render as `never`. Relative to the snapshot
-time in UTC, reconciliation time SHALL render as `HH:MM` on the same date,
-`MM-DD HH:MM` within the same year, and `YYYY-MM-DD HH:MM` otherwise. Output
-meaning SHALL NOT depend on terminal color. Empty results SHALL print
-`No workspaces.` and succeed. Human table spacing SHALL NOT be a
-machine-readable compatibility contract.
-
-#### Scenario: Summarize Repository Availability
-
-- **WHEN** a workspace has attached, dirty, and missing repo worktrees
-- **THEN** its human row reports attached count over total count without hiding
-  the workspace health state
-
-#### Scenario: Display Repository Base Names
-
-- **WHEN** every source repository base name in a workspace is unique
-- **THEN** the repo summary displays those base names after availability and
-  capacity
+- **WHEN** one pool contains source repositories `/origins/api` and
+  `/origins/web`
+- **THEN** its repository labels are `api,web`
 
 #### Scenario: Expand Conflicting Repository Labels
 
-- **WHEN** two source repositories have the same base name
-- **THEN** their labels add parent components until each label is unique while
-  unrelated unique labels remain at their shortest suffix
+- **WHEN** one pool contains `/teams/one/api` and `/teams/two/api`
+- **THEN** its repository labels are `one/api,two/api`
 
-#### Scenario: Shorten a Reconciliation Time from Today
+### Requirement: Render Pool and Workspace Human Views
 
-- **WHEN** a workspace reconciliation and the status snapshot have the same
-  UTC date
-- **THEN** its human row reports only the reconciliation hour and minute
+The pool human view SHALL render `REPOS`, `ALLOCATED`,
+`AVAILABLE/CAPACITY`, and `UPDATED`. `UPDATED` SHALL be the greatest
+`updated_at` among current capacity slots. The workspace human view SHALL
+render `STATE`, `USAGE`, `MODE`, `REPOS`, `RECONCILED`, and `PATH`. It SHALL
+omit current operation details. Workspace `MODE` SHALL render as `🤖` for
+automatic and `👤` for manual. Workspace `REPOS` SHALL render attached
+repo-worktree count over total count followed by shortest unique source-path
+labels.
 
-#### Scenario: Report Unhealthy State Successfully
+Missing times SHALL render as `never`. Relative to `snapshot_at` in UTC, times
+SHALL render as `HH:MM` on the same date, `MM-DD HH:MM` within the same year,
+and `YYYY-MM-DD HH:MM` otherwise. Column alignment SHALL account for terminal
+display width and SHALL NOT depend on color. An empty view SHALL print
+`No workspace pools.` or `No workspaces.` as appropriate and succeed. Human
+spacing SHALL NOT be a machine-readable contract.
 
-- **WHEN** the report contains a degraded workspace or unavailable repo
-  worktree
-- **THEN** the command renders that state and exits successfully
+#### Scenario: Render Compact Pool Capacity
 
-### Requirement: Provide Versioned JSON Status
+- **WHEN** a pool for `api,web` has two allocated, three available, and six
+  capacity slots
+- **THEN** its human row contains `api,web`, `2`, and `3/6`
 
-With `--json`, status SHALL write exactly one JSON document to standard output. The
-document SHALL contain integer `schema_version` equal to `1`, one
-`snapshot_at` timestamp, and a `workspaces` array. Each workspace object SHALL
-contain `workspace_id`, `path`, `management_mode`, `state`, `created_at`,
-`updated_at`, `last_reconciled_at`, `last_released_at`, `reclaimed_at`, nullable
-`pool_id`, nullable `claim`, nullable `current_operation`, and
-`repo_worktrees`. A claim SHALL contain `claim_id` and `claimed_at`. A current
-operation SHALL contain `operation_id`, `kind`, `state`, `lease_id`,
-`lease_expires_at`, and `lease_status`. Each repo worktree SHALL contain
-`repo_worktree_id`, `origin_repository_id`, `source_path`, `worktree_path`,
-`state`, `last_head`, and `last_observed_at`. Identifiers and timestamps SHALL
-be strings, absent optional values SHALL be JSON `null`, arrays SHALL preserve
-the required ordering, and diagnostics SHALL be written only to standard error.
+#### Scenario: Retain Paths in the Workspace View
 
-#### Scenario: Emit Structured Workspace Details
+- **WHEN** status uses the workspace view
+- **THEN** each human row contains the canonical path identifying that slot
 
-- **WHEN** status is invoked with `--json` for a claimed workspace with a
-  current operation and multiple repo worktrees
-- **THEN** standard output is one schema-versioned JSON document containing the claim,
-  operation lease classification, and every ordered repo-worktree snapshot
+### Requirement: Provide View-Specific Versioned JSON
 
-#### Scenario: Emit an Empty JSON Result
+With `--json`, status SHALL write exactly one JSON document to standard output.
+Every document SHALL contain integer `schema_version` equal to `1`, a `view`
+string, and one `snapshot_at` timestamp. Pool JSON SHALL use `view = "pools"`
+and contain a `pools` array. Each pool object SHALL contain `pool_id`, ordered
+`repositories`, `allocated`, `available`, `capacity`, and nullable `updated_at`.
+Each repository SHALL contain `origin_repository_id`, `source_path`, and
+`label`.
 
-- **WHEN** status is invoked with `--json` and no workspaces match
-- **THEN** standard output contains a valid version-1 document with an empty
-  `workspaces` array
+Workspace JSON SHALL use `view = "workspaces"` and contain a `workspaces`
+array. Each workspace SHALL contain `workspace_id`, `path`, `management_mode`,
+`state`, lifecycle timestamps, nullable `pool_id`, nullable claim and current
+operation details, and ordered repo-worktree snapshots. Diagnostics SHALL be
+written only to standard error.
 
-### Requirement: Fail Only When Status Cannot Be Produced
+#### Scenario: Emit Pool JSON by Default
 
-Status SHALL return a nonzero exit only when it cannot open or read the
-lifecycle database, construct a consistent projection, or serialize the
-selected output. Persisted unhealthy states, claims, active or expired
-operations, and reclaimed rows included by `--all` SHALL be report data rather
-than command failures.
+- **WHEN** status is invoked with `--json` and no explicit view
+- **THEN** standard output is one version-1 pools document
+
+#### Scenario: Emit Workspace Detail JSON
+
+- **WHEN** status is invoked with `--view workspaces --json`
+- **THEN** standard output is one version-1 workspaces document retaining paths,
+  claims, current operations, and repo-worktree details
+
+### Requirement: Read Status Without Side Effects
+
+Status SHALL capture one snapshot timestamp and load every relationship needed
+by the selected view through batched queries in one read-only SQLite
+transaction. Status SHALL NOT open lifecycle storage for writing or append an
+event. It SHALL NOT acquire or release a claim or start or recover an
+operation. It SHALL NOT invoke Git or inspect workspace filesystem contents.
+
+Persisted unhealthy states, claims, leases, and reclaimed rows in the explicit
+workspace all-view SHALL be report data rather than command failures. Status
+SHALL return nonzero only when arguments are invalid or it cannot load or
+serialize a complete snapshot.
+
+#### Scenario: Preserve State During Inspection
+
+- **WHEN** either status view reports persisted lifecycle data
+- **THEN** database contents, Git metadata, and workspace filesystem contents
+  remain unchanged
+
+#### Scenario: Report an Empty Installation
+
+- **WHEN** status is invoked before the lifecycle database has been created
+- **THEN** the selected view succeeds with an empty result and does not create
+  the database
 
 #### Scenario: Reject a Corrupt Lifecycle Database
 
-- **WHEN** the lifecycle database exists but cannot provide a valid status
-  snapshot
-- **THEN** status writes an error to standard error, returns nonzero, and emits no
-  partial JSON document
+- **WHEN** the lifecycle database exists but cannot provide the selected view
+- **THEN** status writes an error to standard error, returns nonzero, and emits
+  no partial JSON document
