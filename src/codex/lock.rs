@@ -3,7 +3,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
-use snafu::Snafu;
+use snafu::{ResultExt, Snafu};
 
 use crate::paths::{self, StateDirectoryError};
 use crate::validation::{self, ValidationError};
@@ -28,10 +28,7 @@ impl WorkspaceLock {
             .write(true)
             .truncate(false)
             .open(&lock_path)
-            .map_err(|source| WorkspaceLockError::Io {
-                path: lock_path.clone(),
-                source,
-            })?;
+            .context(IoSnafu { path: &lock_path })?;
         file.try_lock_exclusive().map_err(|source| {
             if source.kind() == io::ErrorKind::WouldBlock {
                 WorkspaceLockError::Busy {

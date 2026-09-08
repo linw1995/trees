@@ -2,23 +2,20 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use crate::paths;
-use snafu::Snafu;
+use snafu::{ResultExt, Snafu};
 
 const WORKSPACES_DIR_KEY: &str = "workspaces_dir";
 
 pub fn workspaces_directory() -> Result<PathBuf, ConfigError> {
-    let configuration_path =
-        paths::configuration_path().map_err(|source| ConfigError::Path { source })?;
+    let configuration_path = paths::configuration_path().context(PathSnafu)?;
     let table = load_table(&configuration_path)?;
-    let default = paths::default_managed_workspace_directory()
-        .map_err(|source| ConfigError::Path { source })?;
+    let default = paths::default_managed_workspace_directory().context(PathSnafu)?;
     let default = normalize_existing_path(&configuration_path, default)?;
     configured_workspaces_directory(&configuration_path, &table, default)
 }
 
 pub fn set_workspaces_directory(path: &Path) -> Result<PathBuf, ConfigError> {
-    let configuration_path =
-        paths::configuration_path().map_err(|source| ConfigError::Path { source })?;
+    let configuration_path = paths::configuration_path().context(PathSnafu)?;
     set_workspaces_directory_at(&configuration_path, path)
 }
 
@@ -78,19 +75,12 @@ fn set_workspaces_directory_at(
             path: configuration_path.to_owned(),
             reason: "configuration path has no parent directory".to_owned(),
         })?;
-    fs::create_dir_all(parent).map_err(|source| ConfigError::Io {
-        path: parent.to_owned(),
-        source,
+    fs::create_dir_all(parent).context(IoSnafu { path: parent })?;
+    let document = toml::to_string_pretty(&toml::Value::Table(table)).context(SerializeSnafu {
+        path: configuration_path,
     })?;
-    let document = toml::to_string_pretty(&toml::Value::Table(table)).map_err(|source| {
-        ConfigError::Serialize {
-            path: configuration_path.to_owned(),
-            source,
-        }
-    })?;
-    fs::write(configuration_path, document).map_err(|source| ConfigError::Io {
-        path: configuration_path.to_owned(),
-        source,
+    fs::write(configuration_path, document).context(IoSnafu {
+        path: configuration_path,
     })?;
     Ok(resolved)
 }
@@ -108,10 +98,7 @@ fn load_table(path: &Path) -> Result<toml::Table, ConfigError> {
             });
         }
     };
-    let value = toml::from_str::<toml::Value>(&document).map_err(|source| ConfigError::Parse {
-        path: path.to_owned(),
-        source,
-    })?;
+    let value = toml::from_str::<toml::Value>(&document).context(ParseSnafu { path })?;
     value
         .as_table()
         .cloned()
@@ -137,9 +124,8 @@ fn normalize_existing_path(
     path: PathBuf,
 ) -> Result<PathBuf, ConfigError> {
     if path.exists() {
-        fs::canonicalize(&path).map_err(|source| ConfigError::Io {
-            path: configuration_path.to_owned(),
-            source,
+        fs::canonicalize(&path).context(IoSnafu {
+            path: configuration_path,
         })
     } else {
         Ok(path)

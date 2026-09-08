@@ -154,9 +154,7 @@ fn reconcile_workspace_inner(
 }
 
 fn renew_lease(connection: &mut SqliteConnection, lease_id: &LeaseId) -> Result<(), GitError> {
-    match renew_operation_lease(connection, lease_id).map_err(|error| GitError::Heartbeat {
-        message: error.to_string(),
-    })? {
+    match renew_operation_lease(connection, lease_id).map_err(GitError::from_heartbeat_source)? {
         true => Ok(()),
         false => Err(GitError::Heartbeat {
             message: "operation lease is no longer owned".to_owned(),
@@ -253,7 +251,7 @@ where
                                 })
                             }
                         }
-                        Err(error) if matches!(&error, GitError::Heartbeat { .. }) => Err(error),
+                        Err(error) if error.is_heartbeat() => Err(error),
                         Err(error) => Ok(Observation::Diverged {
                             head: worktree.head,
                             branch: worktree.branch,
@@ -282,7 +280,7 @@ where
                                 identity
                             )),
                         }),
-                        Err(error) if matches!(&error, GitError::Heartbeat { .. }) => Err(error),
+                        Err(error) if error.is_heartbeat() => Err(error),
                         Err(error) => Ok(Observation::Diverged {
                             head: None,
                             branch: None,
@@ -297,7 +295,7 @@ where
 }
 
 fn observation_from_git_error(error: GitError) -> Result<Observation, GitError> {
-    if matches!(&error, GitError::Heartbeat { .. }) {
+    if error.is_heartbeat() {
         Err(error)
     } else {
         Ok(Observation::Failed(error.to_string()))
@@ -460,7 +458,7 @@ where
                 "worktree identity {} is not listed by the source repository",
                 identity
             ))),
-            Err(error) if matches!(&error, GitError::Heartbeat { .. }) => Err(error),
+            Err(error) if error.is_heartbeat() => Err(error),
             Err(error) => Ok(unsafe_recovery_observation(format!(
                 "worktree path is not a Git worktree: {error}"
             ))),
@@ -515,7 +513,7 @@ where
 }
 
 fn recovery_observation_from_git_error(error: GitError) -> Result<RecoveryObservation, GitError> {
-    if matches!(&error, GitError::Heartbeat { .. }) {
+    if error.is_heartbeat() {
         Err(error)
     } else {
         Ok(unsafe_recovery_observation(error.to_string()))

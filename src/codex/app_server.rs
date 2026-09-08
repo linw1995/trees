@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use snafu::Snafu;
+use snafu::{ResultExt, Snafu};
 
 const STDERR_TAIL_BYTES: usize = 8 * 1024;
 
@@ -44,7 +44,7 @@ impl AppServerProcess {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|source| AppServerError::Spawn { executable, source })?;
+            .context(SpawnSnafu { executable })?;
 
         let stdin = child.stdin.take().ok_or_else(|| {
             let _ = child.kill();
@@ -99,11 +99,7 @@ impl AppServerProcess {
         let deadline = Instant::now() + timeout;
 
         loop {
-            if let Some(status) = self
-                .child
-                .try_wait()
-                .map_err(|source| AppServerError::Io { source })?
-            {
+            if let Some(status) = self.child.try_wait().context(IoSnafu)? {
                 return Ok(status);
             }
             if Instant::now() >= deadline {
@@ -162,11 +158,7 @@ impl<W: Write> JsonRpcSession<W> {
         loop {
             let line = self.receive_line(method, deadline)?;
             let message: Value =
-                serde_json::from_str(&line).map_err(|source| AppServerError::MalformedMessage {
-                    method: method.to_owned(),
-                    line,
-                    source,
-                })?;
+                serde_json::from_str(&line).context(MalformedMessageSnafu { method, line })?;
 
             if message.get("id").and_then(Value::as_u64) != Some(id) {
                 if message.get("method").is_some() && message.get("id").is_some() {
@@ -203,14 +195,9 @@ impl<W: Write> JsonRpcSession<W> {
             .ok_or_else(|| AppServerError::Transport {
                 message: "app-server input is closed".to_owned(),
             })?;
-        serde_json::to_writer(&mut *writer, &message)
-            .map_err(|source| AppServerError::Json { source })?;
-        writer
-            .write_all(b"\n")
-            .map_err(|source| AppServerError::Io { source })?;
-        writer
-            .flush()
-            .map_err(|source| AppServerError::Io { source })
+        serde_json::to_writer(&mut *writer, &message).context(JsonSnafu)?;
+        writer.write_all(b"\n").context(IoSnafu)?;
+        writer.flush().context(IoSnafu)
     }
 
     fn receive_line(&self, method: &str, deadline: Instant) -> Result<String, AppServerError> {

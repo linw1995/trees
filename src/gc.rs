@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use diesel::sqlite::SqliteConnection;
-use snafu::{ResultExt, Snafu};
+use snafu::{OptionExt, ResultExt, Snafu};
 
 use crate::domain::{CanonicalPath, JsonDocument, Timestamp, WorkspaceId, WorkspaceState};
 use crate::git;
@@ -35,7 +35,7 @@ impl FromStr for GcDuration {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         let value = value.trim();
         if value.is_empty() {
-            return Err(GcDurationError::new("duration must not be empty"));
+            return EmptySnafu.fail();
         }
 
         let mut total = 0_i64;
@@ -49,13 +49,11 @@ impl FromStr for GcDuration {
                 }
             }
             if number_start == index || index == value.len() {
-                return Err(GcDurationError::new(
-                    "duration components require a number and a unit",
-                ));
+                return ComponentSnafu.fail();
             }
             let number = value[number_start..index]
                 .parse::<i64>()
-                .map_err(|_| GcDurationError::new("duration number is out of range"))?;
+                .context(NumberSnafu)?;
             let unit = value.as_bytes()[index] as char;
             index += 1;
             let multiplier = match unit {
@@ -65,38 +63,34 @@ impl FromStr for GcDuration {
                 'd' => 24 * 60 * 60,
                 'w' => 7 * 24 * 60 * 60,
                 _ => {
-                    return Err(GcDurationError::new(
-                        "duration units must be s, m, h, d, or w",
-                    ));
+                    return UnitSnafu.fail();
                 }
             };
             total = total
-                .checked_add(
-                    number
-                        .checked_mul(multiplier)
-                        .ok_or_else(|| GcDurationError::new("duration is out of range"))?,
-                )
-                .ok_or_else(|| GcDurationError::new("duration is out of range"))?;
+                .checked_add(number.checked_mul(multiplier).context(RangeSnafu)?)
+                .context(RangeSnafu)?;
         }
         if total <= 0 {
-            return Err(GcDurationError::new("duration must be greater than zero"));
+            return NonPositiveSnafu.fail();
         }
         Ok(Self { seconds: total })
     }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Snafu)]
-#[snafu(display("{message}"))]
-pub struct GcDurationError {
-    message: String,
-}
-
-impl GcDurationError {
-    fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-        }
-    }
+pub enum GcDurationError {
+    #[snafu(display("duration must not be empty"))]
+    Empty,
+    #[snafu(display("duration components require a number and a unit"))]
+    Component,
+    #[snafu(display("duration number is out of range"))]
+    Number { source: std::num::ParseIntError },
+    #[snafu(display("duration units must be s, m, h, d, or w"))]
+    Unit,
+    #[snafu(display("duration is out of range"))]
+    Range,
+    #[snafu(display("duration must be greater than zero"))]
+    NonPositive,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Default)]
@@ -1318,25 +1312,19 @@ where
     for worktree in &plan.worktrees {
         heartbeat()?;
         if worktree.remove_from_git {
-            let mut git_heartbeat = || {
-                heartbeat().map_err(|error| git::GitError::Heartbeat {
-                    message: error.to_string(),
-                })
-            };
+            let mut git_heartbeat = || heartbeat().map_err(git::GitError::from_heartbeat_source);
             if force {
                 git::remove_worktree_with_heartbeat(
                     &worktree.repository,
                     &worktree.path,
                     &mut git_heartbeat,
-                )
-                .map_err(|source| GcPhysicalError::Git { source })?;
+                )?;
             } else {
                 git::remove_clean_worktree_with_heartbeat(
                     &worktree.repository,
                     &worktree.path,
                     &mut git_heartbeat,
-                )
-                .map_err(|source| GcPhysicalError::Git { source })?;
+                )?;
             }
         } else if worktree.path.exists() {
             remove_path_with_heartbeat(&worktree.path, &mut heartbeat)?;
@@ -1348,9 +1336,8 @@ where
     }
     if plan.workspace_path.exists() {
         heartbeat()?;
-        fs::remove_dir(&plan.workspace_path).map_err(|source| GcPhysicalError::Io {
-            path: plan.workspace_path.clone(),
-            source,
+        fs::remove_dir(&plan.workspace_path).context(IoSnafu {
+            path: &plan.workspace_path,
         })?;
     }
     Ok(())
@@ -1361,30 +1348,15 @@ where
     F: FnMut() -> Result<(), GcPhysicalError>,
 {
     heartbeat()?;
-    let metadata = fs::symlink_metadata(path).map_err(|source| GcPhysicalError::Io {
-        path: path.to_owned(),
-        source,
-    })?;
+    let metadata = fs::symlink_metadata(path).context(IoSnafu { path })?;
     if metadata.file_type().is_dir() {
-        for entry in fs::read_dir(path).map_err(|source| GcPhysicalError::Io {
-            path: path.to_owned(),
-            source,
-        })? {
-            let entry = entry.map_err(|source| GcPhysicalError::Io {
-                path: path.to_owned(),
-                source,
-            })?;
+        for entry in fs::read_dir(path).context(IoSnafu { path })? {
+            let entry = entry.context(IoSnafu { path })?;
             remove_path_with_heartbeat(&entry.path(), heartbeat)?;
         }
-        fs::remove_dir(path).map_err(|source| GcPhysicalError::Io {
-            path: path.to_owned(),
-            source,
-        })?;
+        fs::remove_dir(path).context(IoSnafu { path })?;
     } else {
-        fs::remove_file(path).map_err(|source| GcPhysicalError::Io {
-            path: path.to_owned(),
-            source,
-        })?;
+        fs::remove_file(path).context(IoSnafu { path })?;
     }
     Ok(())
 }
@@ -1393,9 +1365,7 @@ fn renew_gc_lease(
     connection: &mut SqliteConnection,
     lease_id: &crate::domain::LeaseId,
 ) -> Result<(), GcPhysicalError> {
-    match renew_operation_lease(connection, lease_id).map_err(|error| GcPhysicalError::Lease {
-        message: error.to_string(),
-    })? {
+    match renew_operation_lease(connection, lease_id).context(LeaseRenewalSnafu)? {
         true => Ok(()),
         false => Err(GcPhysicalError::Lease {
             message: "operation lease is no longer owned".to_owned(),
@@ -1409,6 +1379,8 @@ enum GcPhysicalError {
     Git { source: crate::git::GitError },
     #[snafu(display("GC operation lease renewal failed: {message}"))]
     Lease { message: String },
+    #[snafu(display("GC operation lease renewal failed: {source}"))]
+    LeaseRenewal { source: diesel::result::Error },
     #[snafu(display("GC filesystem operation failed for {}: {source}", path.display()))]
     Io {
         path: PathBuf,
@@ -1538,6 +1510,11 @@ mod tests {
         );
         assert!("0s".parse::<GcDuration>().is_err());
         assert!("1x".parse::<GcDuration>().is_err());
+        let error = "999999999999999999999999999999999999999999s"
+            .parse::<GcDuration>()
+            .expect_err("out-of-range duration should fail");
+        assert_eq!(error.to_string(), "duration number is out of range");
+        assert!(std::error::Error::source(&error).is_some());
     }
 
     #[test]

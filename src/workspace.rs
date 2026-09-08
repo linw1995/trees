@@ -120,9 +120,7 @@ pub fn prepare_automatic(
     let workspace_root = CanonicalPath::from_absolute(
         crate::paths::managed_workspace_directory().context(PathSnafu)?,
     )
-    .map_err(|source| WorkspaceError::Validation {
-        source: ValidationError::Canonicalize { source },
-    })?;
+    .context(crate::validation::CanonicalizeSnafu)?;
 
     Ok(AutomaticAllocationPlan {
         workspace_root,
@@ -271,34 +269,13 @@ pub fn acquire_automatic_candidate(
             return Err(primary);
         }
     };
-    if boundary.workspace.management_mode != crate::domain::WorkspaceManagementMode::Automatic {
-        let primary = WorkspaceError::NotAutomatic {
-            path: candidate.canonical_path.clone(),
-        };
-        fail_operation(connection, &lease_id, &primary);
-        return Err(primary);
-    }
-    let Some(pool_id) = boundary.workspace.pool_id else {
-        let primary = WorkspaceError::RepositorySetMismatch {
-            workspace_id: candidate.id,
-        };
-        fail_operation(connection, &lease_id, &primary);
-        return Err(primary);
+    let pool_id = match validate_acquire_boundary(&boundary, candidate) {
+        Ok(pool_id) => pool_id,
+        Err(primary) => {
+            fail_operation(connection, &lease_id, &primary);
+            return Err(primary);
+        }
     };
-    if boundary.claim.is_some() {
-        let primary = WorkspaceError::ClaimActive {
-            workspace_id: candidate.id,
-        };
-        fail_operation(connection, &lease_id, &primary);
-        return Err(primary);
-    }
-    if boundary.summary.workspace_state != WorkspaceState::Ready {
-        let primary = WorkspaceError::NotReusable {
-            path: candidate.canonical_path.clone(),
-        };
-        fail_operation(connection, &lease_id, &primary);
-        return Err(primary);
-    }
     if let Err(primary) = align_acquired_worktrees(connection, candidate, &lease_id, plan) {
         fail_operation(connection, &lease_id, &primary);
         return Err(primary);
@@ -367,6 +344,33 @@ pub fn acquire_automatic_candidate(
         pool_id,
         claim_id: claim.id,
     })
+}
+
+fn validate_acquire_boundary(
+    boundary: &reconciliation::AccessBoundary,
+    candidate: &WorkspaceRow,
+) -> Result<PoolId, WorkspaceError> {
+    if boundary.workspace.management_mode != WorkspaceManagementMode::Automatic {
+        return Err(WorkspaceError::NotAutomatic {
+            path: candidate.canonical_path.clone(),
+        });
+    }
+    let Some(pool_id) = boundary.workspace.pool_id else {
+        return Err(WorkspaceError::RepositorySetMismatch {
+            workspace_id: candidate.id,
+        });
+    };
+    if boundary.claim.is_some() {
+        return Err(WorkspaceError::ClaimActive {
+            workspace_id: candidate.id,
+        });
+    }
+    if boundary.summary.workspace_state != WorkspaceState::Ready {
+        return Err(WorkspaceError::NotReusable {
+            path: candidate.canonical_path.clone(),
+        });
+    }
+    Ok(pool_id)
 }
 
 fn align_acquired_worktrees(
@@ -762,9 +766,7 @@ fn execute_worktree_alignments(
                 Ok(false) => Err(GitError::Heartbeat {
                     message: "operation lease is no longer owned".to_owned(),
                 }),
-                Err(error) => Err(GitError::Heartbeat {
-                    message: error.to_string(),
-                }),
+                Err(error) => Err(GitError::from_heartbeat_source(error)),
             },
         )?;
         record_worktree_step_result(
@@ -841,9 +843,8 @@ fn provision_automatic_new(
             });
         }
     }
-    fs::create_dir_all(plan.workspace_root.as_path()).map_err(|source| WorkspaceError::Io {
-        path: plan.workspace_root.as_path().to_owned(),
-        source,
+    fs::create_dir_all(plan.workspace_root.as_path()).context(IoSnafu {
+        path: plan.workspace_root.as_path(),
     })?;
     let mut normalized_plan = plan.clone();
     normalized_plan.workspace_root =
@@ -959,11 +960,8 @@ fn next_generated_workspace(
         if workspace_path.exists() {
             continue;
         }
-        let workspace_path = CanonicalPath::from_absolute(workspace_path).map_err(|source| {
-            WorkspaceError::Validation {
-                source: ValidationError::Canonicalize { source },
-            }
-        })?;
+        let workspace_path = CanonicalPath::from_absolute(workspace_path)
+            .context(crate::validation::CanonicalizeSnafu)?;
         if find_workspace_by_path(connection, &workspace_path)
             .context(DatabaseSnafu)?
             .is_none()
@@ -1322,9 +1320,7 @@ fn execute_repository_step(
             Ok(false) => Err(GitError::Heartbeat {
                 message: "operation lease is no longer owned".to_owned(),
             }),
-            Err(error) => Err(GitError::Heartbeat {
-                message: error.to_string(),
-            }),
+            Err(error) => Err(GitError::from_heartbeat_source(error)),
         },
     )?;
     let worktree =
@@ -1431,9 +1427,7 @@ fn rollback_repository(
                     Ok(false) => Err(GitError::Heartbeat {
                         message: "operation lease is no longer owned".to_owned(),
                     }),
-                    Err(error) => Err(GitError::Heartbeat {
-                        message: error.to_string(),
-                    }),
+                    Err(error) => Err(GitError::from_heartbeat_source(error)),
                 },
             ) {
                 errors.push(error.to_string());

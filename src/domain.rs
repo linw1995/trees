@@ -6,7 +6,7 @@ use std::str::FromStr;
 use diesel::{AsExpression, FromSqlRow};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use snafu::Snafu;
+use snafu::{ResultExt, Snafu};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -59,8 +59,7 @@ macro_rules! uuid_identifier {
             type Error = IdentifierError;
 
             fn try_from(value: String) -> Result<Self, Self::Error> {
-                let uuid = Uuid::parse_str(&value)
-                    .map_err(|source| IdentifierError::InvalidUuid { source })?;
+                let uuid = Uuid::parse_str(&value).context(InvalidUuidSnafu)?;
                 if uuid.get_version_num() != 7 {
                     return Err(IdentifierError::NotUuidV7 { value });
                 }
@@ -307,8 +306,8 @@ impl CanonicalPath {
     pub fn resolve(path: impl AsRef<Path>) -> Result<Self, CanonicalPathError> {
         let path = path.as_ref().to_owned();
         std::fs::canonicalize(&path)
+            .context(IoSnafu { path })
             .map(Self)
-            .map_err(|source| CanonicalPathError::Io { path, source })
     }
 
     pub fn from_absolute(path: impl AsRef<Path>) -> Result<Self, CanonicalPathError> {
@@ -367,14 +366,12 @@ pub struct JsonDocument(Value);
 impl JsonDocument {
     pub fn from_serializable<T: Serialize>(value: &T) -> Result<Self, JsonDocumentError> {
         serde_json::to_value(value)
+            .context(SerializeSnafu)
             .map(Self)
-            .map_err(|source| JsonDocumentError::Serialize { source })
     }
 
     pub fn parse(text: &str) -> Result<Self, JsonDocumentError> {
-        serde_json::from_str(text)
-            .map(Self)
-            .map_err(|source| JsonDocumentError::Parse { source })
+        serde_json::from_str(text).context(ParseSnafu).map(Self)
     }
 }
 
@@ -440,8 +437,8 @@ impl Timestamp {
     pub fn parse(value: impl Into<String>) -> Result<Self, TimestampError> {
         let value = value.into();
         OffsetDateTime::parse(&value, &Rfc3339)
+            .context(TimestampSnafu)
             .map(|_| Self(value))
-            .map_err(|source| TimestampError { source })
     }
 
     pub fn as_str(&self) -> &str {

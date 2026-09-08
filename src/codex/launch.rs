@@ -245,11 +245,10 @@ pub fn handoff(
     command
         .current_dir(&prepared.cwd)
         .status()
-        .map_err(|source| CodexLaunchError::Handoff {
-            executable: codex_bin.to_owned(),
-            project_id: prepared.project_id.clone(),
-            thread_id: prepared.thread_id.clone(),
-            source,
+        .context(HandoffSnafu {
+            executable: codex_bin,
+            project_id: &prepared.project_id,
+            thread_id: &prepared.thread_id,
         })
 }
 
@@ -269,10 +268,9 @@ pub fn resume_handoff(
     command
         .current_dir(&prepared.cwd)
         .status()
-        .map_err(|source| CodexLaunchError::ResumeHandoff {
-            executable: codex_bin.to_owned(),
-            project_id: prepared.project_id.clone(),
-            source,
+        .context(ResumeHandoffSnafu {
+            executable: codex_bin,
+            project_id: &prepared.project_id,
         })
 }
 

@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
-use snafu::Snafu;
+use snafu::{ResultExt, Snafu};
 use uuid::Uuid;
 
 use crate::codex::app_server::{AppServerError, RpcClient};
@@ -210,10 +210,7 @@ fn validate_inputs(name: &str, roots: &[PathBuf]) -> Result<(), ProjectSyncError
 }
 
 fn parse_response<T: DeserializeOwned>(method: &str, value: Value) -> Result<T, ProjectSyncError> {
-    serde_json::from_value(value).map_err(|source| ProjectSyncError::MalformedResponse {
-        method: method.to_owned(),
-        source,
-    })
+    serde_json::from_value(value).context(MalformedResponseSnafu { method })
 }
 
 fn is_deleted_project_error(error: &AppServerError) -> bool {

@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::{json, Value};
-use snafu::Snafu;
+use snafu::{ResultExt, Snafu};
 
 use crate::codex::app_server::{AppServerError, RpcClient};
 
@@ -68,8 +68,8 @@ pub fn start_thread_with_instructions<R: RpcClient>(
     }
 
     let response = rpc.request("thread/start", params, timeout)?;
-    let response: ThreadStartResponse = serde_json::from_value(response)
-        .map_err(|source| ThreadStartError::MalformedResponse { source })?;
+    let response: ThreadStartResponse =
+        serde_json::from_value(response).context(MalformedResponseSnafu)?;
     if response.thread.id.trim().is_empty() {
         return Err(ThreadStartError::InvalidResponse {
             message: "thread/start returned an empty thread identifier".to_owned(),

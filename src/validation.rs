@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::domain::{CanonicalPath, CanonicalPathError};
-use snafu::Snafu;
+use snafu::{ResultExt, Snafu};
 
 pub fn validate_workspace_root(
     workspace_path: &Path,
@@ -36,15 +36,11 @@ pub fn validate_workspace_root(
         .iter()
         .cloned()
         .collect::<HashSet<_>>();
-    for entry in
-        fs::read_dir(workspace_path).map_err(|source| WorkspaceRootError::ReadDirectory {
-            path: workspace_path.to_owned(),
-            source,
-        })?
-    {
-        let entry = entry.map_err(|source| WorkspaceRootError::ReadDirectory {
-            path: workspace_path.to_owned(),
-            source,
+    for entry in fs::read_dir(workspace_path).context(ReadDirectoryRootSnafu {
+        path: workspace_path,
+    })? {
+        let entry = entry.context(ReadDirectoryRootSnafu {
+            path: workspace_path,
         })?;
         if !expected.contains(entry.path().as_path()) {
             return Err(WorkspaceRootError::UnexpectedEntry { path: entry.path() });
@@ -70,9 +66,8 @@ pub fn validate_repositories(
     let mut repositories = Vec::with_capacity(repository_paths.len());
     let mut identities = HashSet::with_capacity(repository_paths.len());
     for repository_path in repository_paths {
-        let metadata = fs::metadata(repository_path).map_err(|source| ValidationError::PathIo {
-            path: repository_path.clone(),
-            source,
+        let metadata = fs::metadata(repository_path).context(PathIoSnafu {
+            path: repository_path,
         })?;
         if !metadata.is_dir() {
             return Err(ValidationError::NotDirectory {
@@ -80,8 +75,7 @@ pub fn validate_repositories(
             });
         }
 
-        let repository = CanonicalPath::resolve(repository_path)
-            .map_err(|source| ValidationError::Canonicalize { source })?;
+        let repository = CanonicalPath::resolve(repository_path).context(CanonicalizeSnafu)?;
         if !repository.as_path().join(".git").exists() {
             return Err(ValidationError::NotGitRepository {
                 path: repository.into_path_buf(),
@@ -132,18 +126,14 @@ pub fn validate_create(
 
 pub fn resolve_workspace_path(path: &Path) -> Result<CanonicalPath, ValidationError> {
     if path.exists() {
-        return CanonicalPath::resolve(path)
-            .map_err(|source| ValidationError::Canonicalize { source });
+        return CanonicalPath::resolve(path).context(CanonicalizeSnafu);
     }
 
     let absolute_path = if path.is_absolute() {
         path.to_owned()
     } else {
         std::env::current_dir()
-            .map_err(|source| ValidationError::PathIo {
-                path: path.to_owned(),
-                source,
-            })?
+            .context(PathIoSnafu { path })?
             .join(path)
     };
     let file_name =
@@ -157,11 +147,9 @@ pub fn resolve_workspace_path(path: &Path) -> Result<CanonicalPath, ValidationEr
         .ok_or_else(|| ValidationError::InvalidWorkspacePath {
             path: absolute_path.clone(),
         })?;
-    let parent = CanonicalPath::resolve(parent)
-        .map_err(|source| ValidationError::Canonicalize { source })?;
+    let parent = CanonicalPath::resolve(parent).context(CanonicalizeSnafu)?;
 
-    CanonicalPath::from_absolute(parent.as_path().join(file_name))
-        .map_err(|source| ValidationError::Canonicalize { source })
+    CanonicalPath::from_absolute(parent.as_path().join(file_name)).context(CanonicalizeSnafu)
 }
 
 #[derive(Debug, Snafu)]
@@ -177,7 +165,7 @@ pub enum ValidationError {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[snafu(transparent)]
+    #[snafu(display("{source}"), visibility(pub(crate)))]
     Canonicalize { source: CanonicalPathError },
     #[snafu(display("path is not a directory: {}", path.display()))]
     NotDirectory { path: PathBuf },

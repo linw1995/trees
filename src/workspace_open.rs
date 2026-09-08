@@ -10,11 +10,11 @@ pub fn resolve_target(
     workspace_id: &WorkspaceId,
 ) -> Result<CanonicalPath, WorkspaceOpenError> {
     connection.transaction(|connection| {
-        let snapshot = find_workspace_open_snapshot(connection, workspace_id)
-            .map_err(|source| WorkspaceOpenError::Database { source })?
-            .ok_or(WorkspaceOpenError::NotFound {
+        let snapshot = find_workspace_open_snapshot(connection, workspace_id)?.ok_or(
+            WorkspaceOpenError::NotFound {
                 workspace_id: *workspace_id,
-            })?;
+            },
+        )?;
         if snapshot.workspace.state == WorkspaceState::Reclaimed {
             return Err(WorkspaceOpenError::Reclaimed {
                 workspace_id: *workspace_id,
