@@ -29,5 +29,5 @@
 - [x] 4.1 Remove the operation column, render attached repo availability
   against total capacity, shorten UTC timestamps, and use emoji for management
   mode
-- [ ] 4.2 Update rendering and integration tests, refresh documentation, and
+- [x] 4.2 Update rendering and integration tests, refresh documentation, and
   rerun the complete quality gates
