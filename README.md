@@ -98,11 +98,13 @@ trees status --all
 trees status --json
 ```
 
-The human-readable view reports workspace health, claim usage, current
-operation lease status, management mode, repo-worktree state counts, last
-reconciliation time, and canonical path. Reclaimed workspace records are
-hidden by default; `--all` includes them. `--json` emits a versioned snapshot
-with complete workspace, claim, current operation, and repo-worktree details.
+The human-readable view reports workspace health, claim usage, management mode,
+repo availability and capacity, a compact UTC reconciliation time, and the
+canonical path. Repo availability counts worktrees whose persisted state is
+`attached`. Automatic mode is shown as `🤖`, while manual mode is shown as
+`👤`. Reclaimed workspace records are hidden by default; `--all` includes them.
+`--json` emits a versioned snapshot with complete workspace, claim, current
+operation, and repo-worktree details.
 
 Status reads one consistent SQLite snapshot. It does not reconcile, recover an
 expired operation, run Git, inspect workspace files, or assert that an
