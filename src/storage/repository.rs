@@ -19,8 +19,8 @@ use super::models::{
     EventRow, LeasedOperation, NewEvent, NewManagedWorkspace, NewOperation, NewOperationLease,
     NewOriginRepository, NewRepoWorktree, NewWorkspace, NewWorkspaceClaim, NewWorkspacePool,
     NewWorkspacePoolRepository, OperationIntent, OperationLeaseRow, OperationRow,
-    OriginRepositoryRow, RepoWorktreeRow, WorkspaceClaimRow, WorkspacePoolRepositoryRow,
-    WorkspacePoolRow, WorkspaceRow,
+    OriginRepositoryRow, PoolOriginRepository, RepoWorktreeRow, WorkspaceClaimRow,
+    WorkspacePoolRepositoryRow, WorkspacePoolRow, WorkspaceRow,
 };
 use super::transaction::{
     with_immediate_transaction, with_retrying_short_transaction, with_short_transaction,
@@ -270,6 +270,35 @@ pub fn list_workspace_pool_repositories(
         .load(connection)
 }
 
+pub fn list_pool_origin_repositories(
+    connection: &mut SqliteConnection,
+    pool_ids: &[PoolId],
+) -> QueryResult<Vec<PoolOriginRepository>> {
+    if pool_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    workspace_pool_repositories::table
+        .inner_join(origin_repositories::table)
+        .filter(workspace_pool_repositories::pool_id.eq_any(pool_ids))
+        .order((
+            workspace_pool_repositories::pool_id.asc(),
+            origin_repositories::source_path.asc(),
+        ))
+        .select((
+            workspace_pool_repositories::pool_id,
+            OriginRepositoryRow::as_select(),
+        ))
+        .load::<(PoolId, OriginRepositoryRow)>(connection)
+        .map(|rows| {
+            rows.into_iter()
+                .map(|(pool_id, repository)| PoolOriginRepository {
+                    pool_id,
+                    repository,
+                })
+                .collect()
+        })
+}
+
 pub fn list_automatic_workspace_candidates(
     connection: &mut SqliteConnection,
     pool_id: &PoolId,
@@ -289,6 +318,18 @@ pub fn list_automatic_workspaces(
     workspaces::table
         .filter(workspaces::management_mode.eq(WorkspaceManagementMode::Automatic))
         .order(workspaces::id.asc())
+        .select(WorkspaceRow::as_select())
+        .load(connection)
+}
+
+pub fn list_current_automatic_workspaces(
+    connection: &mut SqliteConnection,
+) -> QueryResult<Vec<WorkspaceRow>> {
+    workspaces::table
+        .filter(workspaces::management_mode.eq(WorkspaceManagementMode::Automatic))
+        .filter(workspaces::state.ne(WorkspaceState::Reclaimed))
+        .filter(workspaces::pool_id.is_not_null())
+        .order((workspaces::pool_id.asc(), workspaces::id.asc()))
         .select(WorkspaceRow::as_select())
         .load(connection)
 }
@@ -822,6 +863,20 @@ pub fn find_operation_lease(
         .select(OperationLeaseRow::as_select())
         .first(connection)
         .optional()
+}
+
+pub fn list_operation_leases_for_workspaces(
+    connection: &mut SqliteConnection,
+    workspace_ids: &[WorkspaceId],
+) -> QueryResult<Vec<OperationLeaseRow>> {
+    if workspace_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    operation_leases::table
+        .filter(operation_leases::workspace_id.eq_any(workspace_ids))
+        .order(operation_leases::workspace_id.asc())
+        .select(OperationLeaseRow::as_select())
+        .load(connection)
 }
 
 pub fn list_leased_operations(

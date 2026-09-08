@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use diesel::prelude::*;
@@ -14,9 +14,10 @@ use crate::domain::{
     WorkspaceState,
 };
 use crate::storage::{
-    list_leased_operations, list_operation_events, list_repo_worktrees_for_workspaces,
-    list_workspace_claims, list_workspaces, EventRow, LeasedOperation, RepoWorktreeRow,
-    WorkspaceClaimRow, WorkspaceRow,
+    list_current_automatic_workspaces, list_leased_operations, list_operation_events,
+    list_operation_leases_for_workspaces, list_pool_origin_repositories,
+    list_repo_worktrees_for_workspaces, list_workspace_claims, list_workspaces, EventRow,
+    LeasedOperation, PoolOriginRepository, RepoWorktreeRow, WorkspaceClaimRow, WorkspaceRow,
 };
 
 pub const STATUS_SCHEMA_VERSION: u8 = 1;
@@ -24,8 +25,41 @@ pub const STATUS_SCHEMA_VERSION: u8 = 1;
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 pub struct StatusSnapshot {
     pub schema_version: u8,
+    pub view: StatusView,
     pub snapshot_at: Timestamp,
     pub workspaces: Vec<WorkspaceStatus>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StatusView {
+    Pools,
+    Workspaces,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+pub struct PoolStatusSnapshot {
+    pub schema_version: u8,
+    pub view: StatusView,
+    pub snapshot_at: Timestamp,
+    pub pools: Vec<PoolStatus>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+pub struct PoolStatus {
+    pub pool_id: PoolId,
+    pub repositories: Vec<PoolRepositoryStatus>,
+    pub allocated: usize,
+    pub available: usize,
+    pub capacity: usize,
+    pub updated_at: Option<Timestamp>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+pub struct PoolRepositoryStatus {
+    pub origin_repository_id: OriginRepositoryId,
+    pub source_path: CanonicalPath,
+    pub label: String,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -84,10 +118,76 @@ impl StatusSnapshot {
     pub fn empty() -> Self {
         Self {
             schema_version: STATUS_SCHEMA_VERSION,
+            view: StatusView::Workspaces,
             snapshot_at: Timestamp::now(),
             workspaces: Vec::new(),
         }
     }
+}
+
+impl PoolStatusSnapshot {
+    pub fn empty() -> Self {
+        Self {
+            schema_version: STATUS_SCHEMA_VERSION,
+            view: StatusView::Pools,
+            snapshot_at: Timestamp::now(),
+            pools: Vec::new(),
+        }
+    }
+}
+
+pub fn load_pool_snapshot(connection: &mut SqliteConnection) -> QueryResult<PoolStatusSnapshot> {
+    connection.transaction(|connection| {
+        let snapshot_at = Timestamp::now();
+        let workspaces = list_current_automatic_workspaces(connection)?;
+        let workspace_ids = workspaces
+            .iter()
+            .map(|workspace| workspace.id)
+            .collect::<Vec<_>>();
+        let pool_ids = workspaces
+            .iter()
+            .filter_map(|workspace| workspace.pool_id)
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let claims = list_workspace_claims(connection, &workspace_ids)?;
+        let leases = list_operation_leases_for_workspaces(connection, &workspace_ids)?;
+        let repositories = list_pool_origin_repositories(connection, &pool_ids)?;
+        Ok(assemble_pool_snapshot(
+            snapshot_at,
+            workspaces,
+            claims,
+            leases,
+            repositories,
+        ))
+    })
+}
+
+pub fn render_pools_human(snapshot: &PoolStatusSnapshot) -> String {
+    if snapshot.pools.is_empty() {
+        return "No workspace pools.".to_owned();
+    }
+    let headers = ["REPOS", "ALLOCATED", "AVAILABLE/CAPACITY", "UPDATED"];
+    let rows = snapshot
+        .pools
+        .iter()
+        .map(|pool| {
+            [
+                pool.repositories
+                    .iter()
+                    .map(|repository| repository.label.as_str())
+                    .collect::<Vec<_>>()
+                    .join(","),
+                pool.allocated.to_string(),
+                format!("{}/{}", pool.available, pool.capacity),
+                pool.updated_at.as_ref().map_or_else(
+                    || "never".to_owned(),
+                    |timestamp| compact_timestamp(timestamp, &snapshot.snapshot_at),
+                ),
+            ]
+        })
+        .collect::<Vec<_>>();
+    render_table(&headers, &rows)
 }
 
 pub fn load_snapshot(
@@ -147,7 +247,11 @@ pub fn render_human(snapshot: &StatusSnapshot) -> String {
             ]
         })
         .collect::<Vec<_>>();
-    let widths = std::array::from_fn::<_, 5, _>(|column| {
+    render_table(&headers, &rows)
+}
+
+fn render_table<const N: usize>(headers: &[&str; N], rows: &[[String; N]]) -> String {
+    let widths = std::array::from_fn::<_, N, _>(|column| {
         rows.iter()
             .map(|row| UnicodeWidthStr::width(row[column].as_str()))
             .max()
@@ -155,8 +259,8 @@ pub fn render_human(snapshot: &StatusSnapshot) -> String {
             .max(UnicodeWidthStr::width(headers[column]))
     });
     let mut lines = Vec::with_capacity(rows.len() + 1);
-    lines.push(format_table_row(&headers, &widths));
-    for row in &rows {
+    lines.push(format_table_row(headers, &widths));
+    for row in rows {
         lines.push(format_table_row(row, &widths));
     }
     lines.join("\n")
@@ -193,22 +297,25 @@ fn repository_summary(repositories: &[RepoWorktreeStatus]) -> String {
     if capacity == 0 {
         return "0/0".to_owned();
     }
-    let labels = shortest_unique_repository_labels(repositories);
+    let paths = repositories
+        .iter()
+        .map(|repository| repository.source_path.clone())
+        .collect::<Vec<_>>();
+    let labels = shortest_unique_path_labels(&paths);
     format!("{available}/{capacity} {}", labels.join(","))
 }
 
-fn shortest_unique_repository_labels(repositories: &[RepoWorktreeStatus]) -> Vec<String> {
-    let components = repositories
+fn shortest_unique_path_labels(paths: &[CanonicalPath]) -> Vec<String> {
+    let components = paths
         .iter()
-        .map(|repository| {
-            let parts = repository
-                .source_path
+        .map(|source_path| {
+            let parts = source_path
                 .as_path()
                 .iter()
                 .map(ToOwned::to_owned)
                 .collect::<Vec<_>>();
             if parts.is_empty() {
-                vec![repository.source_path.as_path().as_os_str().to_owned()]
+                vec![source_path.as_path().as_os_str().to_owned()]
             } else {
                 parts
             }
@@ -276,6 +383,107 @@ fn parse_utc(timestamp: &Timestamp) -> OffsetDateTime {
         .to_offset(UtcOffset::UTC)
 }
 
+fn assemble_pool_snapshot(
+    snapshot_at: Timestamp,
+    workspaces: Vec<WorkspaceRow>,
+    claims: Vec<WorkspaceClaimRow>,
+    leases: Vec<crate::storage::OperationLeaseRow>,
+    repositories: Vec<PoolOriginRepository>,
+) -> PoolStatusSnapshot {
+    let claimed = claims
+        .into_iter()
+        .map(|claim| claim.workspace_id)
+        .collect::<HashSet<_>>();
+    let leased = leases
+        .into_iter()
+        .map(|lease| lease.workspace_id)
+        .collect::<HashSet<_>>();
+    let mut workspaces_by_pool = HashMap::<PoolId, Vec<WorkspaceRow>>::new();
+    for workspace in workspaces {
+        if let Some(pool_id) = workspace.pool_id {
+            workspaces_by_pool
+                .entry(pool_id)
+                .or_default()
+                .push(workspace);
+        }
+    }
+    let mut repositories_by_pool = HashMap::<PoolId, Vec<_>>::new();
+    for relation in repositories {
+        repositories_by_pool
+            .entry(relation.pool_id)
+            .or_default()
+            .push(relation.repository);
+    }
+
+    let mut pools = workspaces_by_pool
+        .into_iter()
+        .map(|(pool_id, workspaces)| {
+            let capacity = workspaces.len();
+            let allocated = workspaces
+                .iter()
+                .filter(|workspace| claimed.contains(&workspace.id))
+                .count();
+            let available = workspaces
+                .iter()
+                .filter(|workspace| {
+                    workspace.state == WorkspaceState::Ready
+                        && !claimed.contains(&workspace.id)
+                        && !leased.contains(&workspace.id)
+                })
+                .count();
+            let updated_at = workspaces
+                .iter()
+                .map(|workspace| &workspace.updated_at)
+                .max()
+                .cloned();
+            let origins = repositories_by_pool.remove(&pool_id).unwrap_or_default();
+            let paths = origins
+                .iter()
+                .map(|origin| origin.source_path.clone())
+                .collect::<Vec<_>>();
+            let labels = shortest_unique_path_labels(&paths);
+            let repositories = origins
+                .into_iter()
+                .zip(labels)
+                .map(|(origin, label)| PoolRepositoryStatus {
+                    origin_repository_id: origin.id,
+                    source_path: origin.source_path,
+                    label,
+                })
+                .collect();
+            PoolStatus {
+                pool_id,
+                repositories,
+                allocated,
+                available,
+                capacity,
+                updated_at,
+            }
+        })
+        .collect::<Vec<_>>();
+    pools.sort_by(|left, right| {
+        let left_paths = left
+            .repositories
+            .iter()
+            .map(|repository| repository.source_path.to_string())
+            .collect::<Vec<_>>();
+        let right_paths = right
+            .repositories
+            .iter()
+            .map(|repository| repository.source_path.to_string())
+            .collect::<Vec<_>>();
+        left_paths
+            .cmp(&right_paths)
+            .then_with(|| left.pool_id.to_string().cmp(&right.pool_id.to_string()))
+    });
+    PoolStatusSnapshot {
+        schema_version: STATUS_SCHEMA_VERSION,
+        view: StatusView::Pools,
+        snapshot_at,
+        pools,
+    }
+}
+
 fn assemble_snapshot(
     snapshot_at: Timestamp,
     workspaces: Vec<WorkspaceRow>,
@@ -334,6 +542,7 @@ fn assemble_snapshot(
 
     Ok(StatusSnapshot {
         schema_version: STATUS_SCHEMA_VERSION,
+        view: StatusView::Workspaces,
         snapshot_at,
         workspaces,
     })
@@ -418,8 +627,9 @@ mod tests {
     use crate::domain::JsonDocument;
     use crate::storage::{
         append_event, ensure_origin_repository, insert_managed_workspace, insert_repo_worktree,
-        insert_workspace_claim, persist_operation_intent, EventDraft, NewManagedWorkspace,
-        NewRepoWorktree, NewWorkspaceClaim, OperationIntent,
+        insert_workspace_claim, insert_workspace_pool, insert_workspace_pool_repositories,
+        persist_operation_intent, EventDraft, NewManagedWorkspace, NewRepoWorktree,
+        NewWorkspaceClaim, NewWorkspacePool, NewWorkspacePoolRepository, OperationIntent,
     };
 
     fn temporary_database_path() -> PathBuf {
@@ -456,6 +666,33 @@ mod tests {
         id
     }
 
+    fn insert_automatic_workspace(
+        connection: &mut SqliteConnection,
+        value: &str,
+        state: WorkspaceState,
+        pool_id: PoolId,
+    ) -> WorkspaceId {
+        let id = WorkspaceId::new();
+        let now = Timestamp::now();
+        insert_managed_workspace(
+            connection,
+            &NewManagedWorkspace {
+                id,
+                canonical_path: path(value),
+                state,
+                created_at: now.clone(),
+                updated_at: now,
+                last_reconciled_at: None,
+                management_mode: WorkspaceManagementMode::Automatic,
+                pool_id: Some(pool_id),
+                last_released_at: None,
+                reclaimed_at: (state == WorkspaceState::Reclaimed).then(Timestamp::now),
+            },
+        )
+        .expect("automatic workspace should be inserted");
+        id
+    }
+
     #[test]
     fn loads_empty_snapshot() {
         let database_path = temporary_database_path();
@@ -465,6 +702,97 @@ mod tests {
 
         assert_eq!(snapshot.schema_version, STATUS_SCHEMA_VERSION);
         assert!(snapshot.workspaces.is_empty());
+        drop(connection);
+        fs::remove_file(database_path).expect("temporary database should be removable");
+    }
+
+    #[test]
+    fn aggregates_current_automatic_pool_allocation() {
+        let database_path = temporary_database_path();
+        let mut connection = database::connect(&database_path).expect("database should open");
+        let pool_id = PoolId::new();
+        insert_workspace_pool(
+            &mut connection,
+            &NewWorkspacePool {
+                id: pool_id,
+                hash_key: "pool".to_owned(),
+                repository_ids: "[]".to_owned(),
+            },
+        )
+        .expect("pool should be inserted");
+        let origin = ensure_origin_repository(
+            &mut connection,
+            &path("/origins/api"),
+            &path("/origins/api"),
+        )
+        .expect("origin should be inserted");
+        insert_workspace_pool_repositories(
+            &mut connection,
+            &[NewWorkspacePoolRepository {
+                pool_id,
+                repository_id: origin.id,
+            }],
+        )
+        .expect("pool relation should be inserted");
+
+        insert_automatic_workspace(
+            &mut connection,
+            "/pool/available",
+            WorkspaceState::Ready,
+            pool_id,
+        );
+        let allocated_id = insert_automatic_workspace(
+            &mut connection,
+            "/pool/allocated",
+            WorkspaceState::Ready,
+            pool_id,
+        );
+        insert_workspace_claim(
+            &mut connection,
+            &NewWorkspaceClaim {
+                id: ClaimId::new(),
+                workspace_id: allocated_id,
+                claimed_at: Timestamp::now(),
+            },
+        )
+        .expect("claim should be inserted");
+        let leased_id = insert_automatic_workspace(
+            &mut connection,
+            "/pool/leased",
+            WorkspaceState::Ready,
+            pool_id,
+        );
+        persist_operation_intent(
+            &mut connection,
+            &operation(leased_id, Timestamp::parse("9999-01-01T00:00:00Z").unwrap()),
+        )
+        .expect("operation should be inserted");
+        insert_automatic_workspace(
+            &mut connection,
+            "/pool/degraded",
+            WorkspaceState::Degraded,
+            pool_id,
+        );
+        insert_automatic_workspace(
+            &mut connection,
+            "/pool/reclaimed",
+            WorkspaceState::Reclaimed,
+            pool_id,
+        );
+        insert_workspace(&mut connection, "/pool/manual", WorkspaceState::Ready);
+
+        let snapshot = load_pool_snapshot(&mut connection).expect("pool snapshot should load");
+
+        assert_eq!(snapshot.view, StatusView::Pools);
+        assert_eq!(snapshot.pools.len(), 1);
+        let pool = &snapshot.pools[0];
+        assert_eq!(pool.pool_id, pool_id);
+        assert_eq!(pool.allocated, 1);
+        assert_eq!(pool.available, 1);
+        assert_eq!(pool.capacity, 4);
+        assert_eq!(pool.repositories[0].label, "api");
+        assert!(render_pools_human(&snapshot).contains("1/4"));
+
         drop(connection);
         fs::remove_file(database_path).expect("temporary database should be removable");
     }
@@ -609,6 +937,7 @@ mod tests {
         let workspace_id = WorkspaceId::new();
         let snapshot = StatusSnapshot {
             schema_version: STATUS_SCHEMA_VERSION,
+            view: StatusView::Workspaces,
             snapshot_at: Timestamp::parse("2026-09-08T12:00:00Z").unwrap(),
             workspaces: vec![WorkspaceStatus {
                 workspace_id,
@@ -722,6 +1051,7 @@ mod tests {
         let value = serde_json::to_value(snapshot).expect("status snapshot should serialize");
 
         assert_eq!(value["schema_version"], STATUS_SCHEMA_VERSION);
+        assert_eq!(value["view"], "workspaces");
         assert!(value["snapshot_at"].is_string());
         assert_eq!(value["workspaces"], serde_json::json!([]));
     }

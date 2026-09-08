@@ -48,7 +48,7 @@
 
 ## 7. Pool Allocation View
 
-- [ ] 7.1 Add automatic repository-pool allocation, availability, and capacity
+- [x] 7.1 Add automatic repository-pool allocation, availability, and capacity
   projections alongside the existing workspace projection
 - [ ] 7.2 Add `--view pools|workspaces`, default to pools, and restrict `--all`
   to the workspace view
