@@ -89,7 +89,7 @@ color. `UPDATED` SHALL be the greatest `updated_at` among current capacity
 slots.
 
 The workspace human view SHALL render `STATUS`, `MODE`, `REPOS`, `RECONCILED`,
-and `PATH`. `STATUS` SHALL render persisted workspace health and append `🔒`
+and `ID`. `STATUS` SHALL render persisted workspace health and append `🔒`
 when an active claim exists. An unclaimed workspace SHALL have no claim marker.
 It SHALL omit current operation details.
 Workspace `MODE` SHALL render as `🤖` for automatic and `👤` for manual.
@@ -106,6 +106,12 @@ Dirty, missing, diverged, and failed labels SHALL be red with `(dirty)`,
 be gray with `(removed)`. Non-terminal output and `NO_COLOR` SHALL retain the
 same suffixes without ANSI escapes.
 
+Before rendering, repository labels SHALL escape control characters, ANSI
+escape bytes, backslashes, commas, and parentheses originating from persisted
+paths. Generated state suffixes and ANSI colors SHALL be added only after this
+escaping. Human output SHALL retain one physical line per workspace. JSON SHALL
+retain original path values without human-display escaping.
+
 Missing times SHALL render as `never`. Relative to `snapshot_at` in UTC, times
 SHALL render as `HH:MM` on the same date, `MM-DD HH:MM` within the same year,
 and `YYYY-MM-DD HH:MM` otherwise. Column alignment SHALL account for terminal
@@ -119,10 +125,10 @@ spacing SHALL NOT be a machine-readable contract.
   slot
 - **THEN** its human row contains `api,web` and `3/6/1`
 
-#### Scenario: Retain Paths in the Workspace View
+#### Scenario: Identify Workspace Details Using an Identifier
 
 - **WHEN** status uses the workspace view
-- **THEN** each human row contains the canonical path identifying that slot
+- **THEN** each human row contains the stable workspace ID and omits its path
 
 #### Scenario: Color Workspace Repo Readiness
 
@@ -176,10 +182,11 @@ written only to standard error.
 ### Requirement: Read Status Without Side Effects
 
 Status SHALL capture one snapshot timestamp and load every relationship needed
-by the selected view through batched queries in one read-only SQLite
-transaction. Status SHALL NOT open lifecycle storage for writing or append an
-event. It SHALL NOT acquire or release a claim or start or recover an
-operation. It SHALL NOT invoke Git or inspect workspace filesystem contents.
+by the selected view through relational joins in one read-only SQLite
+transaction. It SHALL NOT expand all selected entity IDs into a single `IN`
+expression. Status SHALL NOT open lifecycle storage for writing or append an
+event. It SHALL NOT acquire or release a claim or start or recover an operation.
+It SHALL NOT invoke Git or inspect workspace filesystem contents.
 
 Persisted unhealthy states, claims, leases, and reclaimed rows in the explicit
 workspace all-view SHALL be report data rather than command failures. Status

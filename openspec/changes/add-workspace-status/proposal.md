@@ -27,6 +27,11 @@ not answer this capacity-planning question directly.
 - Emit a versioned JSON document matching the selected view.
 - Keep status observational: it does not reconcile, recover, acquire, release,
   run Git, inspect the filesystem, or append lifecycle events.
+- Identify workspace details by stable workspace ID instead of canonical path.
+- Add `trees open <workspace-id> [--program=<PROGRAM>]`, reusing create-open
+  program resolution and process handoff without bypassing automatic claims.
+- Replace identifier-list status queries with relational joins and escape
+  path-derived human labels before rendering.
 
 ## Capabilities
 
@@ -34,6 +39,7 @@ not answer this capacity-planning question directly.
 
 - `workspace-status`: Read and render consistent persisted pool allocation and
   workspace detail snapshots.
+- `workspace-open`: Open an existing managed workspace by stable ID.
 
 ### Modified Capabilities
 

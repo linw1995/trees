@@ -84,7 +84,7 @@ The human workspace view contains these columns:
 - `REPOS`: attached repo worktrees over total repo-worktree count followed by
   shortest unique repository labels.
 - `RECONCILED`: compact persisted reconciliation time or `never`.
-- `PATH`: canonical workspace path.
+- `ID`: stable workspace UUID.
 
 Compact timestamps use UTC relative to `snapshot_at`: `HH:MM` on the same
 date, `MM-DD HH:MM` within the same year, and `YYYY-MM-DD HH:MM` otherwise.
@@ -122,12 +122,32 @@ workspace, claim, current operation, and repo-worktree projection. Canonical
 paths and operation details therefore remain available without widening the
 default human view.
 
+### Open a Workspace Using a Stable Identifier
+
+`trees open <workspace-id> [--program=<PROGRAM>]` resolves one persisted
+workspace by UUID. Without `--program`, it selects a nonempty `$SHELL`; an
+explicit empty program is invalid. Program execution reuses the create-open
+handoff: inherited environment and standard streams, canonical workspace path
+as the current directory, and process replacement where supported.
+
+The lookup uses a read-only connection. Reclaimed workspaces and workspaces
+with a retained operation lease are rejected. An automatic workspace must
+already have an active claim, so open cannot bypass pool allocation. Manual
+workspaces do not require a claim. The database connection is dropped before
+process handoff, and open does not reconcile or mutate lifecycle state.
+
 ### Read Without Side Effects
 
 Each selected view captures one `snapshot_at` and loads all required pool,
-workspace, claim, lease, event, relation, and origin rows with batched queries
-inside one read-only SQLite transaction. Status does not reconcile, recover,
+workspace, claim, lease, event, relation, and origin rows with relational joins
+inside one read-only SQLite transaction. Queries must not expand a global list
+of identifiers into one `IN` expression. Status does not reconcile, recover,
 acquire, release, run Git, inspect the filesystem, or append lifecycle events.
+
+Human repository labels escape control characters, separators used by the
+renderer, and ANSI escape bytes before status suffixes and generated colors are
+added. This preserves one physical line per record and prevents path text from
+injecting terminal control sequences. JSON retains the original path strings.
 
 ## Risks / Trade-Offs
 

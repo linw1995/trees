@@ -80,3 +80,19 @@
 
 - [x] 11.1 Replace claimed and unclaimed text with an optional `🔒` claim marker
 - [x] 11.2 Update tests and documentation, then rerun the complete quality gates
+
+## 12. Workspace Identity and Open
+
+- [ ] 12.1 Replace the human workspace path with its stable ID while retaining
+  canonical paths in JSON
+- [ ] 12.2 Add `trees open <workspace-id> [--program=<PROGRAM>]` with shared
+  program resolution and process handoff
+- [ ] 12.3 Enforce reclaimed, operation-lease, and automatic-claim admission
+  without lifecycle mutation
+- [ ] 12.4 Add integration tests and documentation for workspace open
+
+## 13. Relational Status Queries
+
+- [ ] 13.1 Replace status-wide identifier-list queries with relational joins
+- [ ] 13.2 Escape path-derived human labels before adding suffixes and colors
+- [ ] 13.3 Add regression coverage and rerun the complete quality gates
