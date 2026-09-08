@@ -60,5 +60,5 @@
 
 - [x] 8.1 Replace allocated and available-capacity columns with one
   available-total-abnormal capacity value and terminal-aware colors
-- [ ] 8.2 Update pool JSON, tests, and documentation, then rerun the complete
+- [x] 8.2 Update pool JSON, tests, and documentation, then rerun the complete
   quality gates
