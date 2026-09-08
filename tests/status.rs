@@ -222,7 +222,7 @@ fn status_renders_ordered_persisted_state_and_preserves_storage() {
     assert!(human.starts_with("STATE"));
     assert!(!human.contains("OPERATION"));
     assert!(human.contains("degraded"));
-    assert!(human.contains("0/1"));
+    assert!(human.contains("0/1 example"));
     assert!(human.contains("🤖"));
     assert!(human.contains("👤"));
     assert!(!human.contains("expired:release"));
