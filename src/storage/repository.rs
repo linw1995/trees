@@ -270,20 +270,22 @@ pub fn list_workspace_pool_repositories(
         .load(connection)
 }
 
-pub fn list_pool_origin_repositories(
+pub fn list_current_automatic_pool_repositories(
     connection: &mut SqliteConnection,
-    pool_ids: &[PoolId],
 ) -> QueryResult<Vec<PoolOriginRepository>> {
-    if pool_ids.is_empty() {
-        return Ok(Vec::new());
-    }
     workspace_pool_repositories::table
         .inner_join(origin_repositories::table)
-        .filter(workspace_pool_repositories::pool_id.eq_any(pool_ids))
+        .inner_join(
+            workspaces::table
+                .on(workspaces::pool_id.eq(workspace_pool_repositories::pool_id.nullable())),
+        )
+        .filter(workspaces::management_mode.eq(WorkspaceManagementMode::Automatic))
+        .filter(workspaces::state.ne(WorkspaceState::Reclaimed))
         .order((
             workspace_pool_repositories::pool_id.asc(),
             origin_repositories::source_path.asc(),
         ))
+        .distinct()
         .select((
             workspace_pool_repositories::pool_id,
             OriginRepositoryRow::as_select(),
@@ -348,15 +350,30 @@ pub fn list_workspaces(
         .load(connection)
 }
 
-pub fn list_workspace_claims(
+pub fn list_status_workspace_claims(
     connection: &mut SqliteConnection,
-    workspace_ids: &[WorkspaceId],
+    include_reclaimed: bool,
 ) -> QueryResult<Vec<WorkspaceClaimRow>> {
-    if workspace_ids.is_empty() {
-        return Ok(Vec::new());
+    let mut query = workspace_claims::table
+        .inner_join(workspaces::table)
+        .into_boxed();
+    if !include_reclaimed {
+        query = query.filter(workspaces::state.ne(WorkspaceState::Reclaimed));
     }
+    query
+        .order(workspace_claims::workspace_id.asc())
+        .select(WorkspaceClaimRow::as_select())
+        .load(connection)
+}
+
+pub fn list_current_automatic_workspace_claims(
+    connection: &mut SqliteConnection,
+) -> QueryResult<Vec<WorkspaceClaimRow>> {
     workspace_claims::table
-        .filter(workspace_claims::workspace_id.eq_any(workspace_ids))
+        .inner_join(workspaces::table)
+        .filter(workspaces::management_mode.eq(WorkspaceManagementMode::Automatic))
+        .filter(workspaces::state.ne(WorkspaceState::Reclaimed))
+        .filter(workspaces::pool_id.is_not_null())
         .order(workspace_claims::workspace_id.asc())
         .select(WorkspaceClaimRow::as_select())
         .load(connection)
@@ -800,16 +817,18 @@ pub fn list_repo_worktrees(
         .load(connection)
 }
 
-pub fn list_repo_worktrees_for_workspaces(
+pub fn list_status_repo_worktrees(
     connection: &mut SqliteConnection,
-    workspace_ids: &[WorkspaceId],
+    include_reclaimed: bool,
 ) -> QueryResult<Vec<RepoWorktreeRow>> {
-    if workspace_ids.is_empty() {
-        return Ok(Vec::new());
-    }
-    repo_worktrees::table
+    let mut query = repo_worktrees::table
         .inner_join(origin_repositories::table)
-        .filter(repo_worktrees::workspace_id.eq_any(workspace_ids))
+        .inner_join(workspaces::table.on(workspaces::id.eq(repo_worktrees::workspace_id)))
+        .into_boxed();
+    if !include_reclaimed {
+        query = query.filter(workspaces::state.ne(WorkspaceState::Reclaimed));
+    }
+    query
         .order((
             repo_worktrees::workspace_id.asc(),
             repo_worktrees::worktree_path.asc(),
@@ -865,30 +884,31 @@ pub fn find_operation_lease(
         .optional()
 }
 
-pub fn list_operation_leases_for_workspaces(
+pub fn list_current_automatic_operation_leases(
     connection: &mut SqliteConnection,
-    workspace_ids: &[WorkspaceId],
 ) -> QueryResult<Vec<OperationLeaseRow>> {
-    if workspace_ids.is_empty() {
-        return Ok(Vec::new());
-    }
     operation_leases::table
-        .filter(operation_leases::workspace_id.eq_any(workspace_ids))
+        .inner_join(workspaces::table)
+        .filter(workspaces::management_mode.eq(WorkspaceManagementMode::Automatic))
+        .filter(workspaces::state.ne(WorkspaceState::Reclaimed))
+        .filter(workspaces::pool_id.is_not_null())
         .order(operation_leases::workspace_id.asc())
         .select(OperationLeaseRow::as_select())
         .load(connection)
 }
 
-pub fn list_leased_operations(
+pub fn list_status_leased_operations(
     connection: &mut SqliteConnection,
-    workspace_ids: &[WorkspaceId],
+    include_reclaimed: bool,
 ) -> QueryResult<Vec<LeasedOperation>> {
-    if workspace_ids.is_empty() {
-        return Ok(Vec::new());
-    }
-    operation_leases::table
+    let mut query = operation_leases::table
         .inner_join(operations::table)
-        .filter(operation_leases::workspace_id.eq_any(workspace_ids))
+        .inner_join(workspaces::table.on(workspaces::id.eq(operation_leases::workspace_id)))
+        .into_boxed();
+    if !include_reclaimed {
+        query = query.filter(workspaces::state.ne(WorkspaceState::Reclaimed));
+    }
+    query
         .order(operation_leases::workspace_id.asc())
         .select((OperationLeaseRow::as_select(), OperationRow::as_select()))
         .load::<(OperationLeaseRow, OperationRow)>(connection)
@@ -899,15 +919,21 @@ pub fn list_leased_operations(
         })
 }
 
-pub fn list_operation_events(
+pub fn list_status_operation_events(
     connection: &mut SqliteConnection,
-    operation_ids: &[OperationId],
+    include_reclaimed: bool,
 ) -> QueryResult<Vec<EventRow>> {
-    if operation_ids.is_empty() {
-        return Ok(Vec::new());
+    let mut query = lifecycle_events::table
+        .inner_join(
+            operation_leases::table
+                .on(operation_leases::operation_id.eq(lifecycle_events::operation_id)),
+        )
+        .inner_join(workspaces::table.on(workspaces::id.eq(operation_leases::workspace_id)))
+        .into_boxed();
+    if !include_reclaimed {
+        query = query.filter(workspaces::state.ne(WorkspaceState::Reclaimed));
     }
-    lifecycle_events::table
-        .filter(lifecycle_events::operation_id.eq_any(operation_ids))
+    query
         .filter(lifecycle_events::entity_type.eq("operation"))
         .order((
             lifecycle_events::operation_id.asc(),

@@ -14,10 +14,11 @@ use crate::domain::{
     WorkspaceState,
 };
 use crate::storage::{
-    list_current_automatic_workspaces, list_leased_operations, list_operation_events,
-    list_operation_leases_for_workspaces, list_pool_origin_repositories,
-    list_repo_worktrees_for_workspaces, list_workspace_claims, list_workspaces, EventRow,
-    LeasedOperation, PoolOriginRepository, RepoWorktreeRow, WorkspaceClaimRow, WorkspaceRow,
+    list_current_automatic_operation_leases, list_current_automatic_pool_repositories,
+    list_current_automatic_workspace_claims, list_current_automatic_workspaces,
+    list_status_leased_operations, list_status_operation_events, list_status_repo_worktrees,
+    list_status_workspace_claims, list_workspaces, EventRow, LeasedOperation, PoolOriginRepository,
+    RepoWorktreeRow, WorkspaceClaimRow, WorkspaceRow,
 };
 
 pub const STATUS_SCHEMA_VERSION: u8 = 1;
@@ -140,19 +141,9 @@ pub fn load_pool_snapshot(connection: &mut SqliteConnection) -> QueryResult<Pool
     connection.transaction(|connection| {
         let snapshot_at = Timestamp::now();
         let workspaces = list_current_automatic_workspaces(connection)?;
-        let workspace_ids = workspaces
-            .iter()
-            .map(|workspace| workspace.id)
-            .collect::<Vec<_>>();
-        let pool_ids = workspaces
-            .iter()
-            .filter_map(|workspace| workspace.pool_id)
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
-        let claims = list_workspace_claims(connection, &workspace_ids)?;
-        let leases = list_operation_leases_for_workspaces(connection, &workspace_ids)?;
-        let repositories = list_pool_origin_repositories(connection, &pool_ids)?;
+        let claims = list_current_automatic_workspace_claims(connection)?;
+        let leases = list_current_automatic_operation_leases(connection)?;
+        let repositories = list_current_automatic_pool_repositories(connection)?;
         Ok(assemble_pool_snapshot(
             snapshot_at,
             workspaces,
@@ -175,7 +166,7 @@ pub fn render_pools_human(snapshot: &PoolStatusSnapshot, color: bool) -> String 
             [
                 pool.repositories
                     .iter()
-                    .map(|repository| repository.label.as_str())
+                    .map(|repository| escape_human_label(&repository.label))
                     .collect::<Vec<_>>()
                     .join(","),
                 capacity_summary(pool, color),
@@ -209,18 +200,10 @@ pub fn load_snapshot(
     connection.transaction(|connection| {
         let snapshot_at = Timestamp::now();
         let workspaces = list_workspaces(connection, include_reclaimed)?;
-        let workspace_ids = workspaces
-            .iter()
-            .map(|workspace| workspace.id)
-            .collect::<Vec<_>>();
-        let claims = list_workspace_claims(connection, &workspace_ids)?;
-        let operations = list_leased_operations(connection, &workspace_ids)?;
-        let operation_ids = operations
-            .iter()
-            .map(|operation| operation.operation.id)
-            .collect::<Vec<_>>();
-        let operation_events = list_operation_events(connection, &operation_ids)?;
-        let repositories = list_repo_worktrees_for_workspaces(connection, &workspace_ids)?;
+        let claims = list_status_workspace_claims(connection, include_reclaimed)?;
+        let operations = list_status_leased_operations(connection, include_reclaimed)?;
+        let operation_events = list_status_operation_events(connection, include_reclaimed)?;
+        let repositories = list_status_repo_worktrees(connection, include_reclaimed)?;
 
         assemble_snapshot(
             snapshot_at.clone(),
@@ -238,7 +221,7 @@ pub fn render_workspaces_human(snapshot: &StatusSnapshot, color: bool) -> String
         return "No workspaces.".to_owned();
     }
 
-    let headers = ["STATUS", "MODE", "REPOS", "RECONCILED", "PATH"];
+    let headers = ["STATUS", "MODE", "REPOS", "RECONCILED", "ID"];
     let rows = snapshot
         .workspaces
         .iter()
@@ -251,7 +234,7 @@ pub fn render_workspaces_human(snapshot: &StatusSnapshot, color: bool) -> String
                     || "never".to_owned(),
                     |timestamp| compact_timestamp(timestamp, &snapshot.snapshot_at),
                 ),
-                workspace.path.to_string(),
+                workspace.workspace_id.to_string(),
             ]
         })
         .collect::<Vec<_>>();
@@ -377,12 +360,28 @@ fn repository_label(label: &str, state: RepoWorktreeState, color: bool) -> Strin
         RepoWorktreeState::Failed => (Some("error"), 31),
         RepoWorktreeState::Reclaimed => (Some("removed"), 90),
     };
-    let display = suffix.map_or_else(|| label.to_owned(), |suffix| format!("{label}({suffix})"));
+    let label = escape_human_label(label);
+    let display = suffix.map_or_else(|| label.clone(), |suffix| format!("{label}({suffix})"));
     if color {
         colorize(&display, ansi_color)
     } else {
         display
     }
+}
+
+fn escape_human_label(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '\\' => escaped.push_str("\\\\"),
+            ',' => escaped.push_str("\\,"),
+            '(' => escaped.push_str("\\("),
+            ')' => escaped.push_str("\\)"),
+            character if character.is_control() => escaped.extend(character.escape_default()),
+            character => escaped.push(character),
+        }
+    }
+    escaped
 }
 
 fn shortest_unique_path_labels(paths: &[CanonicalPath]) -> Vec<String> {
@@ -1064,8 +1063,10 @@ mod tests {
 
         assert_eq!(
             output,
-            "STATUS       MODE  REPOS               RECONCILED  PATH\n\
-             degraded 🔒  🤖    0/1 example(dirty)  10:00       /status/example"
+            format!(
+                "STATUS       MODE  REPOS               RECONCILED  ID\n\
+                 degraded 🔒  🤖    0/1 example(dirty)  10:00       {workspace_id}"
+            )
         );
     }
 
@@ -1149,6 +1150,20 @@ mod tests {
         assert!(colored.contains("\u{1b}[33mpending(pending)\u{1b}[0m"));
         assert!(colored.contains("\u{1b}[31mdirty(dirty)\u{1b}[0m"));
         assert!(colored.contains("\u{1b}[90mremoved(removed)\u{1b}[0m"));
+    }
+
+    #[test]
+    fn escapes_untrusted_repository_label_characters() {
+        assert_eq!(
+            escape_human_label("api,\n(tab)\u{1b}\\"),
+            "api\\,\\n\\(tab\\)\\u{1b}\\\\"
+        );
+
+        let repository = repository("/origins/api,\n(red)\u{1b}", RepoWorktreeState::Dirty);
+        let plain = repository_summary(&[repository], false);
+        assert_eq!(plain.lines().count(), 1);
+        assert!(!plain.contains('\u{1b}'));
+        assert!(plain.contains("api\\,\\n\\(red\\)\\u{1b}(dirty)"));
     }
 
     fn repository(source_path: &str, state: RepoWorktreeState) -> RepoWorktreeStatus {
