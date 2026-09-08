@@ -80,14 +80,23 @@ Human output contains one row per workspace with these columns:
 
 - `STATE`: persisted workspace health.
 - `USAGE`: `claimed` or `unclaimed`.
-- `OPERATION`: `none`, `active:<kind>`, `expired:<kind>`, or
-  `inconsistent:<kind>`.
-- `MODE`: `automatic` or `manual`.
-- `REPOS`: total repo-worktree count followed by nonzero state counts.
-- `RECONCILED`: the last reconciliation timestamp or `never`.
+- `MODE`: `🤖` for automatic or `👤` for manual.
+- `REPOS`: attached repo worktrees over total repo-worktree capacity.
+- `RECONCILED`: a compact UTC timestamp relative to `snapshot_at`, or `never`.
 - `PATH`: canonical workspace path.
 
-The renderer uses complete values without color-dependent meaning. Column
+The human summary omits current operation details because completed operations
+normally have no retained lease, making the column mostly empty. JSON retains
+the complete current operation projection for diagnostics and automation.
+
+`REPOS` uses `<available>/<capacity>`, where `available` counts repo worktrees
+whose persisted state is `attached`, and `capacity` counts all managed repo
+worktrees. This is persisted availability rather than a fresh Git assertion.
+
+`RECONCILED` renders `HH:MM` when its UTC date matches `snapshot_at`,
+`MM-DD HH:MM` within the same UTC year, and `YYYY-MM-DD HH:MM` otherwise. The
+renderer accounts for terminal display width when aligning emoji. Output uses
+no color-dependent meaning, and the emoji mapping is documented. Column
 spacing is presentation detail rather than a parsing contract. When no rows
 match, it prints `No workspaces.` and exits successfully.
 

@@ -13,8 +13,11 @@ recent workspaces as a general inventory.
 - Show workspace health separately from usage claims and current operation
   leases so that `ready`, `claimed`, and `busy` are not collapsed into one
   ambiguous status.
-- Summarize repo-worktree states in human output and expose complete structured
-  workspace, claim, operation, and repo-worktree data in versioned JSON.
+- Summarize healthy repo-worktree availability against total capacity in human
+  output and expose complete structured workspace, claim, operation, and
+  repo-worktree data in versioned JSON.
+- Keep human output compact by omitting current operations, shortening
+  timestamps, and representing automatic and manual modes with emoji.
 - Exclude reclaimed workspace tombstones by default and include them with
   `--all`.
 - Keep status observational: it does not reconcile, recover, acquire, release,

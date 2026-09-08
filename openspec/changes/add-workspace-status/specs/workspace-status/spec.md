@@ -86,23 +86,40 @@ an operation. It SHALL NOT invoke Git or inspect workspace filesystem contents.
 ### Requirement: Render a Human Workspace Summary
 
 Without `--json`, status SHALL render one row per workspace containing the
-persisted workspace state, claim usage, current operation summary, management
-mode, repo-worktree state summary, last reconciliation time, and canonical
-workspace path. Missing reconciliation time SHALL be rendered as `never`.
-Output meaning SHALL NOT depend on terminal color. Empty results SHALL print
+persisted workspace state, claim usage, management mode, repo-worktree
+availability and capacity, last reconciliation time, and canonical workspace
+path. It SHALL omit current operation details from human output while retaining
+them in JSON. Management mode SHALL render as `🤖` for `automatic` and `👤` for
+`manual`, and column alignment SHALL account for terminal display width.
+
+Repo availability SHALL count repo worktrees whose persisted state is
+`attached`; capacity SHALL count all managed repo worktrees. The value SHALL
+use `<available>/<capacity>`. It SHALL represent persisted state and SHALL NOT
+imply a fresh Git observation.
+
+Missing reconciliation time SHALL render as `never`. Relative to the snapshot
+time in UTC, reconciliation time SHALL render as `HH:MM` on the same date,
+`MM-DD HH:MM` within the same year, and `YYYY-MM-DD HH:MM` otherwise. Output
+meaning SHALL NOT depend on terminal color. Empty results SHALL print
 `No workspaces.` and succeed. Human table spacing SHALL NOT be a
 machine-readable compatibility contract.
 
-#### Scenario: Summarize Repository States
+#### Scenario: Summarize Repository Availability
 
 - **WHEN** a workspace has attached, dirty, and missing repo worktrees
-- **THEN** its human row reports the total and each nonzero repo-worktree state
-  count without hiding the workspace health state
+- **THEN** its human row reports attached count over total count without hiding
+  the workspace health state
+
+#### Scenario: Shorten a Reconciliation Time from Today
+
+- **WHEN** a workspace reconciliation and the status snapshot have the same
+  UTC date
+- **THEN** its human row reports only the reconciliation hour and minute
 
 #### Scenario: Report Unhealthy State Successfully
 
-- **WHEN** the report contains a degraded workspace, dirty worktree, or expired
-  lease
+- **WHEN** the report contains a degraded workspace or unavailable repo
+  worktree
 - **THEN** the command renders that state and exits successfully
 
 ### Requirement: Provide Versioned JSON Status

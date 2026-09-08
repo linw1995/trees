@@ -23,3 +23,11 @@
 - [x] 3.3 Document status semantics and the distinction from `gc --dry-run`
 - [x] 3.4 Run complete Rust checks, repository hooks, strict OpenSpec
   validation, and Nix flake evaluation
+
+## 4. Human Output Refinement
+
+- [ ] 4.1 Remove the operation column, render attached repo availability
+  against total capacity, shorten UTC timestamps, and use emoji for management
+  mode
+- [ ] 4.2 Update rendering and integration tests, refresh documentation, and
+  rerun the complete quality gates
