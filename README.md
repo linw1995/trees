@@ -99,12 +99,15 @@ trees status --view workspaces
 trees status --view workspaces --all
 ```
 
-The default `pools` view reports one row per automatic repository set. It shows
-claimed slots as `ALLOCATED` and persisted ready, unclaimed, operation-free
-slots as `AVAILABLE` against current non-reclaimed `CAPACITY`. Availability is
-a scheduling hint; automatic allocation still reconciles a slot before use.
-Repository labels start with source-path base names and expand conflicting
-labels with parent components until unique within the pool.
+The default `pools` view reports one row per automatic repository set. Its
+`CAPACITY` value is `<available>/<total>/<abnormal>`. Available counts persisted
+ready, unclaimed, operation-free slots; total counts current non-reclaimed
+slots; abnormal counts degraded and failed slots. Interactive terminals render
+these numbers in green, blue, and red respectively. Pipelines and `NO_COLOR`
+receive the same plain value without ANSI escapes. Availability is a scheduling
+hint; automatic allocation still reconciles a slot before use. Repository
+labels start with source-path base names and expand conflicting labels with
+parent components until unique within the pool.
 
 Use `--view workspaces` for individual manual and automatic workspace health,
 claim usage, compact repository availability, reconciliation time, and
