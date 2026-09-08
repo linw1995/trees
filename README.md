@@ -171,6 +171,22 @@ while keeping normal safety checks. `--force` also skips confirmation and may
 remove dirty worktrees or unexpected content, but never bypasses manual,
 claim, operation, root-containment, or repository-identity guards.
 
+Remove one known workspace by the stable ID shown in
+`trees status --view workspaces`:
+
+```sh
+trees remove <workspace-id> --dry-run
+trees remove <workspace-id> --yes
+trees remove <workspace-id> --force
+```
+
+Explicit removal accepts automatic and manual workspaces and does not apply an
+age threshold. Normal mode requires a safe clean workspace. `--force` may
+remove dirty worktrees or unexpected content, but it does not break an active
+claim or operation and does not bypass path or repository identity guards.
+Successful removal keeps the workspace and worktree records as reclaimed
+tombstones.
+
 Launch an interactive Codex session for a managed workspace:
 
 ```sh

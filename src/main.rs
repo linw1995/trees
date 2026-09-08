@@ -15,6 +15,7 @@ fn run(cli: trees::cli::Cli) -> ExitCode {
         trees::cli::Command::Release(arguments) => run_release(arguments),
         trees::cli::Command::Config(arguments) => run_config(arguments),
         trees::cli::Command::Gc(arguments) => run_gc(arguments),
+        trees::cli::Command::Remove(arguments) => run_remove(arguments),
         trees::cli::Command::Status(arguments) => run_status(arguments),
         trees::cli::Command::Open(arguments) => run_open(arguments),
         trees::cli::Command::Codex(arguments) => run_codex(arguments),
@@ -397,6 +398,89 @@ fn execute_gc_report(
     let mut connection = trees::database::open_default().map_err(|error| error.to_string())?;
     trees::gc::execute(&mut connection, arguments.older_than, arguments.force)
         .map_err(|error| error.to_string())
+}
+
+fn run_remove(arguments: trees::cli::RemoveArgs) -> ExitCode {
+    match run_remove_command(&arguments) {
+        Ok(exit_code) => exit_code,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_remove_command(arguments: &trees::cli::RemoveArgs) -> Result<ExitCode, String> {
+    let preflight = load_removal_preflight(arguments)?;
+    println!("workspace_id={}", preflight.workspace.id);
+    println!("workspace_path={}", preflight.workspace.canonical_path);
+    println!("preflight_reason={}", preflight.reason);
+    if arguments.dry_run {
+        return Ok(ExitCode::SUCCESS);
+    }
+    if !preflight.can_execute() {
+        return Ok(ExitCode::FAILURE);
+    }
+    match confirm_removal(arguments.force, arguments.yes)? {
+        GcConfirmation::Proceed => execute_removal(arguments),
+        GcConfirmation::Cancelled => Ok(ExitCode::SUCCESS),
+    }
+}
+
+fn load_removal_preflight(
+    arguments: &trees::cli::RemoveArgs,
+) -> Result<trees::gc::RemovalPreflight, String> {
+    let mut connection = trees::database::open_read_only().map_err(|error| error.to_string())?;
+    trees::gc::scan_removal(&mut connection, &arguments.workspace_id, arguments.force)
+        .map_err(|error| error.to_string())
+}
+
+fn confirm_removal(force: bool, yes: bool) -> Result<GcConfirmation, String> {
+    if force {
+        eprintln!("Warning: --force may remove dirty worktrees and unexpected workspace content.");
+        return Ok(GcConfirmation::Proceed);
+    }
+    if yes {
+        return Ok(GcConfirmation::Proceed);
+    }
+    if !io::stdin().is_terminal() {
+        return Err(
+            "interactive confirmation is unavailable; use --dry-run, --yes, or --force".to_owned(),
+        );
+    }
+    print!("Remove this workspace? [y/N] ");
+    io::stdout()
+        .flush()
+        .map_err(|error| format!("failed to flush confirmation prompt: {error}"))?;
+    let mut answer = String::new();
+    io::stdin()
+        .read_line(&mut answer)
+        .map_err(|error| format!("failed to read confirmation: {error}"))?;
+    if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        Ok(GcConfirmation::Proceed)
+    } else {
+        println!("cancelled=true");
+        Ok(GcConfirmation::Cancelled)
+    }
+}
+
+fn execute_removal(arguments: &trees::cli::RemoveArgs) -> Result<ExitCode, String> {
+    let mut connection = trees::database::open_default().map_err(|error| error.to_string())?;
+    let report =
+        trees::gc::remove_workspace(&mut connection, &arguments.workspace_id, arguments.force)
+            .map_err(|error| error.to_string())?;
+    println!("removed={}", report.removed);
+    if !report.removed {
+        println!("reason={}", report.reason);
+    }
+    if let Some(error) = report.error {
+        eprintln!("Remove failed: {}: {error}", report.workspace_path);
+    }
+    Ok(if report.removed {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
 }
 
 fn run_status(arguments: trees::cli::StatusArgs) -> ExitCode {
