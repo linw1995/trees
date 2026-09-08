@@ -3,6 +3,9 @@ use std::collections::HashMap;
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 use serde::Serialize;
+use time::format_description::well_known::Rfc3339;
+use time::{OffsetDateTime, UtcOffset};
+use unicode_width::UnicodeWidthStr;
 
 use crate::domain::{
     CanonicalPath, ClaimId, LeaseId, OperationId, OperationState, OriginRepositoryId, PoolId,
@@ -122,15 +125,7 @@ pub fn render_human(snapshot: &StatusSnapshot) -> String {
         return "No workspaces.".to_owned();
     }
 
-    let headers = [
-        "STATE",
-        "USAGE",
-        "OPERATION",
-        "MODE",
-        "REPOS",
-        "RECONCILED",
-        "PATH",
-    ];
+    let headers = ["STATE", "USAGE", "MODE", "REPOS", "RECONCILED", "PATH"];
     let rows = snapshot
         .workspaces
         .iter()
@@ -142,23 +137,22 @@ pub fn render_human(snapshot: &StatusSnapshot) -> String {
                 } else {
                     "unclaimed".to_owned()
                 },
-                operation_summary(workspace.current_operation.as_ref()),
-                workspace.management_mode.to_string(),
+                mode_symbol(workspace.management_mode).to_owned(),
                 repository_summary(&workspace.repo_worktrees),
-                workspace
-                    .last_reconciled_at
-                    .as_ref()
-                    .map_or_else(|| "never".to_owned(), ToString::to_string),
+                workspace.last_reconciled_at.as_ref().map_or_else(
+                    || "never".to_owned(),
+                    |timestamp| compact_timestamp(timestamp, &snapshot.snapshot_at),
+                ),
                 workspace.path.to_string(),
             ]
         })
         .collect::<Vec<_>>();
-    let widths = std::array::from_fn::<_, 7, _>(|column| {
+    let widths = std::array::from_fn::<_, 6, _>(|column| {
         rows.iter()
-            .map(|row| row[column].len())
+            .map(|row| UnicodeWidthStr::width(row[column].as_str()))
             .max()
             .unwrap_or(0)
-            .max(headers[column].len())
+            .max(UnicodeWidthStr::width(headers[column]))
     });
     let mut lines = Vec::with_capacity(rows.len() + 1);
     lines.push(format_table_row(&headers, &widths));
@@ -168,57 +162,65 @@ pub fn render_human(snapshot: &StatusSnapshot) -> String {
     lines.join("\n")
 }
 
-fn format_table_row<S: AsRef<str>>(columns: &[S; 7], widths: &[usize; 7]) -> String {
+fn format_table_row<S: AsRef<str>, const N: usize>(
+    columns: &[S; N],
+    widths: &[usize; N],
+) -> String {
     let mut output = String::new();
     for (index, column) in columns.iter().enumerate() {
         let value = column.as_ref();
         output.push_str(value);
         if index + 1 < columns.len() {
-            output.push_str(&" ".repeat(widths[index] - value.len() + 2));
+            output.push_str(&" ".repeat(widths[index] - UnicodeWidthStr::width(value) + 2));
         }
     }
     output
 }
 
-fn operation_summary(operation: Option<&CurrentOperationStatus>) -> String {
-    operation.map_or_else(
-        || "none".to_owned(),
-        |operation| {
-            let lease_status = match operation.lease_status {
-                LeaseStatus::Active => "active",
-                LeaseStatus::Expired => "expired",
-                LeaseStatus::Inconsistent => "inconsistent",
-            };
-            format!("{lease_status}:{}", operation.kind)
-        },
-    )
+fn mode_symbol(mode: WorkspaceManagementMode) -> &'static str {
+    match mode {
+        WorkspaceManagementMode::Automatic => "🤖",
+        WorkspaceManagementMode::Manual => "👤",
+    }
 }
 
 fn repository_summary(repositories: &[RepoWorktreeStatus]) -> String {
-    let states = [
-        RepoWorktreeState::Pending,
-        RepoWorktreeState::Attached,
-        RepoWorktreeState::Dirty,
-        RepoWorktreeState::Missing,
-        RepoWorktreeState::Diverged,
-        RepoWorktreeState::Failed,
-        RepoWorktreeState::Reclaimed,
-    ];
-    let counts = states
-        .into_iter()
-        .filter_map(|state| {
-            let count = repositories
-                .iter()
-                .filter(|repository| repository.state == state)
-                .count();
-            (count > 0).then(|| format!("{state}={count}"))
-        })
-        .collect::<Vec<_>>();
-    if counts.is_empty() {
-        repositories.len().to_string()
+    let available = repositories
+        .iter()
+        .filter(|repository| repository.state == RepoWorktreeState::Attached)
+        .count();
+    format!("{available}/{}", repositories.len())
+}
+
+fn compact_timestamp(timestamp: &Timestamp, snapshot_at: &Timestamp) -> String {
+    let timestamp = parse_utc(timestamp);
+    let snapshot_at = parse_utc(snapshot_at);
+    if timestamp.date() == snapshot_at.date() {
+        format!("{:02}:{:02}", timestamp.hour(), timestamp.minute())
+    } else if timestamp.year() == snapshot_at.year() {
+        format!(
+            "{:02}-{:02} {:02}:{:02}",
+            u8::from(timestamp.month()),
+            timestamp.day(),
+            timestamp.hour(),
+            timestamp.minute()
+        )
     } else {
-        format!("{}({})", repositories.len(), counts.join(","))
+        format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}",
+            timestamp.year(),
+            u8::from(timestamp.month()),
+            timestamp.day(),
+            timestamp.hour(),
+            timestamp.minute()
+        )
     }
+}
+
+fn parse_utc(timestamp: &Timestamp) -> OffsetDateTime {
+    OffsetDateTime::parse(timestamp.as_str(), &Rfc3339)
+        .expect("validated timestamp should parse")
+        .to_offset(UtcOffset::UTC)
 }
 
 fn assemble_snapshot(
@@ -587,8 +589,35 @@ mod tests {
 
         assert_eq!(
             output,
-            "STATE     USAGE    OPERATION  MODE       REPOS       RECONCILED            PATH\n\
-             degraded  claimed  none       automatic  1(dirty=1)  2026-09-08T10:00:00Z  /status/example"
+            "STATE     USAGE    MODE  REPOS  RECONCILED  PATH\n\
+             degraded  claimed  🤖    0/1    10:00       /status/example"
+        );
+    }
+
+    #[test]
+    fn compacts_reconciliation_times_relative_to_the_snapshot() {
+        let snapshot = Timestamp::parse("2026-09-08T12:00:00Z").unwrap();
+
+        assert_eq!(
+            compact_timestamp(
+                &Timestamp::parse("2026-09-08T09:07:00+00:00").unwrap(),
+                &snapshot,
+            ),
+            "09:07"
+        );
+        assert_eq!(
+            compact_timestamp(
+                &Timestamp::parse("2026-08-31T23:59:00+00:00").unwrap(),
+                &snapshot,
+            ),
+            "08-31 23:59"
+        );
+        assert_eq!(
+            compact_timestamp(
+                &Timestamp::parse("2025-12-31T23:59:00+00:00").unwrap(),
+                &snapshot,
+            ),
+            "2025-12-31 23:59"
         );
     }
 
