@@ -6,7 +6,7 @@ use diesel::sqlite::SqliteConnection;
 use serde::Serialize;
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
-use unicode_width::UnicodeWidthStr;
+use unicode_width::UnicodeWidthChar;
 
 use crate::domain::{
     CanonicalPath, ClaimId, LeaseId, OperationId, OperationState, OriginRepositoryId, PoolId,
@@ -49,9 +49,9 @@ pub struct PoolStatusSnapshot {
 pub struct PoolStatus {
     pub pool_id: PoolId,
     pub repositories: Vec<PoolRepositoryStatus>,
-    pub allocated: usize,
     pub available: usize,
     pub capacity: usize,
+    pub abnormal: usize,
     pub updated_at: Option<Timestamp>,
 }
 
@@ -163,11 +163,11 @@ pub fn load_pool_snapshot(connection: &mut SqliteConnection) -> QueryResult<Pool
     })
 }
 
-pub fn render_pools_human(snapshot: &PoolStatusSnapshot) -> String {
+pub fn render_pools_human(snapshot: &PoolStatusSnapshot, color: bool) -> String {
     if snapshot.pools.is_empty() {
         return "No workspace pools.".to_owned();
     }
-    let headers = ["REPOS", "ALLOCATED", "AVAILABLE/CAPACITY", "UPDATED"];
+    let headers = ["REPOS", "CAPACITY", "UPDATED"];
     let rows = snapshot
         .pools
         .iter()
@@ -178,8 +178,7 @@ pub fn render_pools_human(snapshot: &PoolStatusSnapshot) -> String {
                     .map(|repository| repository.label.as_str())
                     .collect::<Vec<_>>()
                     .join(","),
-                pool.allocated.to_string(),
-                format!("{}/{}", pool.available, pool.capacity),
+                capacity_summary(pool, color),
                 pool.updated_at.as_ref().map_or_else(
                     || "never".to_owned(),
                     |timestamp| compact_timestamp(timestamp, &snapshot.snapshot_at),
@@ -188,6 +187,17 @@ pub fn render_pools_human(snapshot: &PoolStatusSnapshot) -> String {
         })
         .collect::<Vec<_>>();
     render_table(&headers, &rows)
+}
+
+fn capacity_summary(pool: &PoolStatus, color: bool) -> String {
+    if color {
+        format!(
+            "\u{1b}[32m{}\u{1b}[0m/\u{1b}[34m{}\u{1b}[0m/\u{1b}[31m{}\u{1b}[0m",
+            pool.available, pool.capacity, pool.abnormal
+        )
+    } else {
+        format!("{}/{}/{}", pool.available, pool.capacity, pool.abnormal)
+    }
 }
 
 pub fn load_snapshot(
@@ -254,10 +264,10 @@ pub fn render_workspaces_human(snapshot: &StatusSnapshot) -> String {
 fn render_table<const N: usize>(headers: &[&str; N], rows: &[[String; N]]) -> String {
     let widths = std::array::from_fn::<_, N, _>(|column| {
         rows.iter()
-            .map(|row| UnicodeWidthStr::width(row[column].as_str()))
+            .map(|row| display_width(row[column].as_str()))
             .max()
             .unwrap_or(0)
-            .max(UnicodeWidthStr::width(headers[column]))
+            .max(display_width(headers[column]))
     });
     let mut lines = Vec::with_capacity(rows.len() + 1);
     lines.push(format_table_row(headers, &widths));
@@ -276,10 +286,30 @@ fn format_table_row<S: AsRef<str>, const N: usize>(
         let value = column.as_ref();
         output.push_str(value);
         if index + 1 < columns.len() {
-            output.push_str(&" ".repeat(widths[index] - UnicodeWidthStr::width(value) + 2));
+            output.push_str(&" ".repeat(widths[index] - display_width(value) + 2));
         }
     }
     output
+}
+
+fn display_width(value: &str) -> usize {
+    let mut in_escape = false;
+    value
+        .chars()
+        .filter_map(|character| {
+            if in_escape {
+                if character == 'm' {
+                    in_escape = false;
+                }
+                return None;
+            }
+            if character == '\u{1b}' {
+                in_escape = true;
+                return None;
+            }
+            UnicodeWidthChar::width(character)
+        })
+        .sum()
 }
 
 fn mode_symbol(mode: WorkspaceManagementMode) -> &'static str {
@@ -420,16 +450,21 @@ fn assemble_pool_snapshot(
         .into_iter()
         .map(|(pool_id, workspaces)| {
             let capacity = workspaces.len();
-            let allocated = workspaces
-                .iter()
-                .filter(|workspace| claimed.contains(&workspace.id))
-                .count();
             let available = workspaces
                 .iter()
                 .filter(|workspace| {
                     workspace.state == WorkspaceState::Ready
                         && !claimed.contains(&workspace.id)
                         && !leased.contains(&workspace.id)
+                })
+                .count();
+            let abnormal = workspaces
+                .iter()
+                .filter(|workspace| {
+                    matches!(
+                        workspace.state,
+                        WorkspaceState::Degraded | WorkspaceState::Failed
+                    )
                 })
                 .count();
             let updated_at = workspaces
@@ -455,9 +490,9 @@ fn assemble_pool_snapshot(
             PoolStatus {
                 pool_id,
                 repositories,
-                allocated,
                 available,
                 capacity,
+                abnormal,
                 updated_at,
             }
         })
@@ -788,11 +823,16 @@ mod tests {
         assert_eq!(snapshot.pools.len(), 1);
         let pool = &snapshot.pools[0];
         assert_eq!(pool.pool_id, pool_id);
-        assert_eq!(pool.allocated, 1);
         assert_eq!(pool.available, 1);
         assert_eq!(pool.capacity, 4);
+        assert_eq!(pool.abnormal, 1);
         assert_eq!(pool.repositories[0].label, "api");
-        assert!(render_pools_human(&snapshot).contains("1/4"));
+        assert!(render_pools_human(&snapshot, false).contains("1/4/1"));
+        let colored = render_pools_human(&snapshot, true);
+        assert!(colored.contains("\u{1b}[32m1\u{1b}[0m"));
+        assert!(colored.contains("\u{1b}[34m4\u{1b}[0m"));
+        assert!(colored.contains("\u{1b}[31m1\u{1b}[0m"));
+        assert_eq!(display_width("\u{1b}[31m1\u{1b}[0m"), 1);
 
         drop(connection);
         fs::remove_file(database_path).expect("temporary database should be removable");

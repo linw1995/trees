@@ -385,7 +385,8 @@ fn run_pool_status(json: bool) -> ExitCode {
     if json {
         print_json(&snapshot)
     } else {
-        println!("{}", trees::status::render_pools_human(&snapshot));
+        let color = io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+        println!("{}", trees::status::render_pools_human(&snapshot, color));
         ExitCode::SUCCESS
     }
 }
