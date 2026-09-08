@@ -99,9 +99,9 @@ workspace path and claim identifier.
 - **WHEN** automatic create receives repositories matching an idle automatic
   workspace whose worktrees are clean, detached, present, non-prunable,
   identity-matched, and at their recorded revisions
-- **THEN** the command requires that existing workspace to match every
-  repository's upstream `HEAD`, claims it, returns its path and a claim
-  identifier, and does not create another workspace or worktree
+- **THEN** the command aligns that existing workspace to every repository's
+  upstream `HEAD`, claims it, returns its path and a claim identifier, and does
+  not create another workspace or worktree
 
 #### Scenario: Select the Oldest Idle Slot
 
@@ -122,12 +122,12 @@ workspace path and claim identifier.
 - **AND** Trees records the pool UUID and returns the new workspace already
   claimed
 
-#### Scenario: Skip a Stale Reusable Slot
+#### Scenario: Fail When Reusable Slot Alignment Is Unsafe
 
 - **WHEN** an otherwise reusable slot does not match the current upstream
-  `HEAD`
-- **THEN** automatic create leaves that slot unchanged and selects another
-  matching slot or provisions a new one
+  `HEAD` and checking out that revision cannot preserve existing files
+- **THEN** automatic create fails without granting a claim or modifying the
+  upstream repository
 
 #### Scenario: Retry a Pool Race
 

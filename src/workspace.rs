@@ -285,7 +285,7 @@ pub fn acquire_automatic_candidate(
         fail_operation(connection, &lease_id, &primary);
         return Err(primary);
     }
-    if let Err(primary) = ensure_acquired_worktrees_match_plan(connection, candidate, plan) {
+    if let Err(primary) = align_acquired_worktrees(connection, candidate, &lease_id, plan) {
         fail_operation(connection, &lease_id, &primary);
         return Err(primary);
     }
@@ -353,17 +353,13 @@ pub fn acquire_automatic_candidate(
     })
 }
 
-fn ensure_acquired_worktrees_match_plan(
+fn align_acquired_worktrees(
     connection: &mut SqliteConnection,
     workspace: &WorkspaceRow,
+    lease_id: &LeaseId,
     plan: &AutomaticAllocationPlan,
 ) -> Result<(), WorkspaceError> {
-    let repositories = crate::storage::list_repo_worktrees(connection, &workspace.id)
-        .map_err(WorkspaceError::Database)?;
-    if repositories.len() != plan.repositories.len() {
-        return Err(WorkspaceError::RepositorySetMismatch(workspace.id));
-    }
-    for repository in repositories {
+    let alignments = prepare_worktree_alignments(connection, workspace, |repository, _| {
         let Some(target) = plan
             .repositories
             .iter()
@@ -371,13 +367,13 @@ fn ensure_acquired_worktrees_match_plan(
         else {
             return Err(WorkspaceError::RepositorySetMismatch(workspace.id));
         };
-        if repository.last_head.as_deref() != Some(target.head.as_str()) {
-            return Err(WorkspaceError::NotReusable(
-                workspace.canonical_path.clone(),
-            ));
-        }
+        Ok(target.head.clone())
+    })?;
+    if alignments.len() != plan.repositories.len() {
+        return Err(WorkspaceError::RepositorySetMismatch(workspace.id));
     }
-    Ok(())
+
+    execute_worktree_alignments(connection, lease_id, alignments)
 }
 
 fn acquire_details(claim: &WorkspaceClaim, pool_id: PoolId) -> JsonDocument {

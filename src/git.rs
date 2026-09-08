@@ -128,7 +128,7 @@ pub fn inspect_repository(repository: &CanonicalPath) -> Result<RepositoryInfo, 
 }
 
 pub fn inspect_upstream_repository(repository: &CanonicalPath) -> Result<RepositoryInfo, GitError> {
-    let current = inspect_repository(repository)?;
+    let common_dir = inspect_repository_identity(repository)?;
     let upstream = list_worktrees(repository)?
         .into_iter()
         .next()
@@ -140,18 +140,9 @@ pub fn inspect_upstream_repository(repository: &CanonicalPath) -> Result<Reposit
         operation: "worktree list --porcelain".to_owned(),
         output: "upstream worktree has no HEAD".to_owned(),
     })?;
-    if current.head != head {
-        return Err(GitError::UpstreamHeadMismatch {
-            repository: current.root,
-            repository_head: current.head,
-            upstream: upstream.path,
-            upstream_head: head,
-        });
-    }
-
     Ok(RepositoryInfo {
         root: upstream.path,
-        common_dir: current.common_dir,
+        common_dir,
         head,
     })
 }
@@ -674,12 +665,6 @@ pub enum GitError {
     Heartbeat(String),
     Canonicalize(CanonicalPathError),
     WorktreeNotFound(PathBuf),
-    UpstreamHeadMismatch {
-        repository: CanonicalPath,
-        repository_head: String,
-        upstream: CanonicalPath,
-        upstream_head: String,
-    },
 }
 
 impl fmt::Display for GitError {
@@ -711,15 +696,6 @@ impl fmt::Display for GitError {
             Self::WorktreeNotFound(path) => {
                 write!(formatter, "Git did not report worktree: {}", path.display())
             }
-            Self::UpstreamHeadMismatch {
-                repository,
-                repository_head,
-                upstream,
-                upstream_head,
-            } => write!(
-                formatter,
-                "repository {repository} is at {repository_head}, but upstream {upstream} is at {upstream_head}"
-            ),
         }
     }
 }
@@ -815,6 +791,9 @@ mod tests {
             .head;
         let linked_path = root.join("linked");
         add_detached_worktree(&repository, &linked_path).expect("worktree should be added");
+        fs::write(linked_path.join("README"), "linked\n")
+            .expect("linked worktree should be updated");
+        run_git_in(&linked_path, &["commit", "-qam", "linked"]);
 
         let from_upstream =
             inspect_upstream_repository(&repository).expect("upstream input should resolve");
@@ -828,15 +807,6 @@ mod tests {
         assert_eq!(from_upstream.head, upstream_head);
         assert_eq!(from_linked.head, upstream_head);
         assert_eq!(from_linked.common_dir, from_upstream.common_dir);
-
-        fs::write(linked_path.join("README"), "linked\n")
-            .expect("linked worktree should be updated");
-        run_git_in(&linked_path, &["commit", "-qam", "linked"]);
-        let error = inspect_upstream_repository(
-            &CanonicalPath::resolve(&linked_path).expect("linked worktree should resolve"),
-        )
-        .expect_err("divergent worktree should be rejected");
-        assert!(matches!(error, GitError::UpstreamHeadMismatch { .. }));
 
         remove_worktree(&repository, &linked_path).expect("worktree should be removed");
         fs::remove_dir_all(root).expect("test root should be removable");
