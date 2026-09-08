@@ -16,9 +16,9 @@
 
 ## 3. Verification and Documentation
 
-- [ ] 3.1 Add integration coverage for mixed modes, health states, claims,
+- [x] 3.1 Add integration coverage for mixed modes, health states, claims,
   operations, repo states, ordering, missing database, and failure exits
-- [ ] 3.2 Prove status performs no database writes, lifecycle event appends,
+- [x] 3.2 Prove status performs no database writes, lifecycle event appends,
   Git commands, filesystem observations, or operation recovery
 - [ ] 3.3 Document status semantics and the distinction from `gc --dry-run`
 - [ ] 3.4 Run complete Rust checks, repository hooks, strict OpenSpec
