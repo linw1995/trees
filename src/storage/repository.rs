@@ -643,6 +643,40 @@ pub fn record_workspace_reclaimed(
     workspace_id: &WorkspaceId,
     details_json: Option<JsonDocument>,
 ) -> QueryResult<()> {
+    record_workspace_reclaimed_by(
+        connection,
+        lease_id,
+        workspace_id,
+        details_json,
+        "trees",
+        "garbage collection complete",
+    )
+}
+
+pub fn record_workspace_explicitly_reclaimed(
+    connection: &mut SqliteConnection,
+    lease_id: &LeaseId,
+    workspace_id: &WorkspaceId,
+    details_json: Option<JsonDocument>,
+) -> QueryResult<()> {
+    record_workspace_reclaimed_by(
+        connection,
+        lease_id,
+        workspace_id,
+        details_json,
+        "reclaim",
+        "explicit reclamation complete",
+    )
+}
+
+fn record_workspace_reclaimed_by(
+    connection: &mut SqliteConnection,
+    lease_id: &LeaseId,
+    workspace_id: &WorkspaceId,
+    details_json: Option<JsonDocument>,
+    source: &str,
+    pending_step: &str,
+) -> QueryResult<()> {
     with_short_transaction(connection, |connection| {
         let operation_id = operation_id_for_lease(connection, lease_id)?;
         let workspace = workspaces::table
@@ -665,7 +699,7 @@ pub fn record_workspace_reclaimed(
                     entity_type: "repo_worktree".to_owned(),
                     entity_id: repository.id.to_string(),
                     event_type: "worktree_reclaimed".to_owned(),
-                    source: "trees".to_owned(),
+                    source: source.to_owned(),
                     occurred_at: occurred_at.clone(),
                     previous_state: Some(repository.state.to_string()),
                     current_state: Some(RepoWorktreeState::Reclaimed.to_string()),
@@ -686,8 +720,8 @@ pub fn record_workspace_reclaimed(
             connection,
             lease_id,
             OperationState::Succeeded,
-            TransitionMetadata::new("operation_succeeded", "trees")
-                .with_pending_step("garbage collection complete")
+            TransitionMetadata::new("operation_succeeded", source)
+                .with_pending_step(pending_step)
                 .with_details(details_json.clone().unwrap_or_else(empty_json)),
         )?;
         append_event(
@@ -697,7 +731,7 @@ pub fn record_workspace_reclaimed(
                 entity_type: "workspace".to_owned(),
                 entity_id: workspace.id.to_string(),
                 event_type: "workspace_reclaimed".to_owned(),
-                source: "trees".to_owned(),
+                source: source.to_owned(),
                 occurred_at,
                 previous_state: Some(workspace.state.to_string()),
                 current_state: Some(WorkspaceState::Reclaimed.to_string()),
@@ -716,6 +750,49 @@ pub fn record_workspace_gc_skipped(
     details_json: Option<JsonDocument>,
     error_json: JsonDocument,
 ) -> QueryResult<()> {
+    record_workspace_reclamation_skipped(
+        connection,
+        lease_id,
+        workspace_id,
+        details_json,
+        error_json,
+        ReclamationEventMetadata {
+            source: "gc",
+            event_type: "workspace_gc_skipped",
+            pending_step: "GC skipped workspace",
+        },
+    )
+}
+
+pub fn record_workspace_reclaim_skipped(
+    connection: &mut SqliteConnection,
+    lease_id: &LeaseId,
+    workspace_id: &WorkspaceId,
+    details_json: Option<JsonDocument>,
+    error_json: JsonDocument,
+) -> QueryResult<()> {
+    record_workspace_reclamation_skipped(
+        connection,
+        lease_id,
+        workspace_id,
+        details_json,
+        error_json,
+        ReclamationEventMetadata {
+            source: "reclaim",
+            event_type: "workspace_reclaim_skipped",
+            pending_step: "explicit reclamation skipped workspace",
+        },
+    )
+}
+
+fn record_workspace_reclamation_skipped(
+    connection: &mut SqliteConnection,
+    lease_id: &LeaseId,
+    workspace_id: &WorkspaceId,
+    details_json: Option<JsonDocument>,
+    error_json: JsonDocument,
+    metadata: ReclamationEventMetadata<'_>,
+) -> QueryResult<()> {
     with_short_transaction(connection, |connection| {
         let operation_id = operation_id_for_lease(connection, lease_id)?;
         let workspace = workspaces::table
@@ -726,8 +803,8 @@ pub fn record_workspace_gc_skipped(
             connection,
             lease_id,
             OperationState::Failed,
-            TransitionMetadata::new("operation_failed", "gc")
-                .with_pending_step("GC skipped workspace")
+            TransitionMetadata::new("operation_failed", metadata.source)
+                .with_pending_step(metadata.pending_step)
                 .with_details(details_json.clone().unwrap_or_else(empty_json))
                 .with_error(error_json.clone()),
         )?;
@@ -737,8 +814,8 @@ pub fn record_workspace_gc_skipped(
                 operation_id,
                 entity_type: "workspace".to_owned(),
                 entity_id: workspace.id.to_string(),
-                event_type: "workspace_gc_skipped".to_owned(),
-                source: "gc".to_owned(),
+                event_type: metadata.event_type.to_owned(),
+                source: metadata.source.to_owned(),
                 occurred_at: Timestamp::now(),
                 previous_state: Some(workspace.state.to_string()),
                 current_state: Some(workspace.state.to_string()),
@@ -756,6 +833,49 @@ pub fn record_workspace_gc_failure(
     workspace_id: &WorkspaceId,
     details_json: Option<JsonDocument>,
     error_json: JsonDocument,
+) -> QueryResult<()> {
+    record_workspace_reclamation_failure(
+        connection,
+        lease_id,
+        workspace_id,
+        details_json,
+        error_json,
+        ReclamationEventMetadata {
+            source: "gc",
+            event_type: "workspace_gc_failed",
+            pending_step: "GC failed",
+        },
+    )
+}
+
+pub fn record_workspace_reclaim_failure(
+    connection: &mut SqliteConnection,
+    lease_id: &LeaseId,
+    workspace_id: &WorkspaceId,
+    details_json: Option<JsonDocument>,
+    error_json: JsonDocument,
+) -> QueryResult<()> {
+    record_workspace_reclamation_failure(
+        connection,
+        lease_id,
+        workspace_id,
+        details_json,
+        error_json,
+        ReclamationEventMetadata {
+            source: "reclaim",
+            event_type: "workspace_reclaim_failed",
+            pending_step: "explicit reclamation failed",
+        },
+    )
+}
+
+fn record_workspace_reclamation_failure(
+    connection: &mut SqliteConnection,
+    lease_id: &LeaseId,
+    workspace_id: &WorkspaceId,
+    details_json: Option<JsonDocument>,
+    error_json: JsonDocument,
+    metadata: ReclamationEventMetadata<'_>,
 ) -> QueryResult<()> {
     with_short_transaction(connection, |connection| {
         let operation_id = operation_id_for_lease(connection, lease_id)?;
@@ -775,8 +895,8 @@ pub fn record_workspace_gc_failure(
             connection,
             lease_id,
             OperationState::Failed,
-            TransitionMetadata::new("operation_failed", "gc")
-                .with_pending_step("GC failed")
+            TransitionMetadata::new("operation_failed", metadata.source)
+                .with_pending_step(metadata.pending_step)
                 .with_details(details_json.clone().unwrap_or_else(empty_json))
                 .with_error(error_json.clone()),
         )?;
@@ -786,8 +906,8 @@ pub fn record_workspace_gc_failure(
                 operation_id,
                 entity_type: "workspace".to_owned(),
                 entity_id: workspace.id.to_string(),
-                event_type: "workspace_gc_failed".to_owned(),
-                source: "gc".to_owned(),
+                event_type: metadata.event_type.to_owned(),
+                source: metadata.source.to_owned(),
                 occurred_at,
                 previous_state: Some(workspace.state.to_string()),
                 current_state: Some(WorkspaceState::Failed.to_string()),
@@ -797,6 +917,13 @@ pub fn record_workspace_gc_failure(
         )?;
         Ok(())
     })
+}
+
+#[derive(Clone, Copy)]
+struct ReclamationEventMetadata<'a> {
+    source: &'a str,
+    event_type: &'a str,
+    pending_step: &'a str,
 }
 
 fn workspace_access_event(

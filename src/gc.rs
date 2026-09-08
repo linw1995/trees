@@ -10,8 +10,9 @@ use crate::git;
 use crate::reconciliation;
 use crate::storage::{
     begin_operation, find_running_operation, find_workspace, find_workspace_claim,
-    list_automatic_workspaces, list_repo_worktrees, record_workspace_gc_failure,
-    record_workspace_gc_skipped, record_workspace_reclaimed, renew_operation_lease,
+    list_automatic_workspaces, list_repo_worktrees, record_workspace_explicitly_reclaimed,
+    record_workspace_gc_failure, record_workspace_gc_skipped, record_workspace_reclaim_failure,
+    record_workspace_reclaim_skipped, record_workspace_reclaimed, renew_operation_lease,
     OperationIntent, OperationIntentError, RepoWorktreeRow,
 };
 use crate::validation;
@@ -119,6 +120,8 @@ pub enum GcCandidateReason {
     Young,
     Claimed,
     ActiveOperation,
+    ExpiredOperation,
+    Reclaimed,
     Unhealthy,
     UnsafeRoot,
     RepositoryIdentity,
@@ -135,6 +138,8 @@ impl fmt::Display for GcCandidateReason {
             Self::Young => "young",
             Self::Claimed => "claimed",
             Self::ActiveOperation => "active_operation",
+            Self::ExpiredOperation => "expired_operation",
+            Self::Reclaimed => "reclaimed",
             Self::Unhealthy => "unhealthy",
             Self::UnsafeRoot => "unsafe_root",
             Self::RepositoryIdentity => "repository_identity",
@@ -228,6 +233,29 @@ pub struct GcExecutionReport {
     pub reclaimed: Vec<CanonicalPath>,
     pub skipped: Vec<GcSkipped>,
     pub failed: Vec<GcFailure>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReclaimPreflight {
+    pub workspace: crate::storage::WorkspaceRow,
+    pub reason: GcCandidateReason,
+}
+
+impl ReclaimPreflight {
+    pub fn can_execute(&self) -> bool {
+        matches!(
+            self.reason,
+            GcCandidateReason::Eligible | GcCandidateReason::ExpiredOperation
+        )
+    }
+}
+
+#[derive(Debug)]
+pub struct ReclaimReport {
+    pub workspace_path: CanonicalPath,
+    pub reclaimed: bool,
+    pub reason: GcCandidateReason,
+    pub error: Option<String>,
 }
 
 enum GcCandidateResult {
@@ -325,6 +353,289 @@ pub fn execute(
         }
     }
     Ok(report)
+}
+
+pub fn scan_reclaim(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+    force: bool,
+) -> Result<ReclaimPreflight, GcError> {
+    let workspace = find_workspace(connection, workspace_id).map_err(|error| match error {
+        diesel::result::Error::NotFound => GcError::WorkspaceNotFound(*workspace_id),
+        error => GcError::Database(error),
+    })?;
+    let reason = reclaim_reason(connection, &workspace, force)?;
+    Ok(ReclaimPreflight { workspace, reason })
+}
+
+fn reclaim_reason(
+    connection: &mut SqliteConnection,
+    workspace: &crate::storage::WorkspaceRow,
+    force: bool,
+) -> Result<GcCandidateReason, GcError> {
+    if workspace.state == WorkspaceState::Reclaimed {
+        return Ok(GcCandidateReason::Reclaimed);
+    }
+    if find_workspace_claim(connection, &workspace.id)
+        .map_err(GcError::Database)?
+        .is_some()
+    {
+        return Ok(GcCandidateReason::Claimed);
+    }
+    if let Some(operation) =
+        find_running_operation(connection, &workspace.id).map_err(GcError::Database)?
+    {
+        return Ok(if operation.lease.lease_expires_at.has_expired() {
+            GcCandidateReason::ExpiredOperation
+        } else {
+            GcCandidateReason::ActiveOperation
+        });
+    }
+    if workspace_is_unhealthy(workspace, force) {
+        return Ok(GcCandidateReason::Unhealthy);
+    }
+    let repositories = list_repo_worktrees(connection, &workspace.id).map_err(GcError::Database)?;
+    Ok(prepare_removal(workspace, &repositories, force)
+        .err()
+        .unwrap_or(GcCandidateReason::Eligible))
+}
+
+pub fn reclaim_workspace(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+    force: bool,
+) -> Result<ReclaimReport, GcError> {
+    let preflight = scan_reclaim(connection, workspace_id, force)?;
+    let workspace_path = preflight.workspace.canonical_path.clone();
+    if preflight.reason == GcCandidateReason::ExpiredOperation {
+        reconciliation::recover_expired_operation(connection, workspace_id)
+            .map_err(GcError::Reconciliation)?;
+    } else if preflight.reason != GcCandidateReason::Eligible {
+        return Ok(reclaim_rejected(workspace_path, preflight.reason));
+    }
+
+    let refreshed = find_workspace(connection, workspace_id).map_err(GcError::Database)?;
+    if refreshed.state == WorkspaceState::Reclaimed {
+        return Ok(reclaim_rejected(
+            workspace_path,
+            GcCandidateReason::Reclaimed,
+        ));
+    }
+    let details_json = reclaim_details(&refreshed.canonical_path, force, None);
+    let intent = OperationIntent::new(
+        *workspace_id,
+        "reclaim",
+        Timestamp::after_seconds(300),
+        "reclaim workspace",
+        details_json.clone(),
+    );
+    let lease_id = intent.lease_id;
+    let operation = match begin_operation(connection, &intent) {
+        Ok(operation) => operation,
+        Err(OperationIntentError::WorkspaceBusy(_)) => {
+            return Ok(reclaim_rejected(
+                workspace_path,
+                GcCandidateReason::ActiveOperation,
+            ));
+        }
+        Err(OperationIntentError::Database(error)) => return Err(GcError::Database(error)),
+    };
+
+    if let Err(error) = reconciliation::reconcile_workspace_with_lease(
+        connection,
+        workspace_id,
+        &operation.id,
+        &lease_id,
+    ) {
+        let error_text = error.to_string();
+        finish_reclaim_failure(
+            connection,
+            &lease_id,
+            workspace_id,
+            reclaim_details(&workspace_path, force, Some(&error_text)),
+            &error_text,
+        )?;
+        return Ok(reclaim_failed(
+            workspace_path,
+            GcCandidateReason::GitError,
+            error_text,
+        ));
+    }
+
+    let workspace = find_workspace(connection, workspace_id).map_err(GcError::Database)?;
+    let reason = reclaim_reason_while_owned(connection, &workspace, force)?;
+    if reason != GcCandidateReason::Eligible {
+        finish_reclaim_skip(
+            connection,
+            &lease_id,
+            workspace_id,
+            reclaim_details(&workspace.canonical_path, force, None),
+            reason,
+        )?;
+        return Ok(reclaim_rejected(workspace.canonical_path, reason));
+    }
+
+    let repositories = list_repo_worktrees(connection, workspace_id).map_err(GcError::Database)?;
+    let removal_plan = match prepare_removal(&workspace, &repositories, force) {
+        Ok(plan) => plan,
+        Err(reason) => {
+            finish_reclaim_skip(
+                connection,
+                &lease_id,
+                workspace_id,
+                reclaim_details(&workspace.canonical_path, force, None),
+                reason,
+            )?;
+            return Ok(reclaim_rejected(workspace.canonical_path, reason));
+        }
+    };
+    if let Err(error) = remove_physical_workspace(&removal_plan, force, || {
+        renew_gc_lease(connection, &lease_id)
+    }) {
+        let error_text = error.to_string();
+        let _ = reconciliation::reconcile_workspace_with_lease(
+            connection,
+            workspace_id,
+            &operation.id,
+            &lease_id,
+        );
+        finish_reclaim_failure(
+            connection,
+            &lease_id,
+            workspace_id,
+            reclaim_details(&workspace.canonical_path, force, Some(&error_text)),
+            &error_text,
+        )?;
+        return Ok(reclaim_failed(
+            workspace.canonical_path,
+            GcCandidateReason::GitError,
+            error_text,
+        ));
+    }
+    if let Err(error) = record_workspace_explicitly_reclaimed(
+        connection,
+        &lease_id,
+        workspace_id,
+        Some(reclaim_details(&workspace.canonical_path, force, None)),
+    ) {
+        let error_text = error.to_string();
+        finish_reclaim_failure(
+            connection,
+            &lease_id,
+            workspace_id,
+            reclaim_details(&workspace.canonical_path, force, Some(&error_text)),
+            &error_text,
+        )?;
+        return Ok(reclaim_failed(
+            workspace.canonical_path,
+            GcCandidateReason::GitError,
+            error_text,
+        ));
+    }
+    Ok(ReclaimReport {
+        workspace_path: workspace.canonical_path,
+        reclaimed: true,
+        reason: GcCandidateReason::Eligible,
+        error: None,
+    })
+}
+
+fn reclaim_reason_while_owned(
+    connection: &mut SqliteConnection,
+    workspace: &crate::storage::WorkspaceRow,
+    force: bool,
+) -> Result<GcCandidateReason, GcError> {
+    if workspace.state == WorkspaceState::Reclaimed {
+        return Ok(GcCandidateReason::Reclaimed);
+    }
+    if find_workspace_claim(connection, &workspace.id)
+        .map_err(GcError::Database)?
+        .is_some()
+    {
+        return Ok(GcCandidateReason::Claimed);
+    }
+    if workspace_is_unhealthy(workspace, force) {
+        return Ok(GcCandidateReason::Unhealthy);
+    }
+    Ok(GcCandidateReason::Eligible)
+}
+
+fn reclaim_rejected(workspace_path: CanonicalPath, reason: GcCandidateReason) -> ReclaimReport {
+    ReclaimReport {
+        workspace_path,
+        reclaimed: false,
+        reason,
+        error: None,
+    }
+}
+
+fn reclaim_failed(
+    workspace_path: CanonicalPath,
+    reason: GcCandidateReason,
+    error: String,
+) -> ReclaimReport {
+    ReclaimReport {
+        workspace_path,
+        reclaimed: false,
+        reason,
+        error: Some(error),
+    }
+}
+
+fn reclaim_details(
+    workspace_path: &CanonicalPath,
+    force: bool,
+    error: Option<&str>,
+) -> JsonDocument {
+    JsonDocument::from_serializable(&serde_json::json!({
+        "workspace_path": workspace_path,
+        "forced": force,
+        "command": "reclaim",
+        "error": error,
+    }))
+    .expect("reclaim details should serialize")
+}
+
+fn finish_reclaim_skip(
+    connection: &mut SqliteConnection,
+    lease_id: &crate::domain::LeaseId,
+    workspace_id: &WorkspaceId,
+    details_json: JsonDocument,
+    reason: GcCandidateReason,
+) -> Result<(), GcError> {
+    let error_json = JsonDocument::from_serializable(&serde_json::json!({
+        "reason": reason.to_string(),
+    }))
+    .expect("reclaim skip error should serialize");
+    record_workspace_reclaim_skipped(
+        connection,
+        lease_id,
+        workspace_id,
+        Some(details_json),
+        error_json,
+    )
+    .map_err(GcError::Database)
+}
+
+fn finish_reclaim_failure(
+    connection: &mut SqliteConnection,
+    lease_id: &crate::domain::LeaseId,
+    workspace_id: &WorkspaceId,
+    details_json: JsonDocument,
+    error: &str,
+) -> Result<(), GcError> {
+    let error_json = JsonDocument::from_serializable(&serde_json::json!({
+        "error": error,
+    }))
+    .expect("reclaim error should serialize");
+    record_workspace_reclaim_failure(
+        connection,
+        lease_id,
+        workspace_id,
+        Some(details_json),
+        error_json,
+    )
+    .map_err(GcError::Database)
 }
 
 fn execute_candidate(
@@ -994,6 +1305,7 @@ impl fmt::Display for GcPhysicalError {
 
 #[derive(Debug)]
 pub enum GcError {
+    WorkspaceNotFound(WorkspaceId),
     Database(diesel::result::Error),
     Reconciliation(reconciliation::ReconciliationError),
 }
@@ -1001,6 +1313,9 @@ pub enum GcError {
 impl fmt::Display for GcError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::WorkspaceNotFound(workspace_id) => {
+                write!(formatter, "workspace not found: {workspace_id}")
+            }
             Self::Database(error) => write!(formatter, "GC database operation failed: {error}"),
             Self::Reconciliation(error) => {
                 write!(formatter, "GC reconciliation operation failed: {error}")
@@ -1012,6 +1327,7 @@ impl fmt::Display for GcError {
 impl std::error::Error for GcError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::WorkspaceNotFound(_) => None,
             Self::Database(error) => Some(error),
             Self::Reconciliation(error) => Some(error),
         }
@@ -1137,6 +1453,8 @@ mod tests {
             (GcCandidateReason::Young, "young"),
             (GcCandidateReason::Claimed, "claimed"),
             (GcCandidateReason::ActiveOperation, "active_operation"),
+            (GcCandidateReason::ExpiredOperation, "expired_operation"),
+            (GcCandidateReason::Reclaimed, "reclaimed"),
             (GcCandidateReason::Unhealthy, "unhealthy"),
             (GcCandidateReason::UnsafeRoot, "unsafe_root"),
             (GcCandidateReason::RepositoryIdentity, "repository_identity"),
