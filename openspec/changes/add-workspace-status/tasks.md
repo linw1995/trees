@@ -95,4 +95,4 @@
 
 - [x] 13.1 Replace status-wide identifier-list queries with relational joins
 - [x] 13.2 Escape path-derived human labels before adding suffixes and colors
-- [ ] 13.3 Add regression coverage and rerun the complete quality gates
+- [x] 13.3 Add regression coverage and rerun the complete quality gates
