@@ -7,7 +7,7 @@ without deleting its durable lifecycle history.
 
 ## ADDED Requirements
 
-### Requirement: Remove One Workspace by Stable ID
+### Requirement: Remove One Workspace by Stable Id
 
 The CLI SHALL provide `trees remove <workspace-id> [--dry-run] [--yes]
 [--force]`. The ID SHALL be a UUID v7 workspace identifier. Explicit removal
@@ -17,7 +17,7 @@ threshold.
 #### Scenario: Remove a Manual Workspace
 
 - **WHEN** a caller confirms removal for a safe manual workspace by its ID
-- **THEN** Trees removes its managed worktrees and workspace directory and
+- **THEN** Trees removes the workspace's managed worktrees and directory and
   records reclaimed tombstones
 
 #### Scenario: Remove an Automatic Workspace
@@ -79,12 +79,12 @@ modify filesystem content.
 ### Requirement: Confirm Explicit Removal
 
 Execution SHALL require interactive confirmation unless `--yes` or `--force`
-is supplied. A non-interactive invocation without either flag SHALL fail.
+is supplied. A noninteractive invocation without either flag SHALL fail.
 `--force` SHALL imply confirmation and print a destructive-content warning.
 
-#### Scenario: Reject Unconfirmed Non-Interactive Removal
+#### Scenario: Reject Unconfirmed Noninteractive Removal
 
-- **WHEN** execution has candidates but standard input is non-interactive and
+- **WHEN** execution has candidates but standard input is noninteractive and
   neither `--yes` nor `--force` is present
 - **THEN** it fails without starting an operation or removing content
 

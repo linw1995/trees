@@ -9,7 +9,7 @@ checks.
 
 - Add `trees remove <workspace-id> [--dry-run] [--yes] [--force]`.
 - Allow explicit removal of either automatic or manual workspaces.
-- Reuse GC's physical validation and removal behavior without applying an age
+- Reuse the GC physical validation and removal behavior without applying an age
   threshold or automatic-management filter.
 - Reject claimed, actively operated, unknown, or already reclaimed workspaces.
 - Keep `--force` bounded by claim, operation, path-containment, source identity,

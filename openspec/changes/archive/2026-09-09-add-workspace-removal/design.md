@@ -24,7 +24,7 @@ does not use idle age.
 
 ## Decisions
 
-### Use a Remove Command and Stable ID
+### Use the Remove Command with a Stable Id
 
 The interface is `trees remove <workspace-id> [--dry-run] [--yes]
 [--force]`. `remove` names the physical user action without implying that
@@ -62,7 +62,7 @@ mutation. It reports the target path and eligibility reason.
 ### Confirm Destructive Execution
 
 Execution asks for confirmation unless `--yes` or `--force` is supplied.
-Non-interactive execution without either flag fails. `--force` prints a warning
+Noninteractive execution without either flag fails. `--force` prints a warning
 and implies confirmation because it explicitly selects the broader removal
 policy.
 
@@ -70,7 +70,7 @@ policy.
 
 - [A manual workspace may contain valuable local state] → Require explicit ID,
   confirmation, and clean validation unless `--force` is supplied.
-- [Preflight can become stale] → Re-run admission and physical validation under
+- [Preflight can become stale] → Rerun admission and physical validation under
   a persisted operation lease immediately before removal.
 - [Physical removal can partially fail] → Preserve the existing failed
   operation and reconciliation behavior without writing a reclaimed tombstone.
