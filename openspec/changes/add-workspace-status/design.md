@@ -79,7 +79,7 @@ meaning independently from color.
 
 The human workspace view contains these columns:
 
-- `STATUS`: persisted workspace health followed by `claimed` or `unclaimed`.
+- `STATUS`: persisted workspace health followed by `🔒` when claimed.
 - `MODE`: `🤖` for automatic or `👤` for manual.
 - `REPOS`: attached repo worktrees over total repo-worktree count followed by
   shortest unique repository labels.
@@ -102,9 +102,10 @@ missing, diverged, and failed labels are red with `(dirty)`, `(missing)`,
 Non-terminal output retains these suffixes without color, so color is never the
 only indication of a problem.
 
-`STATUS` uses `<state>/<usage>`, such as `ready/claimed` or
-`degraded/unclaimed`. The JSON workspace projection remains normalized with
-separate state and claim fields.
+`STATUS` renders the state alone for an unclaimed workspace and appends `🔒`
+for a claimed workspace, such as `ready 🔒`. Absence of the lock means no active
+claim. The JSON workspace projection remains normalized with separate state and
+claim fields.
 
 ### Emit View-Specific Versioned JSON
 

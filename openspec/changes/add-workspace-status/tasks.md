@@ -75,3 +75,8 @@
 - [x] 10.2 Color repo labels by state and append friendly suffixes to non-ready
   repositories
 - [ ] 10.3 Update tests and documentation, then rerun the complete quality gates
+
+## 11. Workspace Claim Indicator
+
+- [ ] 11.1 Replace claimed and unclaimed text with an optional `🔒` claim marker
+- [ ] 11.2 Update tests and documentation, then rerun the complete quality gates

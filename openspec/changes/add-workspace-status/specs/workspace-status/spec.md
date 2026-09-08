@@ -89,8 +89,9 @@ color. `UPDATED` SHALL be the greatest `updated_at` among current capacity
 slots.
 
 The workspace human view SHALL render `STATUS`, `MODE`, `REPOS`, `RECONCILED`,
-and `PATH`. `STATUS` SHALL combine persisted workspace health and claim usage
-as `<state>/<claimed|unclaimed>`. It SHALL omit current operation details.
+and `PATH`. `STATUS` SHALL render persisted workspace health and append `🔒`
+when an active claim exists. An unclaimed workspace SHALL have no claim marker.
+It SHALL omit current operation details.
 Workspace `MODE` SHALL render as `🤖` for automatic and `👤` for manual.
 Workspace `REPOS` SHALL render attached repo-worktree count over total count
 followed by shortest unique source-path labels. The attached count SHALL be
@@ -138,7 +139,12 @@ spacing SHALL NOT be a machine-readable contract.
 #### Scenario: Merge Workspace State and Usage
 
 - **WHEN** a ready workspace has an active claim
-- **THEN** its human `STATUS` value is `ready/claimed`
+- **THEN** its human `STATUS` value is `ready 🔒`
+
+#### Scenario: Omit an Unclaimed Marker
+
+- **WHEN** a degraded workspace has no active claim
+- **THEN** its human `STATUS` value is `degraded` without an additional marker
 
 ### Requirement: Provide View-Specific Versioned JSON
 
