@@ -12,7 +12,7 @@
 - [x] 2.1 Add `trees status [--all] [--json]` parsing and dispatch
 - [x] 2.2 Render deterministic human summaries, including empty state and
   reclaimed filtering
-- [x] 2.3 Render the versioned JSON envelope without non-JSON stdout output
+- [x] 2.3 Render the versioned JSON envelope without non-JSON standard output
 
 ## 3. Verification and Documentation
 
@@ -21,5 +21,5 @@
 - [x] 3.2 Prove status performs no database writes, lifecycle event appends,
   Git commands, filesystem observations, or operation recovery
 - [x] 3.3 Document status semantics and the distinction from `gc --dry-run`
-- [ ] 3.4 Run complete Rust checks, repository hooks, strict OpenSpec
+- [x] 3.4 Run complete Rust checks, repository hooks, strict OpenSpec
   validation, and Nix flake evaluation

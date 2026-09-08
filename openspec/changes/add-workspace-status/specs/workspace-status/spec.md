@@ -64,11 +64,11 @@ reconciliation.
 ### Requirement: Read Status Without Side Effects
 
 Status SHALL capture one snapshot timestamp and load workspace, claim,
-operation lease and fact, latest operation state, and repo-worktree records in
-one read-only SQLite transaction. All lease-expiry classifications SHALL use
-that timestamp. Status SHALL NOT open lifecycle storage for writing, append an
-event, acquire or release a claim, start or recover an operation, invoke Git,
-or inspect workspace filesystem contents.
+operation lease, operation fact, latest operation state, and repo-worktree
+records in one read-only SQLite transaction. All lease-expiry classifications
+SHALL use that timestamp. Status SHALL NOT open lifecycle storage for writing
+or append an event. It SHALL NOT acquire or release a claim or start or recover
+an operation. It SHALL NOT invoke Git or inspect workspace filesystem contents.
 
 #### Scenario: Preserve State During Inspection
 
@@ -107,7 +107,7 @@ machine-readable compatibility contract.
 
 ### Requirement: Provide Versioned JSON Status
 
-With `--json`, status SHALL write exactly one JSON document to stdout. The
+With `--json`, status SHALL write exactly one JSON document to standard output. The
 document SHALL contain integer `schema_version` equal to `1`, one
 `snapshot_at` timestamp, and a `workspaces` array. Each workspace object SHALL
 contain `workspace_id`, `path`, `management_mode`, `state`, `created_at`,
@@ -119,24 +119,24 @@ operation SHALL contain `operation_id`, `kind`, `state`, `lease_id`,
 `repo_worktree_id`, `origin_repository_id`, `source_path`, `worktree_path`,
 `state`, `last_head`, and `last_observed_at`. Identifiers and timestamps SHALL
 be strings, absent optional values SHALL be JSON `null`, arrays SHALL preserve
-the required ordering, and diagnostics SHALL be written only to stderr.
+the required ordering, and diagnostics SHALL be written only to standard error.
 
 #### Scenario: Emit Structured Workspace Details
 
 - **WHEN** status is invoked with `--json` for a claimed workspace with a
   current operation and multiple repo worktrees
-- **THEN** stdout is one schema-versioned JSON document containing the claim,
+- **THEN** standard output is one schema-versioned JSON document containing the claim,
   operation lease classification, and every ordered repo-worktree snapshot
 
 #### Scenario: Emit an Empty JSON Result
 
 - **WHEN** status is invoked with `--json` and no workspaces match
-- **THEN** stdout contains a valid version-1 document with an empty
+- **THEN** standard output contains a valid version-1 document with an empty
   `workspaces` array
 
 ### Requirement: Fail Only When Status Cannot Be Produced
 
-Status SHALL return a nonzero exit only when it cannot open or read an existing
+Status SHALL return a nonzero exit only when it cannot open or read the
 lifecycle database, construct a consistent projection, or serialize the
 selected output. Persisted unhealthy states, claims, active or expired
 operations, and reclaimed rows included by `--all` SHALL be report data rather
@@ -146,5 +146,5 @@ than command failures.
 
 - **WHEN** the lifecycle database exists but cannot provide a valid status
   snapshot
-- **THEN** status writes an error to stderr, returns nonzero, and emits no
+- **THEN** status writes an error to standard error, returns nonzero, and emits no
   partial JSON document

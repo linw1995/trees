@@ -14,7 +14,7 @@ turn an inspection into an operation boundary with recovery side effects.
 - Make health, usage, operation activity, and observation freshness separately
   visible.
 - Provide deterministic human output and a versioned machine-readable form.
-- Read a transactionally consistent SQLite snapshot without changing external
+- Read a transaction-consistent SQLite snapshot without changing external
   or persisted state.
 
 **Non-Goals:**
@@ -30,8 +30,8 @@ turn an inspection into an operation boundary with recovery side effects.
 
 ### Use a Top-Level Status Command
 
-The interface is `trees status [--all] [--json]`. With no options it lists all
-non-reclaimed manual and automatic workspaces. `--all` additionally includes
+The interface is `trees status [--all] [--json]`. With no options, it lists all
+non-reclaimed manual and automatic workspaces. `--all` also includes
 reclaimed tombstones. An empty or not-yet-created lifecycle database is a
 successful empty result; an unreadable, corrupt, or incompatible database is
 an error.
@@ -50,9 +50,9 @@ mode. Usage is derived only from active claim presence and is rendered as
 operation lease, its operation fact, its latest operation event, and the
 snapshot time.
 
-An operation lease is classified as `active` when its latest operation state
-is `running` and its expiry is later than the snapshot time, `expired` when the
-latest state is `running` and its expiry is at or before the snapshot time, and
+An operation lease is `active` when its latest operation state is `running` and
+its expiry is later than the snapshot time. It is `expired` when the latest
+state is `running` and its expiry is at or before the snapshot time. It is
 `inconsistent` when a lease remains for a terminal operation. Absence of a
 lease is rendered as no current operation. Status reports these facts but does
 not take over or remove an expired or inconsistent lease.
@@ -71,10 +71,10 @@ starts no workspace operation, and invokes no Git or filesystem observation.
 
 Repository queries should batch related rows and assemble the projection by
 workspace ID rather than issuing one query per relationship for each
-workspace. Paths are ordered lexicographically, and repo worktrees within each
+workspace. Paths use lexicographical order, and repo worktrees within each
 workspace are ordered by worktree path, making human and JSON output stable.
 
-### Provide Human Summary and Versioned JSON
+### Provide a Human Summary and Versioned JSON
 
 Human output contains one row per workspace with these columns:
 
@@ -91,7 +91,7 @@ The renderer uses complete values without color-dependent meaning. Column
 spacing is presentation detail rather than a parsing contract. When no rows
 match, it prints `No workspaces.` and exits successfully.
 
-`--json` emits exactly one JSON document on stdout with this envelope:
+`--json` emits exactly one JSON document on standard output with this envelope:
 
 ```json
 {
@@ -111,7 +111,8 @@ objects contain `repo_worktree_id`, `origin_repository_id`, `source_path`,
 `worktree_path`, `state`, `last_head`, and `last_observed_at`.
 Identifiers and timestamps are JSON strings, absent optional values are JSON
 `null`, and the workspace array follows the same canonical-path order as human
-output. Human diagnostics go to stderr and never contaminate JSON stdout.
+output. Human diagnostics go to standard error and never contaminate JSON
+standard output.
 
 ### Treat Reported Problems as Data
 
@@ -132,7 +133,7 @@ cannot load or serialize the snapshot.
   version and evolve it intentionally rather than treating table formatting as
   an API.
 - [Leaked terminal leases reveal an otherwise hidden invariant violation] →
-  Render them as `inconsistent` without attempting repair.
+  Render them as `inconsistent` without attempting to repair them.
 
 ## Migration Plan
 
