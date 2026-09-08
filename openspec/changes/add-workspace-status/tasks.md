@@ -53,5 +53,5 @@
 - [x] 7.2 Add `--view pools|workspaces`, default to pools, and restrict `--all`
   to the workspace view
 - [x] 7.3 Emit versioned JSON matching the selected pool or workspace view
-- [ ] 7.4 Update integration tests and documentation, then rerun the complete
+- [x] 7.4 Update integration tests and documentation, then rerun the complete
   quality gates
