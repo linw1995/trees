@@ -192,8 +192,10 @@ pub fn render_pools_human(snapshot: &PoolStatusSnapshot, color: bool) -> String 
 fn capacity_summary(pool: &PoolStatus, color: bool) -> String {
     if color {
         format!(
-            "\u{1b}[32m{}\u{1b}[0m/\u{1b}[34m{}\u{1b}[0m/\u{1b}[31m{}\u{1b}[0m",
-            pool.available, pool.capacity, pool.abnormal
+            "{}/{}/{}",
+            colored_count(pool.available, 32),
+            colored_count(pool.capacity, 34),
+            colored_count(pool.abnormal, 31)
         )
     } else {
         format!("{}/{}/{}", pool.available, pool.capacity, pool.abnormal)
@@ -231,7 +233,7 @@ pub fn load_snapshot(
     })
 }
 
-pub fn render_workspaces_human(snapshot: &StatusSnapshot) -> String {
+pub fn render_workspaces_human(snapshot: &StatusSnapshot, color: bool) -> String {
     if snapshot.workspaces.is_empty() {
         return "No workspaces.".to_owned();
     }
@@ -249,7 +251,7 @@ pub fn render_workspaces_human(snapshot: &StatusSnapshot) -> String {
                     "unclaimed".to_owned()
                 },
                 mode_symbol(workspace.management_mode).to_owned(),
-                repository_summary(&workspace.repo_worktrees),
+                repository_summary(&workspace.repo_worktrees, color),
                 workspace.last_reconciled_at.as_ref().map_or_else(
                     || "never".to_owned(),
                     |timestamp| compact_timestamp(timestamp, &snapshot.snapshot_at),
@@ -312,6 +314,10 @@ fn display_width(value: &str) -> usize {
         .sum()
 }
 
+fn colored_count(value: usize, ansi_color: u8) -> String {
+    format!("\u{1b}[{ansi_color}m{value}\u{1b}[0m")
+}
+
 fn mode_symbol(mode: WorkspaceManagementMode) -> &'static str {
     match mode {
         WorkspaceManagementMode::Automatic => "🤖",
@@ -319,21 +325,34 @@ fn mode_symbol(mode: WorkspaceManagementMode) -> &'static str {
     }
 }
 
-fn repository_summary(repositories: &[RepoWorktreeStatus]) -> String {
-    let available = repositories
+fn repository_summary(repositories: &[RepoWorktreeStatus], color: bool) -> String {
+    let ready = repositories
         .iter()
         .filter(|repository| repository.state == RepoWorktreeState::Attached)
         .count();
     let capacity = repositories.len();
     if capacity == 0 {
-        return "0/0".to_owned();
+        return if color {
+            format!("{}/{}", colored_count(0, 32), colored_count(0, 34))
+        } else {
+            "0/0".to_owned()
+        };
     }
     let paths = repositories
         .iter()
         .map(|repository| repository.source_path.clone())
         .collect::<Vec<_>>();
     let labels = shortest_unique_path_labels(&paths);
-    format!("{available}/{capacity} {}", labels.join(","))
+    let counts = if color {
+        format!(
+            "{}/{}",
+            colored_count(ready, 32),
+            colored_count(capacity, 34)
+        )
+    } else {
+        format!("{ready}/{capacity}")
+    };
+    format!("{counts} {}", labels.join(","))
 }
 
 fn shortest_unique_path_labels(paths: &[CanonicalPath]) -> Vec<String> {
@@ -974,7 +993,7 @@ mod tests {
     #[test]
     fn renders_empty_and_deterministic_human_output() {
         assert_eq!(
-            render_workspaces_human(&StatusSnapshot::empty()),
+            render_workspaces_human(&StatusSnapshot::empty(), false),
             "No workspaces."
         );
 
@@ -1011,7 +1030,7 @@ mod tests {
             }],
         };
 
-        let output = render_workspaces_human(&snapshot);
+        let output = render_workspaces_human(&snapshot, false);
 
         assert_eq!(
             output,
@@ -1053,24 +1072,29 @@ mod tests {
             repository("/origins/api", RepoWorktreeState::Attached),
             repository("/origins/web", RepoWorktreeState::Attached),
         ];
-        assert_eq!(repository_summary(&unique), "2/2 api,web");
+        assert_eq!(repository_summary(&unique, false), "2/2 api,web");
+        let colored = repository_summary(&unique, true);
+        assert!(colored.starts_with("\u{1b}[32m2\u{1b}[0m/\u{1b}[34m2\u{1b}[0m "));
 
         let conflicting = vec![
             repository("/teams/one/api", RepoWorktreeState::Attached),
             repository("/teams/two/api", RepoWorktreeState::Attached),
             repository("/teams/two/web", RepoWorktreeState::Dirty),
         ];
-        assert_eq!(repository_summary(&conflicting), "2/3 one/api,two/api,web");
+        assert_eq!(
+            repository_summary(&conflicting, false),
+            "2/3 one/api,two/api,web"
+        );
 
         let recursive = vec![
             repository("/org/red/services/api", RepoWorktreeState::Attached),
             repository("/org/blue/services/api", RepoWorktreeState::Dirty),
         ];
         assert_eq!(
-            repository_summary(&recursive),
+            repository_summary(&recursive, false),
             "1/2 red/services/api,blue/services/api"
         );
-        assert_eq!(repository_summary(&[]), "0/0");
+        assert_eq!(repository_summary(&[], false), "0/0");
     }
 
     fn repository(source_path: &str, state: RepoWorktreeState) -> RepoWorktreeStatus {

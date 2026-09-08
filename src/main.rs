@@ -385,8 +385,10 @@ fn run_pool_status(json: bool) -> ExitCode {
     if json {
         print_json(&snapshot)
     } else {
-        let color = io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
-        println!("{}", trees::status::render_pools_human(&snapshot, color));
+        println!(
+            "{}",
+            trees::status::render_pools_human(&snapshot, status_color_enabled())
+        );
         ExitCode::SUCCESS
     }
 }
@@ -414,9 +416,16 @@ fn run_workspace_status(include_reclaimed: bool, json: bool) -> ExitCode {
     if json {
         print_json(&snapshot)
     } else {
-        println!("{}", trees::status::render_workspaces_human(&snapshot));
+        println!(
+            "{}",
+            trees::status::render_workspaces_human(&snapshot, status_color_enabled())
+        );
         ExitCode::SUCCESS
     }
+}
+
+fn status_color_enabled() -> bool {
+    io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
 }
 
 fn load_workspace_status_snapshot(
