@@ -110,12 +110,12 @@ labels start with source-path base names and expand conflicting labels with
 parent components until unique within the pool.
 
 Use `--view workspaces` for individual manual and automatic workspaces.
-`STATUS` combines health and claim usage as `<state>/<claimed|unclaimed>`.
-Automatic mode is shown as `🤖`, while manual mode is shown as `👤`. Reclaimed
-workspace records are hidden by default; `--all` includes them only in this
-detail view. `--json` emits a versioned snapshot for the selected view.
-Workspace JSON retains separate state and claim fields plus complete current
-operation, path, and repo-worktree details.
+`STATUS` shows workspace health and appends `🔒` when an active claim exists;
+absence of the lock means unclaimed. Automatic mode is shown as `🤖`, while
+manual mode is shown as `👤`. Reclaimed workspace records are hidden by default;
+`--all` includes them only in this detail view. `--json` emits a versioned
+snapshot for the selected view. Workspace JSON retains separate state and claim
+fields plus complete current operation, path, and repo-worktree details.
 
 Workspace `REPOS` uses `<ready>/<total>` followed by repository labels. Ready
 is the user-facing name for repo worktrees stored in the `attached` state. On
