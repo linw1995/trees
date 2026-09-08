@@ -94,24 +94,30 @@ state:
 
 ```sh
 trees status
-trees status --all
 trees status --json
+trees status --view workspaces
+trees status --view workspaces --all
 ```
 
-The human-readable view reports workspace health, claim usage, management mode,
-repo availability and capacity, a compact UTC reconciliation time, and the
-canonical path. Repo availability counts worktrees whose persisted state is
-`attached`. The count is followed by repository source-path base names. A base
-name conflict expands only the conflicting labels with parent components until
-they are unique within the workspace. Automatic mode is shown as `🤖`, while
-manual mode is shown as `👤`. Reclaimed workspace records are hidden by
-default; `--all` includes them. `--json` emits a versioned snapshot with
-complete workspace, claim, current operation, and repo-worktree details.
+The default `pools` view reports one row per automatic repository set. It shows
+claimed slots as `ALLOCATED` and persisted ready, unclaimed, operation-free
+slots as `AVAILABLE` against current non-reclaimed `CAPACITY`. Availability is
+a scheduling hint; automatic allocation still reconciles a slot before use.
+Repository labels start with source-path base names and expand conflicting
+labels with parent components until unique within the pool.
+
+Use `--view workspaces` for individual manual and automatic workspace health,
+claim usage, compact repository availability, reconciliation time, and
+canonical path. Automatic mode is shown as `🤖`, while manual mode is shown as
+`👤`. Reclaimed workspace records are hidden by default; `--all` includes them
+only in this detail view. `--json` emits a versioned snapshot for the selected
+view. Workspace JSON retains complete claim, current operation, path, and
+repo-worktree details.
 
 Status reads one consistent SQLite snapshot. It does not reconcile, recover an
 expired operation, run Git, inspect workspace files, or assert that an
-unclaimed workspace is currently reusable. Use `gc --dry-run` when the question
-is which workspaces currently satisfy reclamation checks.
+available workspace is currently reusable. Use `gc --dry-run` when the
+question is which workspaces currently satisfy reclamation checks.
 
 Configure the automatic workspace content directory independently from the
 lifecycle database:

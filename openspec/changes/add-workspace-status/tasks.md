@@ -43,7 +43,7 @@
 
 - [x] 6.1 Keep canonical workspace paths out of the pool view and retain them
   only in the explicit workspace detail view
-- [ ] 6.2 Update output tests and documentation for the view-specific path
+- [x] 6.2 Update output tests and documentation for the view-specific path
   contract
 
 ## 7. Pool Allocation View
