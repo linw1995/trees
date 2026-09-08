@@ -1,6 +1,6 @@
 ## ADDED Requirements
 
-### Requirement: Open a Managed Workspace by ID
+### Requirement: Open a Managed Workspace Using an Identifier
 
 The CLI SHALL provide `trees open <workspace-id> [--program=<PROGRAM>]`.
 `workspace-id` SHALL be a valid workspace UUID v7. The command SHALL resolve
@@ -25,7 +25,7 @@ Where supported, the program SHALL replace the Trees process.
 - **WHEN** open receives `--program=<PROGRAM>`
 - **THEN** it executes that program directly with inherited process context
 
-#### Scenario: Reject an Invalid Workspace ID
+#### Scenario: Reject an Invalid Workspace Identifier
 
 - **WHEN** open receives a malformed or non-v7 workspace ID
 - **THEN** it fails before opening lifecycle storage or starting a program
@@ -36,8 +36,8 @@ Open SHALL reject an unknown or reclaimed workspace. It SHALL reject a
 workspace with a retained operation lease. An automatic workspace SHALL require
 an active claim; a manual workspace SHALL not require one. These checks SHALL
 come from one consistent read-only database transaction. Open SHALL NOT create
-or release a claim, start or recover an operation, reconcile Git state, inspect
-repo-worktree contents, or append a lifecycle event.
+or release a claim. It SHALL NOT start or recover an operation, reconcile Git
+state, inspect repo-worktree contents, or append a lifecycle event.
 
 #### Scenario: Open a Claimed Automatic Workspace
 

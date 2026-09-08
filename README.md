@@ -97,6 +97,8 @@ trees status
 trees status --json
 trees status --view workspaces
 trees status --view workspaces --all
+trees open WORKSPACE_ID
+trees open WORKSPACE_ID --program=codex
 ```
 
 The default `pools` view reports one row per automatic repository set. Its
@@ -117,6 +119,14 @@ manual mode is shown as `👤`. Reclaimed workspace records are hidden by defaul
 snapshot for the selected view. Workspace JSON retains separate state and claim
 fields plus complete current operation, path, and repo-worktree details.
 
+The human workspace view identifies each record by stable workspace ID rather
+than path. `trees open` resolves that ID and starts `$SHELL` in the persisted
+canonical workspace directory; `--program=<PROGRAM>` selects another executable
+without shell parsing. Automatic workspaces must already have an active claim,
+while manual workspaces do not require one. Open rejects reclaimed workspaces
+and retained operation leases, closes its read-only database connection before
+handoff, and does not reconcile or mutate lifecycle state.
+
 Workspace `REPOS` uses `<ready>/<total>` followed by repository labels. Ready
 is the user-facing name for repo worktrees stored in the `attached` state. On
 interactive terminals, ready and total are green and blue; pipelines and
@@ -124,6 +134,8 @@ interactive terminals, ready and total are green and blue; pipelines and
 pending labels are yellow, and problem labels are red. Non-ready repositories
 also retain explicit suffixes such as `(dirty)`, `(missing)`, `(mismatch)`, and
 `(error)` in plain output. Removed labels are gray and use `(removed)`.
+Path-derived labels escape control characters and table delimiters before color
+is applied, preventing repository names from injecting terminal output.
 
 Status reads one consistent SQLite snapshot. It does not reconcile, recover an
 expired operation, run Git, inspect workspace files, or assert that an

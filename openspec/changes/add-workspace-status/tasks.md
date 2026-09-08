@@ -89,7 +89,7 @@
   program resolution and process handoff
 - [x] 12.3 Enforce reclaimed, operation-lease, and automatic-claim admission
   without lifecycle mutation
-- [ ] 12.4 Add integration tests and documentation for workspace open
+- [x] 12.4 Add integration tests and documentation for workspace open
 
 ## 13. Relational Status Queries
 
