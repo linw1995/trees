@@ -504,22 +504,7 @@ pub fn release_automatic_workspace(
     workspace_path: &CanonicalPath,
     claim_id: ClaimId,
 ) -> Result<ReleaseResult, WorkspaceError> {
-    let workspace = find_workspace_by_path(connection, workspace_path)
-        .context(DatabaseSnafu)?
-        .ok_or_else(|| WorkspaceError::WorkspaceNotFound {
-            path: workspace_path.clone(),
-        })?;
-    if workspace.management_mode != WorkspaceManagementMode::Automatic {
-        return Err(WorkspaceError::NotAutomatic {
-            path: workspace.canonical_path,
-        });
-    }
-    let claim_matches = find_workspace_claim(connection, &workspace.id)
-        .context(DatabaseSnafu)?
-        .is_some_and(|claim| claim.id == claim_id);
-    if !claim_matches {
-        return Err(WorkspaceError::ClaimNotFound { claim_id });
-    }
+    let workspace = validate_release_target(connection, workspace_path, claim_id)?;
 
     let intent_json = JsonDocument::from_serializable(&serde_json::json!({
         "workspace_path": workspace_path,
@@ -627,6 +612,30 @@ pub fn release_automatic_workspace(
         claim_id,
         released_at,
     })
+}
+
+fn validate_release_target(
+    connection: &mut SqliteConnection,
+    workspace_path: &CanonicalPath,
+    claim_id: ClaimId,
+) -> Result<WorkspaceRow, WorkspaceError> {
+    let workspace = find_workspace_by_path(connection, workspace_path)
+        .context(DatabaseSnafu)?
+        .ok_or_else(|| WorkspaceError::WorkspaceNotFound {
+            path: workspace_path.clone(),
+        })?;
+    if workspace.management_mode != WorkspaceManagementMode::Automatic {
+        return Err(WorkspaceError::NotAutomatic {
+            path: workspace.canonical_path,
+        });
+    }
+    let claim_matches = find_workspace_claim(connection, &workspace.id)
+        .context(DatabaseSnafu)?
+        .is_some_and(|claim| claim.id == claim_id);
+    if !claim_matches {
+        return Err(WorkspaceError::ClaimNotFound { claim_id });
+    }
+    Ok(workspace)
 }
 
 struct ReleaseAlignment {
