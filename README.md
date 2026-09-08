@@ -109,18 +109,21 @@ hint; automatic allocation still reconciles a slot before use. Repository
 labels start with source-path base names and expand conflicting labels with
 parent components until unique within the pool.
 
-Use `--view workspaces` for individual manual and automatic workspace health,
-claim usage, compact repository availability, reconciliation time, and
-canonical path. Automatic mode is shown as `🤖`, while manual mode is shown as
-`👤`. Reclaimed workspace records are hidden by default; `--all` includes them
-only in this detail view. `--json` emits a versioned snapshot for the selected
-view. Workspace JSON retains complete claim, current operation, path, and
-repo-worktree details.
+Use `--view workspaces` for individual manual and automatic workspaces.
+`STATUS` combines health and claim usage as `<state>/<claimed|unclaimed>`.
+Automatic mode is shown as `🤖`, while manual mode is shown as `👤`. Reclaimed
+workspace records are hidden by default; `--all` includes them only in this
+detail view. `--json` emits a versioned snapshot for the selected view.
+Workspace JSON retains separate state and claim fields plus complete current
+operation, path, and repo-worktree details.
 
 Workspace `REPOS` uses `<ready>/<total>` followed by repository labels. Ready
 is the user-facing name for repo worktrees stored in the `attached` state. On
 interactive terminals, ready and total are green and blue; pipelines and
-`NO_COLOR` receive the same uncolored value.
+`NO_COLOR` receive the same uncolored value. Ready repository labels are green,
+pending labels are yellow, and problem labels are red. Non-ready repositories
+also retain explicit suffixes such as `(dirty)`, `(missing)`, `(mismatch)`, and
+`(error)` in plain output. Removed labels are gray and use `(removed)`.
 
 Status reads one consistent SQLite snapshot. It does not reconcile, recover an
 expired operation, run Git, inspect workspace files, or assert that an
