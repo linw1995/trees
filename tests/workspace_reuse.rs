@@ -10,12 +10,14 @@ use trees::domain::{
 use trees::gc;
 use trees::git;
 use trees::storage::{
-    find_origin_repository_by_identity, find_workspace, find_workspace_by_path,
-    find_workspace_pool_by_id, list_repo_worktrees, list_workspace_pool_repositories,
+    begin_operation, find_origin_repository_by_identity, find_running_operation, find_workspace,
+    find_workspace_by_path, find_workspace_claim, find_workspace_pool_by_id, list_repo_worktrees,
+    list_workspace_pool_repositories, OperationIntent,
 };
 use trees::workspace::{
     allocate_automatic_workspace, create_with_connection, prepare_automatic, prepare_create,
     provision_automatic, release_automatic_workspace, AutomaticCreateRequest, CreateRequest,
+    WorkspaceError,
 };
 
 fn test_root() -> PathBuf {
@@ -144,6 +146,106 @@ fn reuses_the_same_automatic_slot_across_acquire_release_cycles() {
         second.claim_id,
     )
     .expect("second allocation should be released");
+    cleanup_fixture(fixture);
+}
+
+#[test]
+fn aligns_a_reused_slot_to_upstream_head_for_a_workspace_repo_input() {
+    let mut fixture = automatic_fixture();
+    fs::write(fixture.source.as_path().join("README"), "upstream update\n")
+        .expect("upstream repository should be updated");
+    run_git(
+        fixture.source.as_path(),
+        &["commit", "-qam", "upstream update"],
+    );
+    let upstream_head = git::inspect_repository(&fixture.source)
+        .expect("upstream repository should be inspectable")
+        .head;
+    let mut plan = prepare_automatic(&AutomaticCreateRequest {
+        repositories: vec![fixture.worktree_path.clone()],
+    })
+    .expect("workspace repo input should resolve upstream");
+    plan.workspace_root = fixture.plan.workspace_root.clone();
+
+    let allocation = allocate_automatic_workspace(&mut fixture.connection, &plan)
+        .expect("idle slot should be acquired");
+
+    assert_eq!(allocation.workspace_path, fixture.workspace.canonical_path);
+    let worktree = git::find_worktree(&fixture.source, &fixture.worktree_path)
+        .expect("reused worktree should remain attached");
+    assert_eq!(worktree.head.as_deref(), Some(upstream_head.as_str()));
+    let persisted = list_repo_worktrees(&mut fixture.connection, &fixture.workspace.id)
+        .expect("worktree snapshot should be readable");
+    assert_eq!(
+        persisted[0].last_head.as_deref(),
+        Some(upstream_head.as_str())
+    );
+
+    release_automatic_workspace(
+        &mut fixture.connection,
+        &allocation.workspace_path,
+        allocation.claim_id,
+    )
+    .expect("workspace should be released");
+    cleanup_fixture(fixture);
+}
+
+#[test]
+fn fails_acquire_when_upstream_alignment_would_overwrite_an_ignored_file() {
+    let mut fixture = automatic_fixture();
+    let original_head = fixture.plan.repositories[0].head.clone();
+    fs::write(
+        fixture.source.as_path().join(".git/info/exclude"),
+        "generated\n",
+    )
+    .expect("exclude file should be updated");
+    fs::write(fixture.worktree_path.join("generated"), "local\n")
+        .expect("workspace file should be written");
+    fs::write(fixture.source.as_path().join("generated"), "upstream\n")
+        .expect("upstream file should be written");
+    run_git(fixture.source.as_path(), &["add", "-f", "generated"]);
+    run_git(
+        fixture.source.as_path(),
+        &["commit", "-qm", "track generated file"],
+    );
+    let upstream_head = git::inspect_repository(&fixture.source)
+        .expect("upstream repository should be inspectable")
+        .head;
+    let mut plan = prepare_automatic(&AutomaticCreateRequest {
+        repositories: vec![fixture.source.as_path().to_owned()],
+    })
+    .expect("upstream input should be prepared");
+    plan.workspace_root = fixture.plan.workspace_root.clone();
+
+    let error = allocate_automatic_workspace(&mut fixture.connection, &plan)
+        .expect_err("conflicting alignment should fail create");
+
+    assert!(matches!(
+        error,
+        WorkspaceError::Git {
+            source: git::GitError::CommandFailed { .. },
+        }
+    ));
+    assert!(
+        find_workspace_claim(&mut fixture.connection, &fixture.workspace.id)
+            .expect("claim lookup should succeed")
+            .is_none()
+    );
+    let worktree = git::find_worktree(&fixture.source, &fixture.worktree_path)
+        .expect("workspace should remain attached");
+    assert_eq!(worktree.head.as_deref(), Some(original_head.as_str()));
+    assert_eq!(
+        fs::read_to_string(fixture.worktree_path.join("generated"))
+            .expect("workspace file should remain readable"),
+        "local\n"
+    );
+    assert_eq!(
+        git::inspect_repository(&fixture.source)
+            .expect("upstream repository should remain inspectable")
+            .head,
+        upstream_head
+    );
+
     cleanup_fixture(fixture);
 }
 
@@ -382,6 +484,215 @@ fn keeps_manual_workspaces_out_of_automatic_allocation() {
     drop(connection);
     fs::remove_file(database_path).expect("database should be removable");
     fs::remove_dir_all(root).expect("test root should be removable");
+}
+
+#[test]
+fn explicitly_removes_a_manual_workspace_and_preserves_its_tombstone() {
+    let root = test_root();
+    let source_path = root.join("source");
+    repository(&source_path);
+    let database_path = root.join("state.sqlite");
+    let mut connection = trees::database::connect(&database_path).expect("database should open");
+    let created = create_with_connection(
+        &mut connection,
+        prepare_create(&CreateRequest {
+            workspace_path: root.join("manual"),
+            repositories: vec![source_path],
+        })
+        .expect("manual plan should be prepared"),
+    )
+    .expect("manual workspace should be created");
+    let workspace = find_workspace_by_path(&mut connection, &created.workspace_path)
+        .expect("workspace lookup should succeed")
+        .expect("manual workspace should exist");
+
+    let preflight = gc::scan_removal(&mut connection, &workspace.id, false)
+        .expect("manual removal preflight should succeed");
+    assert_eq!(preflight.reason, gc::GcCandidateReason::Eligible);
+    let report = gc::remove_workspace(&mut connection, &workspace.id, false)
+        .expect("manual removal should succeed");
+
+    assert!(report.removed);
+    assert_eq!(report.reason, gc::GcCandidateReason::Eligible);
+    assert!(!created.workspace_path.as_path().exists());
+    assert_eq!(
+        find_workspace(&mut connection, &workspace.id)
+            .expect("workspace tombstone should remain")
+            .state,
+        WorkspaceState::Reclaimed
+    );
+    assert!(list_repo_worktrees(&mut connection, &workspace.id)
+        .expect("worktree tombstones should remain")
+        .iter()
+        .all(|worktree| worktree.state == RepoWorktreeState::Reclaimed));
+
+    drop(connection);
+    fs::remove_file(database_path).expect("database should be removable");
+    fs::remove_dir_all(root).expect("test root should be removable");
+}
+
+#[test]
+fn explicit_removal_does_not_apply_the_gc_age_threshold() {
+    let fixture = automatic_fixture();
+    let now = Timestamp::now();
+    let mut connection = fixture.connection;
+    diesel::update(trees::schema::workspaces::table.find(fixture.workspace.id))
+        .set((
+            trees::schema::workspaces::created_at.eq(now.clone()),
+            trees::schema::workspaces::last_released_at.eq(Some(now)),
+        ))
+        .execute(&mut connection)
+        .expect("workspace should become young");
+
+    let report = gc::remove_workspace(&mut connection, &fixture.workspace.id, false)
+        .expect("explicit removal should ignore age");
+
+    assert!(report.removed);
+    assert!(!fixture.workspace.canonical_path.as_path().exists());
+    drop(connection);
+    fs::remove_file(fixture.database_path).expect("database should be removable");
+    fs::remove_dir_all(fixture.root).expect("test root should be removable");
+}
+
+#[test]
+fn forced_explicit_removal_preserves_an_active_claim() {
+    let mut fixture = automatic_fixture();
+    let acquire = allocate_automatic_workspace(&mut fixture.connection, &fixture.plan)
+        .expect("allocation should succeed");
+
+    let report = gc::remove_workspace(&mut fixture.connection, &fixture.workspace.id, true)
+        .expect("forced removal should report the admission rejection");
+
+    assert!(!report.removed);
+    assert_eq!(report.reason, gc::GcCandidateReason::Claimed);
+    assert!(fixture.workspace.canonical_path.as_path().exists());
+    assert_eq!(
+        trees::storage::find_workspace_claim(&mut fixture.connection, &fixture.workspace.id)
+            .expect("claim lookup should succeed")
+            .expect("claim should remain active")
+            .id,
+        acquire.claim_id
+    );
+
+    release_automatic_workspace(
+        &mut fixture.connection,
+        &acquire.workspace_path,
+        acquire.claim_id,
+    )
+    .expect("workspace should be released");
+    cleanup_fixture(fixture);
+}
+
+#[test]
+fn forced_explicit_removal_removes_dirty_detached_content() {
+    let fixture = automatic_fixture();
+    fs::write(fixture.worktree_path.join("dirty"), "dirty\n")
+        .expect("dirty content should be written");
+    let mut connection = fixture.connection;
+
+    let normal = gc::scan_removal(&mut connection, &fixture.workspace.id, false)
+        .expect("normal removal preflight should succeed");
+    assert_eq!(normal.reason, gc::GcCandidateReason::WorktreeMismatch);
+    let forced = gc::scan_removal(&mut connection, &fixture.workspace.id, true)
+        .expect("forced removal preflight should succeed");
+    assert_eq!(forced.reason, gc::GcCandidateReason::Eligible);
+
+    let report = gc::remove_workspace(&mut connection, &fixture.workspace.id, true)
+        .expect("forced removal should succeed");
+    assert!(report.removed);
+    assert!(!fixture.workspace.canonical_path.as_path().exists());
+
+    drop(connection);
+    fs::remove_file(fixture.database_path).expect("database should be removable");
+    fs::remove_dir_all(fixture.root).expect("test root should be removable");
+}
+
+#[test]
+fn explicit_removal_rejects_active_operations_and_recovers_expired_ones() {
+    let fixture = automatic_fixture();
+    let mut connection = fixture.connection;
+    let intent = OperationIntent::new(
+        fixture.workspace.id,
+        "integration",
+        Timestamp::after_seconds(300),
+        "hold workspace",
+        trees::domain::JsonDocument::parse(r#"{"kind":"integration"}"#)
+            .expect("intent JSON should parse"),
+    );
+    begin_operation(&mut connection, &intent).expect("operation should start");
+
+    let active = gc::scan_removal(&mut connection, &fixture.workspace.id, true)
+        .expect("active-operation preflight should succeed");
+    assert_eq!(active.reason, gc::GcCandidateReason::ActiveOperation);
+    let rejected = gc::remove_workspace(&mut connection, &fixture.workspace.id, true)
+        .expect("active operation should be rejected");
+    assert_eq!(rejected.reason, gc::GcCandidateReason::ActiveOperation);
+    assert!(fixture.workspace.canonical_path.as_path().exists());
+
+    let running = find_running_operation(&mut connection, &fixture.workspace.id)
+        .expect("operation lookup should succeed")
+        .expect("operation should remain active");
+    diesel::update(trees::schema::operation_leases::table.find(running.lease.id))
+        .set(
+            trees::schema::operation_leases::lease_expires_at
+                .eq(Timestamp::parse("2020-01-01T00:00:00Z").expect("timestamp should parse")),
+        )
+        .execute(&mut connection)
+        .expect("operation lease should expire");
+    let expired = gc::scan_removal(&mut connection, &fixture.workspace.id, true)
+        .expect("expired-operation preflight should succeed");
+    assert_eq!(expired.reason, gc::GcCandidateReason::ExpiredOperation);
+
+    let report = gc::remove_workspace(&mut connection, &fixture.workspace.id, true)
+        .expect("expired operation should be recovered before removal");
+    assert!(report.removed);
+    assert!(!fixture.workspace.canonical_path.as_path().exists());
+
+    drop(connection);
+    fs::remove_file(fixture.database_path).expect("database should be removable");
+    fs::remove_dir_all(fixture.root).expect("test root should be removable");
+}
+
+#[test]
+fn removal_preflight_is_read_only_and_rejects_unknown_or_reclaimed_ids() {
+    let fixture = automatic_fixture();
+    let workspace_id = fixture.workspace.id;
+    let database_path = fixture.database_path.clone();
+    let mut connection = fixture.connection;
+    let before_events = trees::schema::lifecycle_events::table
+        .count()
+        .get_result::<i64>(&mut connection)
+        .expect("event count should be readable");
+    drop(connection);
+
+    let mut read_only =
+        trees::database::connect_read_only(&database_path).expect("read-only database should open");
+    let preflight = gc::scan_removal(&mut read_only, &workspace_id, false)
+        .expect("removal preflight should succeed");
+    assert_eq!(preflight.reason, gc::GcCandidateReason::Eligible);
+    assert!(matches!(
+        gc::scan_removal(&mut read_only, &trees::domain::WorkspaceId::new(), false),
+        Err(gc::GcError::WorkspaceNotFound { .. })
+    ));
+    let after_events = trees::schema::lifecycle_events::table
+        .count()
+        .get_result::<i64>(&mut read_only)
+        .expect("event count should be readable");
+    assert_eq!(before_events, after_events);
+    drop(read_only);
+
+    let mut connection = trees::database::connect(&database_path).expect("database should reopen");
+    let report = gc::remove_workspace(&mut connection, &workspace_id, false)
+        .expect("removal should succeed");
+    assert!(report.removed);
+    let repeated = gc::remove_workspace(&mut connection, &workspace_id, true)
+        .expect("repeated removal should be rejected");
+    assert!(!repeated.removed);
+    assert_eq!(repeated.reason, gc::GcCandidateReason::Reclaimed);
+
+    drop(connection);
+    fs::remove_file(database_path).expect("database should be removable");
+    fs::remove_dir_all(fixture.root).expect("test root should be removable");
 }
 
 #[test]

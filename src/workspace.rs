@@ -110,9 +110,9 @@ pub fn prepare_automatic(
     let repositories = validation::validate_repositories(&request.repositories)?;
     let mut plans = Vec::with_capacity(repositories.len());
     for source_path in repositories {
-        let info = git::inspect_repository(&source_path)?;
+        let info = git::inspect_upstream_repository(&source_path)?;
         plans.push(AutomaticRepositoryPlan {
-            source_path,
+            source_path: info.root,
             repository_identity: info.common_dir,
             head: info.head,
         });
@@ -299,6 +299,10 @@ pub fn acquire_automatic_candidate(
         fail_operation(connection, &lease_id, &primary);
         return Err(primary);
     }
+    if let Err(primary) = align_acquired_worktrees(connection, candidate, &lease_id, plan) {
+        fail_operation(connection, &lease_id, &primary);
+        return Err(primary);
+    }
 
     let claim = WorkspaceClaim::new(candidate.id);
     let details_json = acquire_details(&claim, pool_id);
@@ -363,6 +367,33 @@ pub fn acquire_automatic_candidate(
         pool_id,
         claim_id: claim.id,
     })
+}
+
+fn align_acquired_worktrees(
+    connection: &mut SqliteConnection,
+    workspace: &WorkspaceRow,
+    lease_id: &LeaseId,
+    plan: &AutomaticAllocationPlan,
+) -> Result<(), WorkspaceError> {
+    let alignments = prepare_worktree_alignments(connection, workspace, |repository, _| {
+        let Some(target) = plan
+            .repositories
+            .iter()
+            .find(|target| target.repository_identity == repository.repository_identity)
+        else {
+            return Err(WorkspaceError::RepositorySetMismatch {
+                workspace_id: workspace.id,
+            });
+        };
+        Ok(target.head.clone())
+    })?;
+    if alignments.len() != plan.repositories.len() {
+        return Err(WorkspaceError::RepositorySetMismatch {
+            workspace_id: workspace.id,
+        });
+    }
+
+    execute_worktree_alignments(connection, lease_id, alignments)
 }
 
 fn acquire_details(claim: &WorkspaceClaim, pool_id: PoolId) -> JsonDocument {
@@ -649,6 +680,19 @@ fn align_release_worktrees(
     workspace: &WorkspaceRow,
     lease_id: &LeaseId,
 ) -> Result<(), WorkspaceError> {
+    let alignments =
+        prepare_worktree_alignments(connection, workspace, |_, source| Ok(source.head.clone()))?;
+    execute_worktree_alignments(connection, lease_id, alignments)
+}
+
+fn prepare_worktree_alignments<F>(
+    connection: &mut SqliteConnection,
+    workspace: &WorkspaceRow,
+    mut target_head: F,
+) -> Result<Vec<ReleaseAlignment>, WorkspaceError>
+where
+    F: FnMut(&RepoWorktreeRow, &git::RepositoryInfo) -> Result<String, WorkspaceError>,
+{
     let repositories =
         crate::storage::list_repo_worktrees(connection, &workspace.id).context(DatabaseSnafu)?;
     let mut alignments = Vec::with_capacity(repositories.len());
@@ -674,16 +718,25 @@ fn align_release_worktrees(
                 path: workspace.canonical_path.clone(),
             });
         }
-        let needs_checkout = worktree.head.as_deref() != Some(source.head.as_str())
+        let target_head = target_head(&repository, &source)?;
+        let needs_checkout = worktree.head.as_deref() != Some(target_head.as_str())
             || !worktree.detached
             || worktree.branch.is_some();
         alignments.push(ReleaseAlignment {
             repository,
-            target_head: source.head,
+            target_head,
             needs_checkout,
         });
     }
 
+    Ok(alignments)
+}
+
+fn execute_worktree_alignments(
+    connection: &mut SqliteConnection,
+    lease_id: &LeaseId,
+    alignments: Vec<ReleaseAlignment>,
+) -> Result<(), WorkspaceError> {
     for alignment in alignments {
         if !alignment.needs_checkout {
             continue;
@@ -693,7 +746,7 @@ fn align_release_worktrees(
             "source_path": alignment.repository.source_path,
             "worktree_path": alignment.repository.worktree_path,
         }))
-        .expect("release alignment details should serialize");
+        .expect("worktree alignment details should serialize");
         persist_operation_step_intent(
             connection,
             lease_id,
@@ -966,9 +1019,9 @@ pub fn prepare_create(request: &CreateRequest) -> Result<CreationPlan, Workspace
 }
 
 fn repository_plan(plan: WorktreePlan) -> Result<RepositoryPlan, WorkspaceError> {
-    let info = git::inspect_repository(&plan.repository)?;
+    let info = git::inspect_upstream_repository(&plan.repository)?;
     Ok(RepositoryPlan {
-        source_path: plan.repository,
+        source_path: info.root,
         repository_identity: info.common_dir,
         worktree_path: plan.worktree_path,
         head: info.head,
@@ -1260,9 +1313,10 @@ fn execute_repository_step(
     // The subprocess and lease-renewal callback run outside SQLite
     // transactions; each renewal is an independent short operation update.
     let lease_id = context.lease_id;
-    git::add_detached_worktree_with_heartbeat(
+    git::add_detached_worktree_at_with_heartbeat(
         &repository.plan.source_path,
         &repository.plan.worktree_path,
+        &repository.plan.head,
         || match crate::storage::renew_operation_lease(connection, &lease_id) {
             Ok(true) => Ok(()),
             Ok(false) => Err(GitError::Heartbeat {

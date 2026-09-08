@@ -40,10 +40,16 @@ trees create ./workspace --repo /path/to/api --repo /path/to/web
 ```
 
 With one repository, `./workspace` is the worktree root. With multiple repositories, each repository becomes a direct child worktree under `./workspace`. The source repositories remain at their original paths.
+Repository arguments may name either an upstream repository or one of its
+linked workspace repos. In both cases, create resolves the upstream primary
+worktree and creates the target at its current local `HEAD` in detached mode.
+It never resets or checks out the input repo.
 
 An automatic workspace is allocated from the reusable pool for a repository
 set. It does not take a workspace path; Trees reuses an idle slot or creates a
-generated path below its managed workspace directory:
+generated path below its managed workspace directory. Before granting a claim,
+Trees aligns a clean reusable slot to the same upstream `HEAD`. If checkout
+cannot preserve existing files, create fails and does not grant the claim:
 
 ```sh
 trees create --repo /path/to/api --repo /path/to/web
@@ -164,6 +170,22 @@ candidate counts before asking for confirmation. `--yes` skips confirmation
 while keeping normal safety checks. `--force` also skips confirmation and may
 remove dirty worktrees or unexpected content, but never bypasses manual,
 claim, operation, root-containment, or repository-identity guards.
+
+Remove one known workspace by the stable ID shown in
+`trees status --view workspaces`:
+
+```sh
+trees remove <workspace-id> --dry-run
+trees remove <workspace-id> --yes
+trees remove <workspace-id> --force
+```
+
+Explicit removal accepts automatic and manual workspaces and does not apply an
+age threshold. Normal mode requires a safe clean workspace. `--force` may
+remove dirty worktrees or unexpected content, but it does not break an active
+claim or operation and does not bypass path or repository identity guards.
+Successful removal keeps the workspace and worktree records as reclaimed
+tombstones.
 
 Launch an interactive Codex session for a managed workspace:
 

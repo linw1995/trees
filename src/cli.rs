@@ -20,6 +20,7 @@ pub enum Command {
     Release(ReleaseArgs),
     Config(ConfigArgs),
     Gc(GcArgs),
+    Remove(RemoveArgs),
     Status(StatusArgs),
     Open(OpenArgs),
     Codex(CodexArgs),
@@ -89,6 +90,21 @@ pub enum ConfigSetting {
 pub struct GcArgs {
     #[arg(long = "older-than", value_name = "DURATION")]
     pub older_than: crate::gc::GcDuration,
+
+    #[arg(long)]
+    pub dry_run: bool,
+
+    #[arg(long)]
+    pub yes: bool,
+
+    #[arg(long)]
+    pub force: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct RemoveArgs {
+    #[arg(value_name = "WORKSPACE_ID")]
+    pub workspace_id: crate::domain::WorkspaceId,
 
     #[arg(long)]
     pub dry_run: bool,
@@ -373,6 +389,33 @@ mod tests {
         assert!(arguments.dry_run);
         assert!(arguments.yes);
         assert!(arguments.force);
+    }
+
+    #[test]
+    fn parses_workspace_remove_and_safety_flags() {
+        let workspace_id = crate::domain::WorkspaceId::new();
+        let cli = Cli::try_parse_from([
+            "trees".to_owned(),
+            "remove".to_owned(),
+            workspace_id.to_string(),
+            "--dry-run".to_owned(),
+            "--yes".to_owned(),
+            "--force".to_owned(),
+        ])
+        .expect("remove command should parse");
+
+        let Command::Remove(arguments) = cli.command else {
+            panic!("expected remove command");
+        };
+        assert_eq!(arguments.workspace_id, workspace_id);
+        assert!(arguments.dry_run);
+        assert!(arguments.yes);
+        assert!(arguments.force);
+    }
+
+    #[test]
+    fn rejects_an_invalid_workspace_remove_identifier() {
+        assert!(Cli::try_parse_from(["trees", "remove", "invalid"]).is_err());
     }
 
     #[test]

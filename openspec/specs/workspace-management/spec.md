@@ -39,14 +39,26 @@ For a workspace containing multiple repositories, the CLI SHALL use each source 
 - **WHEN** two repository inputs resolve to the same base name
 - **THEN** the create operation fails before creating the workspace worktrees
 
-### Requirement: Create Detached Worktrees at the Current Revision
+### Requirement: Create Detached Worktrees at the Upstream Revision
 
-The initial create operation SHALL create each worktree from the source repository's current `HEAD` in detached mode. Branch and ref selection SHALL remain outside the initial command contract.
+The initial create operation SHALL resolve every repository argument to its
+upstream primary worktree and create the new worktree from that upstream
+repository's current local `HEAD` in detached mode. It SHALL NOT check out or
+reset the input repository. This rule SHALL apply whether the argument names
+the upstream repository itself or one of its linked workspace worktrees.
+Branch and ref selection SHALL remain outside the initial command contract.
 
 #### Scenario: Create a Detached Worktree
 
-- **WHEN** the user creates a workspace from a valid repository without branch or ref options
-- **THEN** the created worktree points to the source repository's current `HEAD` and has no checked-out local branch
+- **WHEN** the user creates a workspace from an upstream repository or one of its linked workspace worktrees without branch or ref options
+- **THEN** the created worktree points to the upstream repository's current local `HEAD` and has no checked-out local branch
+
+#### Scenario: Create from a Divergent Workspace Repo
+
+- **WHEN** a linked workspace repo input has a different `HEAD` from its
+  upstream primary worktree
+- **THEN** create leaves the input repo unchanged and creates the target at the
+  upstream `HEAD`
 
 ### Requirement: Reject Unsafe Workspace Targets
 

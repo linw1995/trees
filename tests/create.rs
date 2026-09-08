@@ -171,6 +171,55 @@ fn creates_a_single_repository_at_the_workspace_root() {
 }
 
 #[test]
+fn creates_from_the_upstream_head_when_given_a_workspace_repo() {
+    let root = test_root();
+    let upstream = repository(&root, "alpha");
+    let upstream = CanonicalPath::resolve(&upstream).expect("upstream should resolve");
+    let upstream_head = git::inspect_repository(&upstream)
+        .expect("upstream should be inspectable")
+        .head;
+    let existing_workspace = root.join("existing-workspace");
+    git::add_detached_worktree(&upstream, &existing_workspace)
+        .expect("existing workspace should be created");
+    fs::write(existing_workspace.join("README"), "workspace\n")
+        .expect("existing workspace should be updated");
+    run_git(&existing_workspace, &["commit", "-qam", "workspace"]);
+    let workspace_head = git::inspect_repository(
+        &CanonicalPath::resolve(&existing_workspace).expect("workspace repo should resolve"),
+    )
+    .expect("workspace repo should be inspectable")
+    .head;
+    assert_ne!(workspace_head, upstream_head);
+
+    let target = root.join("new-workspace");
+    let plan = prepare_create(&CreateRequest {
+        workspace_path: target.clone(),
+        repositories: vec![existing_workspace.clone()],
+    })
+    .expect("creation plan should be prepared");
+    assert_eq!(plan.repositories[0].source_path, upstream);
+    assert_eq!(plan.repositories[0].head, upstream_head);
+    let database_path = root.join("state.sqlite");
+    let mut connection = trees::database::connect(&database_path).expect("database should open");
+
+    let result =
+        create_with_connection(&mut connection, plan).expect("workspace should be created");
+
+    let created = git::find_worktree(&upstream, result.workspace_path.as_path())
+        .expect("new worktree should be listed");
+    assert_eq!(created.head.as_deref(), Some(upstream_head.as_str()));
+    assert!(created.detached);
+
+    git::remove_worktree(&upstream, result.workspace_path.as_path())
+        .expect("new worktree should be removable");
+    git::remove_worktree(&upstream, &existing_workspace)
+        .expect("existing worktree should be removable");
+    drop(connection);
+    fs::remove_file(database_path).expect("state database should be removable");
+    fs::remove_dir_all(root).expect("test root should be removable");
+}
+
+#[test]
 fn failed_creation_leaves_no_partial_workspace() {
     let root = test_root();
     let first = repository(&root, "alpha");
