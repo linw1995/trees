@@ -40,10 +40,14 @@ trees create ./workspace --repo /path/to/api --repo /path/to/web
 ```
 
 With one repository, `./workspace` is the worktree root. With multiple repositories, each repository becomes a direct child worktree under `./workspace`. The source repositories remain at their original paths.
+Repository arguments may name either an upstream repository or one of its
+linked workspace repos. In both cases, create resolves the upstream primary
+worktree and checks out its current local `HEAD` in detached mode.
 
 An automatic workspace is allocated from the reusable pool for a repository
 set. It does not take a workspace path; Trees reuses an idle slot or creates a
-generated path below its managed workspace directory:
+generated path below its managed workspace directory. Reused slots are aligned
+to the same upstream `HEAD` before Trees grants the claim:
 
 ```sh
 trees create --repo /path/to/api --repo /path/to/web

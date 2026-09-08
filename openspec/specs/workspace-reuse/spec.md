@@ -99,8 +99,9 @@ workspace path and claim identifier.
 - **WHEN** automatic create receives repositories matching an idle automatic
   workspace whose worktrees are clean, detached, present, non-prunable,
   identity-matched, and at their recorded revisions
-- **THEN** the command claims that existing workspace, returns its path and a
-  claim identifier, and does not create another workspace or worktree
+- **THEN** the command aligns that existing workspace to every repository's
+  upstream `HEAD`, claims it, returns its path and a claim identifier, and does
+  not create another workspace or worktree
 
 #### Scenario: Select the Oldest Idle Slot
 
@@ -113,9 +114,13 @@ workspace path and claim identifier.
 #### Scenario: Provision a New Slot
 
 - **WHEN** no idle automatic workspace matches the exact repository set
-- **THEN** Trees generates a path below its managed workspace root, creates
-  detached worktrees using the repository-count-based layout from each repository's current `HEAD`,
-  records the pool UUID, and returns the new workspace already claimed
+- **THEN** Trees generates a path below its managed workspace root
+- **AND** it creates detached worktrees using the repository-count-based layout
+  at each upstream repository's current local `HEAD`
+- **AND** upstream repositories and linked workspace repo inputs use the same
+  revision resolution
+- **AND** Trees records the pool UUID and returns the new workspace already
+  claimed
 
 #### Scenario: Retry a Pool Race
 

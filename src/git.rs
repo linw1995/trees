@@ -127,6 +127,27 @@ pub fn inspect_repository(repository: &CanonicalPath) -> Result<RepositoryInfo, 
     })
 }
 
+pub fn inspect_upstream_repository(repository: &CanonicalPath) -> Result<RepositoryInfo, GitError> {
+    let common_dir = inspect_repository_identity(repository)?;
+    let upstream = list_worktrees(repository)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| GitError::InvalidOutput {
+            operation: "worktree list --porcelain".to_owned(),
+            output: "repository has no worktrees".to_owned(),
+        })?;
+    let head = upstream.head.ok_or_else(|| GitError::InvalidOutput {
+        operation: "worktree list --porcelain".to_owned(),
+        output: "upstream worktree has no HEAD".to_owned(),
+    })?;
+
+    Ok(RepositoryInfo {
+        root: upstream.path,
+        common_dir,
+        head,
+    })
+}
+
 pub fn inspect_repository_identity(repository: &CanonicalPath) -> Result<CanonicalPath, GitError> {
     inspect_common_directory(repository.as_path())
 }
@@ -190,6 +211,18 @@ pub fn add_detached_worktree_with_heartbeat<F>(
 where
     F: FnMut() -> Result<(), GitError>,
 {
+    add_detached_worktree_at_with_heartbeat(repository, worktree_path, "HEAD", heartbeat)
+}
+
+pub fn add_detached_worktree_at_with_heartbeat<F>(
+    repository: &CanonicalPath,
+    worktree_path: &Path,
+    revision: &str,
+    heartbeat: F,
+) -> Result<(), GitError>
+where
+    F: FnMut() -> Result<(), GitError>,
+{
     run_git_with_heartbeat(
         repository.as_path(),
         &[
@@ -197,7 +230,7 @@ where
             arg("add"),
             arg("--detach"),
             worktree_path.as_os_str().to_owned(),
-            arg("HEAD"),
+            arg(revision),
         ],
         heartbeat,
     )?;
@@ -743,6 +776,59 @@ mod tests {
             .expect("worktrees should be listed")
             .iter()
             .any(|worktree| worktree.path.as_path() == worktree_path));
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn resolves_the_primary_worktree_as_the_upstream_repository() {
+        let (root, repository) = repository();
+        let upstream_head = inspect_repository(&repository)
+            .expect("upstream repository should be inspectable")
+            .head;
+        let linked_path = root.join("linked");
+        add_detached_worktree(&repository, &linked_path).expect("worktree should be added");
+        fs::write(linked_path.join("README"), "linked\n")
+            .expect("linked worktree should be updated");
+        run_git_in(&linked_path, &["commit", "-qam", "linked"]);
+
+        let from_upstream =
+            inspect_upstream_repository(&repository).expect("upstream input should resolve");
+        let from_linked = inspect_upstream_repository(
+            &CanonicalPath::resolve(&linked_path).expect("linked worktree should resolve"),
+        )
+        .expect("linked input should resolve");
+
+        assert_eq!(from_upstream.root, repository);
+        assert_eq!(from_linked.root, repository);
+        assert_eq!(from_upstream.head, upstream_head);
+        assert_eq!(from_linked.head, upstream_head);
+        assert_eq!(from_linked.common_dir, from_upstream.common_dir);
+
+        remove_worktree(&repository, &linked_path).expect("worktree should be removed");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn creates_a_detached_worktree_at_an_explicit_revision() {
+        let (root, repository) = repository();
+        let initial_head = inspect_repository(&repository)
+            .expect("repository should be inspectable")
+            .head;
+        fs::write(root.join("README"), "updated\n").expect("test file should be updated");
+        run_git_in(&root, &["commit", "-qam", "update"]);
+        let worktree_path = repository.as_path().join("workspace");
+
+        add_detached_worktree_at_with_heartbeat(&repository, &worktree_path, &initial_head, || {
+            Ok(())
+        })
+        .expect("worktree should be added at the requested revision");
+
+        let worktree =
+            find_worktree(&repository, &worktree_path).expect("worktree should be registered");
+        assert_eq!(worktree.head.as_deref(), Some(initial_head.as_str()));
+        assert!(worktree.detached);
+
+        remove_worktree(&repository, &worktree_path).expect("worktree should be removed");
         fs::remove_dir_all(root).expect("test root should be removable");
     }
 
