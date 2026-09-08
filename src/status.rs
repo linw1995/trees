@@ -126,7 +126,7 @@ pub fn render_human(snapshot: &StatusSnapshot) -> String {
         return "No workspaces.".to_owned();
     }
 
-    let headers = ["STATE", "USAGE", "MODE", "REPOS", "RECONCILED", "PATH"];
+    let headers = ["STATE", "USAGE", "MODE", "REPOS", "RECONCILED"];
     let rows = snapshot
         .workspaces
         .iter()
@@ -144,11 +144,10 @@ pub fn render_human(snapshot: &StatusSnapshot) -> String {
                     || "never".to_owned(),
                     |timestamp| compact_timestamp(timestamp, &snapshot.snapshot_at),
                 ),
-                workspace.path.to_string(),
             ]
         })
         .collect::<Vec<_>>();
-    let widths = std::array::from_fn::<_, 6, _>(|column| {
+    let widths = std::array::from_fn::<_, 5, _>(|column| {
         rows.iter()
             .map(|row| UnicodeWidthStr::width(row[column].as_str()))
             .max()
@@ -643,8 +642,8 @@ mod tests {
 
         assert_eq!(
             output,
-            "STATE     USAGE    MODE  REPOS        RECONCILED  PATH\n\
-             degraded  claimed  🤖    0/1 example  10:00       /status/example"
+            "STATE     USAGE    MODE  REPOS        RECONCILED\n\
+             degraded  claimed  🤖    0/1 example  10:00"
         );
     }
 
