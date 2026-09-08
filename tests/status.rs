@@ -252,9 +252,12 @@ fn status_renders_ordered_persisted_state_and_preserves_storage() {
         .expect("workspace status should run");
     assert!(details.status.success());
     let details = String::from_utf8(details.stdout).expect("details should be UTF-8");
-    assert!(details.starts_with("STATE"));
-    assert!(details.contains("degraded"));
-    assert!(details.contains("0/1 example"));
+    assert!(details.starts_with("STATUS"));
+    assert!(!details.contains("USAGE"));
+    assert!(details.contains("degraded/unclaimed"));
+    assert!(details.contains("ready/claimed"));
+    assert!(details.contains("0/1 example(dirty)"));
+    assert!(!details.contains('\u{1b}'));
     assert!(details.contains("🤖"));
     assert!(details.contains("👤"));
     assert!(details.contains(manual_path.as_path().to_str().unwrap()));
