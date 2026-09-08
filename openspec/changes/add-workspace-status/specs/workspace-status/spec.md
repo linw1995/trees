@@ -87,10 +87,11 @@ an operation. It SHALL NOT invoke Git or inspect workspace filesystem contents.
 
 Without `--json`, status SHALL render one row per workspace containing the
 persisted workspace state, claim usage, management mode, repo-worktree
-availability and capacity, last reconciliation time, and canonical workspace
-path. It SHALL omit current operation details from human output while retaining
-them in JSON. Management mode SHALL render as `🤖` for `automatic` and `👤` for
-`manual`, and column alignment SHALL account for terminal display width.
+availability and capacity, repository labels, and last reconciliation time. It
+SHALL omit current operation details and the canonical workspace path from
+human output while retaining them in JSON. Management mode SHALL render as
+`🤖` for `automatic` and `👤` for `manual`, and column alignment SHALL account
+for terminal display width.
 
 Repo availability SHALL count repo worktrees whose persisted state is
 `attached`; capacity SHALL count all managed repo worktrees. The value SHALL

@@ -38,3 +38,10 @@
   availability and capacity summary
 - [x] 5.2 Cover base-name conflicts and recursive parent expansion, update
   documentation, and rerun the complete quality gates
+
+## 6. Human Path Removal
+
+- [ ] 6.1 Remove the canonical workspace path from human output while retaining
+  it in JSON
+- [ ] 6.2 Update output tests and documentation, then rerun the complete quality
+  gates

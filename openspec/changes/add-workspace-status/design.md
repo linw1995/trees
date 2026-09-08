@@ -84,11 +84,12 @@ Human output contains one row per workspace with these columns:
 - `REPOS`: attached repo worktrees over total capacity, followed by compact
   repository names.
 - `RECONCILED`: a compact UTC timestamp relative to `snapshot_at`, or `never`.
-- `PATH`: canonical workspace path.
 
 The human summary omits current operation details because completed operations
-normally have no retained lease, making the column mostly empty. JSON retains
-the complete current operation projection for diagnostics and automation.
+normally have no retained lease, making the column mostly empty. It also omits
+the canonical workspace path because repository labels provide the intended
+compact identity. JSON retains the complete path and current operation
+projection for diagnostics and automation.
 
 `REPOS` uses `<available>/<capacity>`, where `available` counts repo worktrees
 whose persisted state is `attached`, and `capacity` counts all managed repo

@@ -20,6 +20,8 @@ recent workspaces as a general inventory.
   timestamps, and representing automatic and manual modes with emoji.
 - Show repo names beside availability and capacity, using the shortest unique
   source-path suffix within each workspace.
+- Omit the canonical workspace path from human output while retaining it in
+  JSON.
 - Exclude reclaimed workspace tombstones by default and include them with
   `--all`.
 - Keep status observational: it does not reconcile, recover, acquire, release,
