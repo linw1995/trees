@@ -36,5 +36,5 @@
 
 - [x] 5.1 Append deterministic shortest-unique source-path suffixes to the
   availability and capacity summary
-- [ ] 5.2 Cover base-name conflicts and recursive parent expansion, update
+- [x] 5.2 Cover base-name conflicts and recursive parent expansion, update
   documentation, and rerun the complete quality gates
