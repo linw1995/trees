@@ -7,7 +7,7 @@ use trees::domain::{CanonicalPath, WorkspaceId, WorkspaceState};
 use trees::storage::find_workspace_by_path;
 
 fn test_root() -> PathBuf {
-    std::env::temp_dir().join(format!("trees-reclaim-cli-{}", WorkspaceId::new()))
+    std::env::temp_dir().join(format!("trees-remove-cli-{}", WorkspaceId::new()))
 }
 
 fn command(root: &Path) -> Command {
@@ -77,7 +77,7 @@ fn repository(path: &Path) {
 }
 
 #[test]
-fn dry_runs_confirms_and_reclaims_a_workspace_by_id() {
+fn dry_runs_confirms_and_removes_a_workspace_by_id() {
     let root = test_root();
     let source = root.join("source");
     let workspace_path = root.join("workspace");
@@ -104,29 +104,29 @@ fn dry_runs_confirms_and_reclaims_a_workspace_by_id() {
     drop(connection);
 
     let unconfirmed = command(&root)
-        .args(["reclaim", &workspace.id.to_string()])
+        .args(["remove", &workspace.id.to_string()])
         .output()
-        .expect("unconfirmed reclaim should run");
+        .expect("unconfirmed remove should run");
     assert!(!unconfirmed.status.success());
     assert!(workspace_path.exists());
     assert!(String::from_utf8_lossy(&unconfirmed.stderr)
         .contains("interactive confirmation is unavailable"));
 
     let dry_run = command(&root)
-        .args(["reclaim", &workspace.id.to_string(), "--dry-run"])
+        .args(["remove", &workspace.id.to_string(), "--dry-run"])
         .output()
-        .expect("dry-run reclaim should run");
+        .expect("dry-run remove should run");
     assert!(dry_run.status.success());
     assert!(workspace_path.exists());
     assert!(String::from_utf8_lossy(&dry_run.stdout).contains("reason=eligible"));
 
-    let reclaimed = command(&root)
-        .args(["reclaim", &workspace.id.to_string(), "--yes"])
+    let removed = command(&root)
+        .args(["remove", &workspace.id.to_string(), "--yes"])
         .output()
-        .expect("confirmed reclaim should run");
-    assert!(reclaimed.status.success());
+        .expect("confirmed remove should run");
+    assert!(removed.status.success());
     assert!(!workspace_path.exists());
-    assert!(String::from_utf8_lossy(&reclaimed.stdout).contains("reclaimed=true"));
+    assert!(String::from_utf8_lossy(&removed.stdout).contains("removed=true"));
 
     let mut connection = database::connect(&database_path(&root)).expect("database should reopen");
     assert_eq!(

@@ -653,7 +653,7 @@ pub fn record_workspace_reclaimed(
     )
 }
 
-pub fn record_workspace_explicitly_reclaimed(
+pub fn record_workspace_explicitly_removed(
     connection: &mut SqliteConnection,
     lease_id: &LeaseId,
     workspace_id: &WorkspaceId,
@@ -664,8 +664,8 @@ pub fn record_workspace_explicitly_reclaimed(
         lease_id,
         workspace_id,
         details_json,
-        "reclaim",
-        "explicit reclamation complete",
+        "remove",
+        "explicit removal complete",
     )
 }
 
@@ -764,7 +764,7 @@ pub fn record_workspace_gc_skipped(
     )
 }
 
-pub fn record_workspace_reclaim_skipped(
+pub fn record_workspace_remove_skipped(
     connection: &mut SqliteConnection,
     lease_id: &LeaseId,
     workspace_id: &WorkspaceId,
@@ -778,9 +778,9 @@ pub fn record_workspace_reclaim_skipped(
         details_json,
         error_json,
         ReclamationEventMetadata {
-            source: "reclaim",
-            event_type: "workspace_reclaim_skipped",
-            pending_step: "explicit reclamation skipped workspace",
+            source: "remove",
+            event_type: "workspace_remove_skipped",
+            pending_step: "explicit removal skipped workspace",
         },
     )
 }
@@ -848,7 +848,7 @@ pub fn record_workspace_gc_failure(
     )
 }
 
-pub fn record_workspace_reclaim_failure(
+pub fn record_workspace_remove_failure(
     connection: &mut SqliteConnection,
     lease_id: &LeaseId,
     workspace_id: &WorkspaceId,
@@ -862,9 +862,9 @@ pub fn record_workspace_reclaim_failure(
         details_json,
         error_json,
         ReclamationEventMetadata {
-            source: "reclaim",
-            event_type: "workspace_reclaim_failed",
-            pending_step: "explicit reclamation failed",
+            source: "remove",
+            event_type: "workspace_remove_failed",
+            pending_step: "explicit removal failed",
         },
     )
 }

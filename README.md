@@ -165,16 +165,16 @@ while keeping normal safety checks. `--force` also skips confirmation and may
 remove dirty worktrees or unexpected content, but never bypasses manual,
 claim, operation, root-containment, or repository-identity guards.
 
-Reclaim one known workspace by the stable ID shown in
+Remove one known workspace by the stable ID shown in
 `trees status --view workspaces`:
 
 ```sh
-trees reclaim <workspace-id> --dry-run
-trees reclaim <workspace-id> --yes
-trees reclaim <workspace-id> --force
+trees remove <workspace-id> --dry-run
+trees remove <workspace-id> --yes
+trees remove <workspace-id> --force
 ```
 
-Explicit reclaim accepts automatic and manual workspaces and does not apply an
+Explicit removal accepts automatic and manual workspaces and does not apply an
 age threshold. Normal mode requires a safe clean workspace. `--force` may
 remove dirty worktrees or unexpected content, but it does not break an active
 claim or operation and does not bypass path or repository identity guards.

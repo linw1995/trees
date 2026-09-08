@@ -15,7 +15,7 @@ fn run(cli: trees::cli::Cli) -> ExitCode {
         trees::cli::Command::Release(arguments) => run_release(arguments),
         trees::cli::Command::Config(arguments) => run_config(arguments),
         trees::cli::Command::Gc(arguments) => run_gc(arguments),
-        trees::cli::Command::Reclaim(arguments) => run_reclaim(arguments),
+        trees::cli::Command::Remove(arguments) => run_remove(arguments),
         trees::cli::Command::Status(arguments) => run_status(arguments),
         trees::cli::Command::Open(arguments) => run_open(arguments),
         trees::cli::Command::Codex(arguments) => run_codex(arguments),
@@ -400,8 +400,8 @@ fn execute_gc_report(
         .map_err(|error| error.to_string())
 }
 
-fn run_reclaim(arguments: trees::cli::ReclaimArgs) -> ExitCode {
-    match run_reclaim_command(&arguments) {
+fn run_remove(arguments: trees::cli::RemoveArgs) -> ExitCode {
+    match run_remove_command(&arguments) {
         Ok(exit_code) => exit_code,
         Err(error) => {
             eprintln!("Error: {error}");
@@ -410,8 +410,8 @@ fn run_reclaim(arguments: trees::cli::ReclaimArgs) -> ExitCode {
     }
 }
 
-fn run_reclaim_command(arguments: &trees::cli::ReclaimArgs) -> Result<ExitCode, String> {
-    let preflight = load_reclaim_preflight(arguments)?;
+fn run_remove_command(arguments: &trees::cli::RemoveArgs) -> Result<ExitCode, String> {
+    let preflight = load_removal_preflight(arguments)?;
     println!("workspace_id={}", preflight.workspace.id);
     println!("workspace_path={}", preflight.workspace.canonical_path);
     println!("preflight_reason={}", preflight.reason);
@@ -421,21 +421,21 @@ fn run_reclaim_command(arguments: &trees::cli::ReclaimArgs) -> Result<ExitCode, 
     if !preflight.can_execute() {
         return Ok(ExitCode::FAILURE);
     }
-    match confirm_reclaim(arguments.force, arguments.yes)? {
-        GcConfirmation::Proceed => execute_reclaim(arguments),
+    match confirm_removal(arguments.force, arguments.yes)? {
+        GcConfirmation::Proceed => execute_removal(arguments),
         GcConfirmation::Cancelled => Ok(ExitCode::SUCCESS),
     }
 }
 
-fn load_reclaim_preflight(
-    arguments: &trees::cli::ReclaimArgs,
-) -> Result<trees::gc::ReclaimPreflight, String> {
+fn load_removal_preflight(
+    arguments: &trees::cli::RemoveArgs,
+) -> Result<trees::gc::RemovalPreflight, String> {
     let mut connection = trees::database::open_read_only().map_err(|error| error.to_string())?;
-    trees::gc::scan_reclaim(&mut connection, &arguments.workspace_id, arguments.force)
+    trees::gc::scan_removal(&mut connection, &arguments.workspace_id, arguments.force)
         .map_err(|error| error.to_string())
 }
 
-fn confirm_reclaim(force: bool, yes: bool) -> Result<GcConfirmation, String> {
+fn confirm_removal(force: bool, yes: bool) -> Result<GcConfirmation, String> {
     if force {
         eprintln!("Warning: --force may remove dirty worktrees and unexpected workspace content.");
         return Ok(GcConfirmation::Proceed);
@@ -448,7 +448,7 @@ fn confirm_reclaim(force: bool, yes: bool) -> Result<GcConfirmation, String> {
             "interactive confirmation is unavailable; use --dry-run, --yes, or --force".to_owned(),
         );
     }
-    print!("Reclaim this workspace? [y/N] ");
+    print!("Remove this workspace? [y/N] ");
     io::stdout()
         .flush()
         .map_err(|error| format!("failed to flush confirmation prompt: {error}"))?;
@@ -464,19 +464,19 @@ fn confirm_reclaim(force: bool, yes: bool) -> Result<GcConfirmation, String> {
     }
 }
 
-fn execute_reclaim(arguments: &trees::cli::ReclaimArgs) -> Result<ExitCode, String> {
+fn execute_removal(arguments: &trees::cli::RemoveArgs) -> Result<ExitCode, String> {
     let mut connection = trees::database::open_default().map_err(|error| error.to_string())?;
     let report =
-        trees::gc::reclaim_workspace(&mut connection, &arguments.workspace_id, arguments.force)
+        trees::gc::remove_workspace(&mut connection, &arguments.workspace_id, arguments.force)
             .map_err(|error| error.to_string())?;
-    println!("reclaimed={}", report.reclaimed);
-    if !report.reclaimed {
+    println!("removed={}", report.removed);
+    if !report.removed {
         println!("reason={}", report.reason);
     }
     if let Some(error) = report.error {
-        eprintln!("Reclaim failed: {}: {error}", report.workspace_path);
+        eprintln!("Remove failed: {}: {error}", report.workspace_path);
     }
-    Ok(if report.reclaimed {
+    Ok(if report.removed {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE

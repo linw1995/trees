@@ -386,7 +386,7 @@ fn keeps_manual_workspaces_out_of_automatic_allocation() {
 }
 
 #[test]
-fn explicitly_reclaims_a_manual_workspace_and_preserves_its_tombstone() {
+fn explicitly_removes_a_manual_workspace_and_preserves_its_tombstone() {
     let root = test_root();
     let source_path = root.join("source");
     repository(&source_path);
@@ -405,13 +405,13 @@ fn explicitly_reclaims_a_manual_workspace_and_preserves_its_tombstone() {
         .expect("workspace lookup should succeed")
         .expect("manual workspace should exist");
 
-    let preflight = gc::scan_reclaim(&mut connection, &workspace.id, false)
-        .expect("manual reclaim preflight should succeed");
+    let preflight = gc::scan_removal(&mut connection, &workspace.id, false)
+        .expect("manual removal preflight should succeed");
     assert_eq!(preflight.reason, gc::GcCandidateReason::Eligible);
-    let report = gc::reclaim_workspace(&mut connection, &workspace.id, false)
-        .expect("manual reclaim should succeed");
+    let report = gc::remove_workspace(&mut connection, &workspace.id, false)
+        .expect("manual removal should succeed");
 
-    assert!(report.reclaimed);
+    assert!(report.removed);
     assert_eq!(report.reason, gc::GcCandidateReason::Eligible);
     assert!(!created.workspace_path.as_path().exists());
     assert_eq!(
@@ -431,7 +431,7 @@ fn explicitly_reclaims_a_manual_workspace_and_preserves_its_tombstone() {
 }
 
 #[test]
-fn explicit_reclaim_does_not_apply_the_gc_age_threshold() {
+fn explicit_removal_does_not_apply_the_gc_age_threshold() {
     let fixture = automatic_fixture();
     let now = Timestamp::now();
     let mut connection = fixture.connection;
@@ -443,10 +443,10 @@ fn explicit_reclaim_does_not_apply_the_gc_age_threshold() {
         .execute(&mut connection)
         .expect("workspace should become young");
 
-    let report = gc::reclaim_workspace(&mut connection, &fixture.workspace.id, false)
-        .expect("explicit reclaim should ignore age");
+    let report = gc::remove_workspace(&mut connection, &fixture.workspace.id, false)
+        .expect("explicit removal should ignore age");
 
-    assert!(report.reclaimed);
+    assert!(report.removed);
     assert!(!fixture.workspace.canonical_path.as_path().exists());
     drop(connection);
     fs::remove_file(fixture.database_path).expect("database should be removable");
@@ -454,15 +454,15 @@ fn explicit_reclaim_does_not_apply_the_gc_age_threshold() {
 }
 
 #[test]
-fn forced_explicit_reclaim_preserves_an_active_claim() {
+fn forced_explicit_removal_preserves_an_active_claim() {
     let mut fixture = automatic_fixture();
     let acquire = allocate_automatic_workspace(&mut fixture.connection, &fixture.plan)
         .expect("allocation should succeed");
 
-    let report = gc::reclaim_workspace(&mut fixture.connection, &fixture.workspace.id, true)
-        .expect("forced reclaim should report the admission rejection");
+    let report = gc::remove_workspace(&mut fixture.connection, &fixture.workspace.id, true)
+        .expect("forced removal should report the admission rejection");
 
-    assert!(!report.reclaimed);
+    assert!(!report.removed);
     assert_eq!(report.reason, gc::GcCandidateReason::Claimed);
     assert!(fixture.workspace.canonical_path.as_path().exists());
     assert_eq!(
@@ -483,22 +483,22 @@ fn forced_explicit_reclaim_preserves_an_active_claim() {
 }
 
 #[test]
-fn forced_explicit_reclaim_removes_dirty_detached_content() {
+fn forced_explicit_removal_removes_dirty_detached_content() {
     let fixture = automatic_fixture();
     fs::write(fixture.worktree_path.join("dirty"), "dirty\n")
         .expect("dirty content should be written");
     let mut connection = fixture.connection;
 
-    let normal = gc::scan_reclaim(&mut connection, &fixture.workspace.id, false)
-        .expect("normal reclaim preflight should succeed");
+    let normal = gc::scan_removal(&mut connection, &fixture.workspace.id, false)
+        .expect("normal removal preflight should succeed");
     assert_eq!(normal.reason, gc::GcCandidateReason::WorktreeMismatch);
-    let forced = gc::scan_reclaim(&mut connection, &fixture.workspace.id, true)
-        .expect("forced reclaim preflight should succeed");
+    let forced = gc::scan_removal(&mut connection, &fixture.workspace.id, true)
+        .expect("forced removal preflight should succeed");
     assert_eq!(forced.reason, gc::GcCandidateReason::Eligible);
 
-    let report = gc::reclaim_workspace(&mut connection, &fixture.workspace.id, true)
-        .expect("forced reclaim should succeed");
-    assert!(report.reclaimed);
+    let report = gc::remove_workspace(&mut connection, &fixture.workspace.id, true)
+        .expect("forced removal should succeed");
+    assert!(report.removed);
     assert!(!fixture.workspace.canonical_path.as_path().exists());
 
     drop(connection);
@@ -507,7 +507,7 @@ fn forced_explicit_reclaim_removes_dirty_detached_content() {
 }
 
 #[test]
-fn explicit_reclaim_rejects_active_operations_and_recovers_expired_ones() {
+fn explicit_removal_rejects_active_operations_and_recovers_expired_ones() {
     let fixture = automatic_fixture();
     let mut connection = fixture.connection;
     let intent = OperationIntent::new(
@@ -520,10 +520,10 @@ fn explicit_reclaim_rejects_active_operations_and_recovers_expired_ones() {
     );
     begin_operation(&mut connection, &intent).expect("operation should start");
 
-    let active = gc::scan_reclaim(&mut connection, &fixture.workspace.id, true)
+    let active = gc::scan_removal(&mut connection, &fixture.workspace.id, true)
         .expect("active-operation preflight should succeed");
     assert_eq!(active.reason, gc::GcCandidateReason::ActiveOperation);
-    let rejected = gc::reclaim_workspace(&mut connection, &fixture.workspace.id, true)
+    let rejected = gc::remove_workspace(&mut connection, &fixture.workspace.id, true)
         .expect("active operation should be rejected");
     assert_eq!(rejected.reason, gc::GcCandidateReason::ActiveOperation);
     assert!(fixture.workspace.canonical_path.as_path().exists());
@@ -538,13 +538,13 @@ fn explicit_reclaim_rejects_active_operations_and_recovers_expired_ones() {
         )
         .execute(&mut connection)
         .expect("operation lease should expire");
-    let expired = gc::scan_reclaim(&mut connection, &fixture.workspace.id, true)
+    let expired = gc::scan_removal(&mut connection, &fixture.workspace.id, true)
         .expect("expired-operation preflight should succeed");
     assert_eq!(expired.reason, gc::GcCandidateReason::ExpiredOperation);
 
-    let report = gc::reclaim_workspace(&mut connection, &fixture.workspace.id, true)
-        .expect("expired operation should be recovered before reclaim");
-    assert!(report.reclaimed);
+    let report = gc::remove_workspace(&mut connection, &fixture.workspace.id, true)
+        .expect("expired operation should be recovered before removal");
+    assert!(report.removed);
     assert!(!fixture.workspace.canonical_path.as_path().exists());
 
     drop(connection);
@@ -553,7 +553,7 @@ fn explicit_reclaim_rejects_active_operations_and_recovers_expired_ones() {
 }
 
 #[test]
-fn reclaim_preflight_is_read_only_and_rejects_unknown_or_reclaimed_ids() {
+fn removal_preflight_is_read_only_and_rejects_unknown_or_reclaimed_ids() {
     let fixture = automatic_fixture();
     let workspace_id = fixture.workspace.id;
     let database_path = fixture.database_path.clone();
@@ -566,11 +566,11 @@ fn reclaim_preflight_is_read_only_and_rejects_unknown_or_reclaimed_ids() {
 
     let mut read_only =
         trees::database::connect_read_only(&database_path).expect("read-only database should open");
-    let preflight = gc::scan_reclaim(&mut read_only, &workspace_id, false)
-        .expect("reclaim preflight should succeed");
+    let preflight = gc::scan_removal(&mut read_only, &workspace_id, false)
+        .expect("removal preflight should succeed");
     assert_eq!(preflight.reason, gc::GcCandidateReason::Eligible);
     assert!(matches!(
-        gc::scan_reclaim(&mut read_only, &trees::domain::WorkspaceId::new(), false),
+        gc::scan_removal(&mut read_only, &trees::domain::WorkspaceId::new(), false),
         Err(gc::GcError::WorkspaceNotFound(_))
     ));
     let after_events = trees::schema::lifecycle_events::table
@@ -581,12 +581,12 @@ fn reclaim_preflight_is_read_only_and_rejects_unknown_or_reclaimed_ids() {
     drop(read_only);
 
     let mut connection = trees::database::connect(&database_path).expect("database should reopen");
-    let report = gc::reclaim_workspace(&mut connection, &workspace_id, false)
-        .expect("reclaim should succeed");
-    assert!(report.reclaimed);
-    let repeated = gc::reclaim_workspace(&mut connection, &workspace_id, true)
-        .expect("repeated reclaim should be rejected");
-    assert!(!repeated.reclaimed);
+    let report = gc::remove_workspace(&mut connection, &workspace_id, false)
+        .expect("removal should succeed");
+    assert!(report.removed);
+    let repeated = gc::remove_workspace(&mut connection, &workspace_id, true)
+        .expect("repeated removal should be rejected");
+    assert!(!repeated.removed);
     assert_eq!(repeated.reason, gc::GcCandidateReason::Reclaimed);
 
     drop(connection);

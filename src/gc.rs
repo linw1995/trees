@@ -10,9 +10,9 @@ use crate::git;
 use crate::reconciliation;
 use crate::storage::{
     begin_operation, find_running_operation, find_workspace, find_workspace_claim,
-    list_automatic_workspaces, list_repo_worktrees, record_workspace_explicitly_reclaimed,
-    record_workspace_gc_failure, record_workspace_gc_skipped, record_workspace_reclaim_failure,
-    record_workspace_reclaim_skipped, record_workspace_reclaimed, renew_operation_lease,
+    list_automatic_workspaces, list_repo_worktrees, record_workspace_explicitly_removed,
+    record_workspace_gc_failure, record_workspace_gc_skipped, record_workspace_reclaimed,
+    record_workspace_remove_failure, record_workspace_remove_skipped, renew_operation_lease,
     OperationIntent, OperationIntentError, RepoWorktreeRow,
 };
 use crate::validation;
@@ -236,12 +236,12 @@ pub struct GcExecutionReport {
 }
 
 #[derive(Debug, Clone)]
-pub struct ReclaimPreflight {
+pub struct RemovalPreflight {
     pub workspace: crate::storage::WorkspaceRow,
     pub reason: GcCandidateReason,
 }
 
-impl ReclaimPreflight {
+impl RemovalPreflight {
     pub fn can_execute(&self) -> bool {
         matches!(
             self.reason,
@@ -251,9 +251,9 @@ impl ReclaimPreflight {
 }
 
 #[derive(Debug)]
-pub struct ReclaimReport {
+pub struct RemovalReport {
     pub workspace_path: CanonicalPath,
-    pub reclaimed: bool,
+    pub removed: bool,
     pub reason: GcCandidateReason,
     pub error: Option<String>,
 }
@@ -355,20 +355,20 @@ pub fn execute(
     Ok(report)
 }
 
-pub fn scan_reclaim(
+pub fn scan_removal(
     connection: &mut SqliteConnection,
     workspace_id: &WorkspaceId,
     force: bool,
-) -> Result<ReclaimPreflight, GcError> {
+) -> Result<RemovalPreflight, GcError> {
     let workspace = find_workspace(connection, workspace_id).map_err(|error| match error {
         diesel::result::Error::NotFound => GcError::WorkspaceNotFound(*workspace_id),
         error => GcError::Database(error),
     })?;
-    let reason = reclaim_reason(connection, &workspace, force)?;
-    Ok(ReclaimPreflight { workspace, reason })
+    let reason = removal_reason(connection, &workspace, force)?;
+    Ok(RemovalPreflight { workspace, reason })
 }
 
-fn reclaim_reason(
+fn removal_reason(
     connection: &mut SqliteConnection,
     workspace: &crate::storage::WorkspaceRow,
     force: bool,
@@ -400,40 +400,40 @@ fn reclaim_reason(
         .unwrap_or(GcCandidateReason::Eligible))
 }
 
-pub fn reclaim_workspace(
+pub fn remove_workspace(
     connection: &mut SqliteConnection,
     workspace_id: &WorkspaceId,
     force: bool,
-) -> Result<ReclaimReport, GcError> {
-    let preflight = scan_reclaim(connection, workspace_id, force)?;
+) -> Result<RemovalReport, GcError> {
+    let preflight = scan_removal(connection, workspace_id, force)?;
     let workspace_path = preflight.workspace.canonical_path.clone();
     if preflight.reason == GcCandidateReason::ExpiredOperation {
         reconciliation::recover_expired_operation(connection, workspace_id)
             .map_err(GcError::Reconciliation)?;
     } else if preflight.reason != GcCandidateReason::Eligible {
-        return Ok(reclaim_rejected(workspace_path, preflight.reason));
+        return Ok(removal_rejected(workspace_path, preflight.reason));
     }
 
     let refreshed = find_workspace(connection, workspace_id).map_err(GcError::Database)?;
     if refreshed.state == WorkspaceState::Reclaimed {
-        return Ok(reclaim_rejected(
+        return Ok(removal_rejected(
             workspace_path,
             GcCandidateReason::Reclaimed,
         ));
     }
-    let details_json = reclaim_details(&refreshed.canonical_path, force, None);
+    let details_json = removal_details(&refreshed.canonical_path, force, None);
     let intent = OperationIntent::new(
         *workspace_id,
-        "reclaim",
+        "remove",
         Timestamp::after_seconds(300),
-        "reclaim workspace",
+        "remove workspace",
         details_json.clone(),
     );
     let lease_id = intent.lease_id;
     let operation = match begin_operation(connection, &intent) {
         Ok(operation) => operation,
         Err(OperationIntentError::WorkspaceBusy(_)) => {
-            return Ok(reclaim_rejected(
+            return Ok(removal_rejected(
                 workspace_path,
                 GcCandidateReason::ActiveOperation,
             ));
@@ -448,14 +448,14 @@ pub fn reclaim_workspace(
         &lease_id,
     ) {
         let error_text = error.to_string();
-        finish_reclaim_failure(
+        finish_removal_failure(
             connection,
             &lease_id,
             workspace_id,
-            reclaim_details(&workspace_path, force, Some(&error_text)),
+            removal_details(&workspace_path, force, Some(&error_text)),
             &error_text,
         )?;
-        return Ok(reclaim_failed(
+        return Ok(removal_failed(
             workspace_path,
             GcCandidateReason::GitError,
             error_text,
@@ -463,30 +463,30 @@ pub fn reclaim_workspace(
     }
 
     let workspace = find_workspace(connection, workspace_id).map_err(GcError::Database)?;
-    let reason = reclaim_reason_while_owned(connection, &workspace, force)?;
+    let reason = removal_reason_while_owned(connection, &workspace, force)?;
     if reason != GcCandidateReason::Eligible {
-        finish_reclaim_skip(
+        finish_removal_skip(
             connection,
             &lease_id,
             workspace_id,
-            reclaim_details(&workspace.canonical_path, force, None),
+            removal_details(&workspace.canonical_path, force, None),
             reason,
         )?;
-        return Ok(reclaim_rejected(workspace.canonical_path, reason));
+        return Ok(removal_rejected(workspace.canonical_path, reason));
     }
 
     let repositories = list_repo_worktrees(connection, workspace_id).map_err(GcError::Database)?;
     let removal_plan = match prepare_removal(&workspace, &repositories, force) {
         Ok(plan) => plan,
         Err(reason) => {
-            finish_reclaim_skip(
+            finish_removal_skip(
                 connection,
                 &lease_id,
                 workspace_id,
-                reclaim_details(&workspace.canonical_path, force, None),
+                removal_details(&workspace.canonical_path, force, None),
                 reason,
             )?;
-            return Ok(reclaim_rejected(workspace.canonical_path, reason));
+            return Ok(removal_rejected(workspace.canonical_path, reason));
         }
     };
     if let Err(error) = remove_physical_workspace(&removal_plan, force, || {
@@ -499,48 +499,48 @@ pub fn reclaim_workspace(
             &operation.id,
             &lease_id,
         );
-        finish_reclaim_failure(
+        finish_removal_failure(
             connection,
             &lease_id,
             workspace_id,
-            reclaim_details(&workspace.canonical_path, force, Some(&error_text)),
+            removal_details(&workspace.canonical_path, force, Some(&error_text)),
             &error_text,
         )?;
-        return Ok(reclaim_failed(
+        return Ok(removal_failed(
             workspace.canonical_path,
             GcCandidateReason::GitError,
             error_text,
         ));
     }
-    if let Err(error) = record_workspace_explicitly_reclaimed(
+    if let Err(error) = record_workspace_explicitly_removed(
         connection,
         &lease_id,
         workspace_id,
-        Some(reclaim_details(&workspace.canonical_path, force, None)),
+        Some(removal_details(&workspace.canonical_path, force, None)),
     ) {
         let error_text = error.to_string();
-        finish_reclaim_failure(
+        finish_removal_failure(
             connection,
             &lease_id,
             workspace_id,
-            reclaim_details(&workspace.canonical_path, force, Some(&error_text)),
+            removal_details(&workspace.canonical_path, force, Some(&error_text)),
             &error_text,
         )?;
-        return Ok(reclaim_failed(
+        return Ok(removal_failed(
             workspace.canonical_path,
             GcCandidateReason::GitError,
             error_text,
         ));
     }
-    Ok(ReclaimReport {
+    Ok(RemovalReport {
         workspace_path: workspace.canonical_path,
-        reclaimed: true,
+        removed: true,
         reason: GcCandidateReason::Eligible,
         error: None,
     })
 }
 
-fn reclaim_reason_while_owned(
+fn removal_reason_while_owned(
     connection: &mut SqliteConnection,
     workspace: &crate::storage::WorkspaceRow,
     force: bool,
@@ -560,29 +560,29 @@ fn reclaim_reason_while_owned(
     Ok(GcCandidateReason::Eligible)
 }
 
-fn reclaim_rejected(workspace_path: CanonicalPath, reason: GcCandidateReason) -> ReclaimReport {
-    ReclaimReport {
+fn removal_rejected(workspace_path: CanonicalPath, reason: GcCandidateReason) -> RemovalReport {
+    RemovalReport {
         workspace_path,
-        reclaimed: false,
+        removed: false,
         reason,
         error: None,
     }
 }
 
-fn reclaim_failed(
+fn removal_failed(
     workspace_path: CanonicalPath,
     reason: GcCandidateReason,
     error: String,
-) -> ReclaimReport {
-    ReclaimReport {
+) -> RemovalReport {
+    RemovalReport {
         workspace_path,
-        reclaimed: false,
+        removed: false,
         reason,
         error: Some(error),
     }
 }
 
-fn reclaim_details(
+fn removal_details(
     workspace_path: &CanonicalPath,
     force: bool,
     error: Option<&str>,
@@ -590,13 +590,13 @@ fn reclaim_details(
     JsonDocument::from_serializable(&serde_json::json!({
         "workspace_path": workspace_path,
         "forced": force,
-        "command": "reclaim",
+        "command": "remove",
         "error": error,
     }))
-    .expect("reclaim details should serialize")
+    .expect("removal details should serialize")
 }
 
-fn finish_reclaim_skip(
+fn finish_removal_skip(
     connection: &mut SqliteConnection,
     lease_id: &crate::domain::LeaseId,
     workspace_id: &WorkspaceId,
@@ -606,8 +606,8 @@ fn finish_reclaim_skip(
     let error_json = JsonDocument::from_serializable(&serde_json::json!({
         "reason": reason.to_string(),
     }))
-    .expect("reclaim skip error should serialize");
-    record_workspace_reclaim_skipped(
+    .expect("removal skip error should serialize");
+    record_workspace_remove_skipped(
         connection,
         lease_id,
         workspace_id,
@@ -617,7 +617,7 @@ fn finish_reclaim_skip(
     .map_err(GcError::Database)
 }
 
-fn finish_reclaim_failure(
+fn finish_removal_failure(
     connection: &mut SqliteConnection,
     lease_id: &crate::domain::LeaseId,
     workspace_id: &WorkspaceId,
@@ -627,8 +627,8 @@ fn finish_reclaim_failure(
     let error_json = JsonDocument::from_serializable(&serde_json::json!({
         "error": error,
     }))
-    .expect("reclaim error should serialize");
-    record_workspace_reclaim_failure(
+    .expect("removal error should serialize");
+    record_workspace_remove_failure(
         connection,
         lease_id,
         workspace_id,

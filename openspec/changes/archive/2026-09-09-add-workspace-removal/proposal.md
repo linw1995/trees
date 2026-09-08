@@ -7,8 +7,8 @@ checks.
 
 ## What Changes
 
-- Add `trees reclaim <workspace-id> [--dry-run] [--yes] [--force]`.
-- Allow explicit reclamation of either automatic or manual workspaces.
+- Add `trees remove <workspace-id> [--dry-run] [--yes] [--force]`.
+- Allow explicit removal of either automatic or manual workspaces.
 - Reuse GC's physical validation and removal behavior without applying an age
   threshold or automatic-management filter.
 - Reject claimed, actively operated, unknown, or already reclaimed workspaces.
@@ -21,14 +21,14 @@ checks.
 
 ### New Capabilities
 
-- `workspace-reclaim`: Explicitly reclaim one managed workspace by stable ID.
+- `workspace-removal`: Explicitly remove one managed workspace by stable ID.
 
 ### Modified Capabilities
 
-- `workspace-lifecycle`: Record explicit reclamation through the existing
+- `workspace-lifecycle`: Record explicit removal through the existing
   tombstone and operation model.
 
 ## Impact
 
-The CLI parser and dispatch, reclamation workflow, lifecycle event metadata,
+The CLI parser and dispatch, removal workflow, lifecycle event metadata,
 README usage, and integration tests change. No persistence schema changes.

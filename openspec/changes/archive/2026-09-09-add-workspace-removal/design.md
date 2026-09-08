@@ -10,7 +10,7 @@ does not use idle age.
 
 **Goals:**
 
-- Reclaim one known workspace without weakening lifecycle serialization.
+- Remove one known workspace without weakening lifecycle serialization.
 - Support both management modes through explicit user selection.
 - Share the established physical validation and removal implementation.
 - Offer a read-only preflight and interactive confirmation.
@@ -24,12 +24,13 @@ does not use idle age.
 
 ## Decisions
 
-### Use a Reclaim Command and Stable ID
+### Use a Remove Command and Stable ID
 
-The interface is `trees reclaim <workspace-id> [--dry-run] [--yes]
-[--force]`. `reclaim` matches the persisted terminal state and distinguishes
-the operation from deleting audit history. Stable IDs avoid path ambiguity and
-compose with `trees status --view workspaces`.
+The interface is `trees remove <workspace-id> [--dry-run] [--yes]
+[--force]`. `remove` names the physical user action without implying that
+audit history is deleted; the persisted terminal state remains `reclaimed`.
+Stable IDs avoid path ambiguity and compose with
+`trees status --view workspaces`.
 
 ### Make Explicit Selection Independent from Retention Policy
 
@@ -40,8 +41,8 @@ workspaces remain excluded.
 
 ### Preserve Hard Safety Guards
 
-A claim or unexpired operation rejects reclamation. An expired operation is
-recovered before a new reclaim operation starts. Normal mode requires a ready,
+A claim or unexpired operation rejects removal. An expired operation is
+recovered before a new removal operation starts. Normal mode requires a ready,
 clean, detached, identity-matched workspace with no unexpected content.
 `--force` permits unhealthy snapshots, missing worktrees, dirty or changed
 detached worktrees, and unexpected content, but does not bypass active claims,

@@ -1,4 +1,4 @@
-## 1. Reclamation Workflow
+## 1. Removal Workflow
 
 - [x] 1.1 Add single-workspace read-only preflight for both management modes
 - [x] 1.2 Add serialized execution using the existing physical removal and
@@ -8,7 +8,7 @@
 
 ## 2. CLI and Documentation
 
-- [x] 2.1 Add `trees reclaim <workspace-id> [--dry-run] [--yes] [--force]`
+- [x] 2.1 Add `trees remove <workspace-id> [--dry-run] [--yes] [--force]`
 - [x] 2.2 Add confirmation, warnings, result output, and README usage
 
 ## 3. Verification
