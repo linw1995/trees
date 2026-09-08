@@ -262,16 +262,15 @@ fn status_renders_ordered_persisted_state_and_preserves_storage() {
     assert!(!details.contains('\u{1b}'));
     assert!(details.contains("🤖"));
     assert!(details.contains("👤"));
-    assert!(details.contains(manual_path.as_path().to_str().unwrap()));
-    assert!(details.contains(automatic_path.as_path().to_str().unwrap()));
+    assert!(details.contains(&manual_id.to_string()));
+    assert!(details.contains(&automatic_id.to_string()));
+    assert!(!details.contains(&reclaimed_id.to_string()));
+    assert!(!details.contains(manual_path.as_path().to_str().unwrap()));
+    assert!(!details.contains(automatic_path.as_path().to_str().unwrap()));
     assert!(!details.contains(reclaimed_path.as_path().to_str().unwrap()));
     assert!(
-        details
-            .find(manual_path.as_path().to_str().unwrap())
-            .unwrap()
-            < details
-                .find(automatic_path.as_path().to_str().unwrap())
-                .unwrap()
+        details.find(&manual_id.to_string()).unwrap()
+            < details.find(&automatic_id.to_string()).unwrap()
     );
 
     let pools_json = command(&root)
@@ -304,10 +303,12 @@ fn status_renders_ordered_persisted_state_and_preserves_storage() {
     let workspaces = value["workspaces"].as_array().unwrap();
     assert_eq!(workspaces.len(), 3);
     assert_eq!(workspaces[0]["workspace_id"], manual_id.to_string());
+    assert_eq!(workspaces[0]["path"], manual_path.to_string());
     assert_eq!(workspaces[0]["repo_worktrees"][0]["state"], "dirty");
     assert_eq!(workspaces[1]["workspace_id"], reclaimed_id.to_string());
     assert_eq!(workspaces[1]["state"], "reclaimed");
     assert_eq!(workspaces[2]["workspace_id"], automatic_id.to_string());
+    assert_eq!(workspaces[2]["path"], automatic_path.to_string());
     assert_eq!(workspaces[2]["claim"]["claim_id"], claim_id.to_string());
     assert_eq!(
         workspaces[2]["current_operation"]["lease_status"],
