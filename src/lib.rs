@@ -11,6 +11,7 @@ pub mod paths;
 pub mod pool;
 pub mod reconciliation;
 pub mod schema;
+pub mod status;
 pub mod storage;
 pub mod validation;
 pub mod workspace;

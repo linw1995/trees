@@ -1,10 +1,10 @@
 ## 1. Status Model and Storage
 
-- [ ] 1.1 Add serializable status projection types for workspace, claim,
+- [x] 1.1 Add serializable status projection types for workspace, claim,
   current operation, and repo-worktree snapshots
-- [ ] 1.2 Load all projection inputs in one read-only transaction with batched,
+- [x] 1.2 Load all projection inputs in one read-only transaction with batched,
   deterministic repository queries
-- [ ] 1.3 Classify operation leases against one snapshot timestamp and cover
+- [x] 1.3 Classify operation leases against one snapshot timestamp and cover
   active, expired, inconsistent, and absent cases
 
 ## 2. CLI and Rendering

@@ -265,6 +265,13 @@ pub struct RunningOperation {
     pub lease: OperationLeaseRow,
 }
 
+/// An operation fact paired with its retained current lease.
+#[derive(Debug, Clone)]
+pub struct LeasedOperation {
+    pub operation: OperationRow,
+    pub lease: OperationLeaseRow,
+}
+
 #[derive(Debug, Clone)]
 pub struct OperationIntent {
     pub id: OperationId,

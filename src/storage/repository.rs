@@ -16,10 +16,11 @@ use crate::schema::{
 };
 
 use super::models::{
-    EventRow, NewEvent, NewManagedWorkspace, NewOperation, NewOperationLease, NewOriginRepository,
-    NewRepoWorktree, NewWorkspace, NewWorkspaceClaim, NewWorkspacePool, NewWorkspacePoolRepository,
-    OperationIntent, OperationLeaseRow, OperationRow, OriginRepositoryRow, RepoWorktreeRow,
-    WorkspaceClaimRow, WorkspacePoolRepositoryRow, WorkspacePoolRow, WorkspaceRow,
+    EventRow, LeasedOperation, NewEvent, NewManagedWorkspace, NewOperation, NewOperationLease,
+    NewOriginRepository, NewRepoWorktree, NewWorkspace, NewWorkspaceClaim, NewWorkspacePool,
+    NewWorkspacePoolRepository, OperationIntent, OperationLeaseRow, OperationRow,
+    OriginRepositoryRow, RepoWorktreeRow, WorkspaceClaimRow, WorkspacePoolRepositoryRow,
+    WorkspacePoolRow, WorkspaceRow,
 };
 use super::transaction::{
     with_immediate_transaction, with_retrying_short_transaction, with_short_transaction,
@@ -289,6 +290,34 @@ pub fn list_automatic_workspaces(
         .filter(workspaces::management_mode.eq(WorkspaceManagementMode::Automatic))
         .order(workspaces::id.asc())
         .select(WorkspaceRow::as_select())
+        .load(connection)
+}
+
+pub fn list_workspaces(
+    connection: &mut SqliteConnection,
+    include_reclaimed: bool,
+) -> QueryResult<Vec<WorkspaceRow>> {
+    let mut query = workspaces::table.into_boxed();
+    if !include_reclaimed {
+        query = query.filter(workspaces::state.ne(WorkspaceState::Reclaimed));
+    }
+    query
+        .order(workspaces::canonical_path.asc())
+        .select(WorkspaceRow::as_select())
+        .load(connection)
+}
+
+pub fn list_workspace_claims(
+    connection: &mut SqliteConnection,
+    workspace_ids: &[WorkspaceId],
+) -> QueryResult<Vec<WorkspaceClaimRow>> {
+    if workspace_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    workspace_claims::table
+        .filter(workspace_claims::workspace_id.eq_any(workspace_ids))
+        .order(workspace_claims::workspace_id.asc())
+        .select(WorkspaceClaimRow::as_select())
         .load(connection)
 }
 
@@ -730,6 +759,34 @@ pub fn list_repo_worktrees(
         .load(connection)
 }
 
+pub fn list_repo_worktrees_for_workspaces(
+    connection: &mut SqliteConnection,
+    workspace_ids: &[WorkspaceId],
+) -> QueryResult<Vec<RepoWorktreeRow>> {
+    if workspace_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    repo_worktrees::table
+        .inner_join(origin_repositories::table)
+        .filter(repo_worktrees::workspace_id.eq_any(workspace_ids))
+        .order((
+            repo_worktrees::workspace_id.asc(),
+            repo_worktrees::worktree_path.asc(),
+        ))
+        .select((
+            repo_worktrees::id,
+            repo_worktrees::workspace_id,
+            origin_repositories::id,
+            origin_repositories::repository_identity,
+            origin_repositories::source_path,
+            repo_worktrees::worktree_path,
+            repo_worktrees::state,
+            repo_worktrees::last_head,
+            repo_worktrees::last_observed_at,
+        ))
+        .load(connection)
+}
+
 pub fn insert_operation(
     connection: &mut SqliteConnection,
     value: &NewOperation,
@@ -765,6 +822,45 @@ pub fn find_operation_lease(
         .select(OperationLeaseRow::as_select())
         .first(connection)
         .optional()
+}
+
+pub fn list_leased_operations(
+    connection: &mut SqliteConnection,
+    workspace_ids: &[WorkspaceId],
+) -> QueryResult<Vec<LeasedOperation>> {
+    if workspace_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    operation_leases::table
+        .inner_join(operations::table)
+        .filter(operation_leases::workspace_id.eq_any(workspace_ids))
+        .order(operation_leases::workspace_id.asc())
+        .select((OperationLeaseRow::as_select(), OperationRow::as_select()))
+        .load::<(OperationLeaseRow, OperationRow)>(connection)
+        .map(|rows| {
+            rows.into_iter()
+                .map(|(lease, operation)| LeasedOperation { operation, lease })
+                .collect()
+        })
+}
+
+pub fn list_operation_events(
+    connection: &mut SqliteConnection,
+    operation_ids: &[OperationId],
+) -> QueryResult<Vec<EventRow>> {
+    if operation_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    lifecycle_events::table
+        .filter(lifecycle_events::operation_id.eq_any(operation_ids))
+        .filter(lifecycle_events::entity_type.eq("operation"))
+        .order((
+            lifecycle_events::operation_id.asc(),
+            lifecycle_events::occurred_at.desc(),
+            lifecycle_events::event_id.desc(),
+        ))
+        .select(EventRow::as_select())
+        .load(connection)
 }
 
 /// Loads the current unexpired lease addressed by its lease token.
