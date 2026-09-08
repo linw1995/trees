@@ -11,8 +11,9 @@ use trees::domain::{
 };
 use trees::storage::{
     ensure_origin_repository, find_workspace, insert_managed_workspace, insert_repo_worktree,
-    insert_workspace_claim, insert_workspace_pool, persist_operation_intent, NewManagedWorkspace,
-    NewRepoWorktree, NewWorkspaceClaim, NewWorkspacePool, OperationIntent,
+    insert_workspace_claim, insert_workspace_pool, insert_workspace_pool_repositories,
+    persist_operation_intent, NewManagedWorkspace, NewRepoWorktree, NewWorkspaceClaim,
+    NewWorkspacePool, NewWorkspacePoolRepository, OperationIntent,
 };
 
 fn test_root() -> PathBuf {
@@ -102,7 +103,7 @@ fn missing_database_is_a_successful_empty_result_without_side_effects() {
         .output()
         .expect("status should run");
     assert!(human.status.success());
-    assert_eq!(human.stdout, b"No workspaces.\n");
+    assert_eq!(human.stdout, b"No workspace pools.\n");
     assert!(human.stderr.is_empty());
     assert!(!database_path(&root).exists());
 
@@ -114,10 +115,18 @@ fn missing_database_is_a_successful_empty_result_without_side_effects() {
     let value: serde_json::Value =
         serde_json::from_slice(&json.stdout).expect("stdout should be valid JSON");
     assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["view"], "pools");
     assert!(value["snapshot_at"].is_string());
-    assert_eq!(value["workspaces"], serde_json::json!([]));
+    assert_eq!(value["pools"], serde_json::json!([]));
     assert!(json.stderr.is_empty());
     assert!(!database_path(&root).exists());
+
+    let workspaces = command(&root)
+        .args(["status", "--view", "workspaces"])
+        .output()
+        .expect("workspace status should run");
+    assert!(workspaces.status.success());
+    assert_eq!(workspaces.stdout, b"No workspaces.\n");
 
     fs::remove_dir_all(root).expect("test root should be removable");
 }
@@ -180,6 +189,14 @@ fn status_renders_ordered_persisted_state_and_preserves_storage() {
         &path(root.join("origins").join("example")),
     )
     .expect("origin should be inserted");
+    insert_workspace_pool_repositories(
+        &mut connection,
+        &[NewWorkspacePoolRepository {
+            pool_id,
+            repository_id: origin.id,
+        }],
+    )
+    .expect("pool repository should be inserted");
     insert_repo_worktree(
         &mut connection,
         &NewRepoWorktree {
@@ -219,25 +236,52 @@ fn status_renders_ordered_persisted_state_and_preserves_storage() {
         String::from_utf8_lossy(&human.stderr)
     );
     let human = String::from_utf8(human.stdout).expect("human output should be UTF-8");
-    assert!(human.starts_with("STATE"));
-    assert!(!human.contains("OPERATION"));
-    assert!(human.contains("degraded"));
-    assert!(human.contains("0/1 example"));
-    assert!(human.contains("🤖"));
-    assert!(human.contains("👤"));
-    assert!(!human.contains("expired:release"));
-    assert!(human.contains(manual_path.as_path().to_str().unwrap()));
-    assert!(human.contains(automatic_path.as_path().to_str().unwrap()));
+    assert!(human.starts_with("REPOS"));
+    assert!(human.contains("example"));
+    assert!(human.contains("0/1"));
+    assert!(!human.contains("degraded"));
+    assert!(!human.contains(manual_path.as_path().to_str().unwrap()));
+    assert!(!human.contains(automatic_path.as_path().to_str().unwrap()));
     assert!(!human.contains(reclaimed_path.as_path().to_str().unwrap()));
+
+    let details = command(&root)
+        .args(["status", "--view", "workspaces"])
+        .env("PATH", "")
+        .output()
+        .expect("workspace status should run");
+    assert!(details.status.success());
+    let details = String::from_utf8(details.stdout).expect("details should be UTF-8");
+    assert!(details.starts_with("STATE"));
+    assert!(details.contains("degraded"));
+    assert!(details.contains("0/1 example"));
+    assert!(details.contains("🤖"));
+    assert!(details.contains("👤"));
+    assert!(details.contains(manual_path.as_path().to_str().unwrap()));
+    assert!(details.contains(automatic_path.as_path().to_str().unwrap()));
+    assert!(!details.contains(reclaimed_path.as_path().to_str().unwrap()));
     assert!(
-        human.find(manual_path.as_path().to_str().unwrap()).unwrap()
-            < human
+        details
+            .find(manual_path.as_path().to_str().unwrap())
+            .unwrap()
+            < details
                 .find(automatic_path.as_path().to_str().unwrap())
                 .unwrap()
     );
 
+    let pools_json = command(&root)
+        .args(["status", "--json"])
+        .output()
+        .expect("pool JSON status should run");
+    assert!(pools_json.status.success());
+    let pools_value: serde_json::Value =
+        serde_json::from_slice(&pools_json.stdout).expect("pool JSON should be valid");
+    assert_eq!(pools_value["view"], "pools");
+    assert_eq!(pools_value["pools"][0]["allocated"], 1);
+    assert_eq!(pools_value["pools"][0]["available"], 0);
+    assert_eq!(pools_value["pools"][0]["capacity"], 1);
+
     let json = command(&root)
-        .args(["status", "--all", "--json"])
+        .args(["status", "--view", "workspaces", "--all", "--json"])
         .env("PATH", "")
         .output()
         .expect("JSON status should run");
@@ -249,6 +293,7 @@ fn status_renders_ordered_persisted_state_and_preserves_storage() {
     assert_eq!(json.stdout.iter().filter(|byte| **byte == b'\n').count(), 1);
     let value: serde_json::Value =
         serde_json::from_slice(&json.stdout).expect("stdout should be one JSON document");
+    assert_eq!(value["view"], "workspaces");
     let workspaces = value["workspaces"].as_array().unwrap();
     assert_eq!(workspaces.len(), 3);
     assert_eq!(workspaces[0]["workspace_id"], manual_id.to_string());
@@ -279,6 +324,30 @@ fn status_renders_ordered_persisted_state_and_preserves_storage() {
     drop(connection);
 
     fs::remove_file(database_path).expect("database should be removable");
+    fs::remove_dir_all(root).expect("test root should be removable");
+}
+
+#[test]
+fn all_requires_the_workspace_view_without_opening_storage() {
+    let root = test_root();
+
+    for arguments in [
+        vec!["status", "--all"],
+        vec!["status", "--view", "pools", "--all"],
+    ] {
+        let output = command(&root)
+            .args(arguments)
+            .output()
+            .expect("status should run");
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap(),
+            "Error: --all requires --view workspaces\n"
+        );
+        assert!(!database_path(&root).exists());
+    }
+
     fs::remove_dir_all(root).expect("test root should be removable");
 }
 
