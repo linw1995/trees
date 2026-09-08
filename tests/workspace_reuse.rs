@@ -148,8 +148,9 @@ fn reuses_the_same_automatic_slot_across_acquire_release_cycles() {
 }
 
 #[test]
-fn aligns_a_reused_slot_to_upstream_head_for_a_workspace_repo_input() {
+fn skips_a_reusable_slot_that_does_not_match_upstream_head() {
     let mut fixture = automatic_fixture();
+    let original_head = fixture.plan.repositories[0].head.clone();
     fs::write(fixture.source.as_path().join("README"), "upstream update\n")
         .expect("upstream repository should be updated");
     run_git(
@@ -160,22 +161,34 @@ fn aligns_a_reused_slot_to_upstream_head_for_a_workspace_repo_input() {
         .expect("upstream repository should be inspectable")
         .head;
     let mut plan = prepare_automatic(&AutomaticCreateRequest {
-        repositories: vec![fixture.worktree_path.clone()],
+        repositories: vec![fixture.source.as_path().to_owned()],
     })
-    .expect("workspace repo input should resolve upstream");
+    .expect("upstream input should be prepared");
     plan.workspace_root = fixture.plan.workspace_root.clone();
 
     let allocation = allocate_automatic_workspace(&mut fixture.connection, &plan)
-        .expect("idle slot should be acquired");
+        .expect("a new slot should be provisioned");
 
-    assert_eq!(allocation.workspace_path, fixture.workspace.canonical_path);
-    let worktree = git::find_worktree(&fixture.source, &fixture.worktree_path)
-        .expect("reused worktree should remain attached");
-    assert_eq!(worktree.head.as_deref(), Some(upstream_head.as_str()));
+    assert_ne!(allocation.workspace_path, fixture.workspace.canonical_path);
+    let original = git::find_worktree(&fixture.source, &fixture.worktree_path)
+        .expect("original worktree should remain attached");
+    assert_eq!(original.head.as_deref(), Some(original_head.as_str()));
     let persisted = list_repo_worktrees(&mut fixture.connection, &fixture.workspace.id)
         .expect("worktree snapshot should be readable");
     assert_eq!(
         persisted[0].last_head.as_deref(),
+        Some(original_head.as_str())
+    );
+    let new_workspace = find_workspace_by_path(&mut fixture.connection, &allocation.workspace_path)
+        .expect("new workspace lookup should succeed")
+        .expect("new workspace should exist");
+    let new_worktree = list_repo_worktrees(&mut fixture.connection, &new_workspace.id)
+        .expect("new worktree snapshot should be readable")
+        .into_iter()
+        .next()
+        .expect("new workspace should have a worktree");
+    assert_eq!(
+        new_worktree.last_head.as_deref(),
         Some(upstream_head.as_str())
     );
 
@@ -185,6 +198,8 @@ fn aligns_a_reused_slot_to_upstream_head_for_a_workspace_repo_input() {
         allocation.claim_id,
     )
     .expect("workspace should be released");
+    git::remove_worktree(&fixture.source, new_worktree.worktree_path.as_path())
+        .expect("new worktree should be removable");
     cleanup_fixture(fixture);
 }
 

@@ -14,6 +14,7 @@ use trees::storage::{
 };
 use trees::workspace::{
     create_with_connection, execute_creation, initialize_creation, prepare_create, CreateRequest,
+    WorkspaceError,
 };
 
 fn test_root() -> PathBuf {
@@ -171,7 +172,7 @@ fn creates_a_single_repository_at_the_workspace_root() {
 }
 
 #[test]
-fn creates_from_the_upstream_head_when_given_a_workspace_repo() {
+fn rejects_a_workspace_repo_that_does_not_match_upstream_head() {
     let root = test_root();
     let upstream = repository(&root, "alpha");
     let upstream = CanonicalPath::resolve(&upstream).expect("upstream should resolve");
@@ -192,30 +193,34 @@ fn creates_from_the_upstream_head_when_given_a_workspace_repo() {
     assert_ne!(workspace_head, upstream_head);
 
     let target = root.join("new-workspace");
-    let plan = prepare_create(&CreateRequest {
+    let error = prepare_create(&CreateRequest {
         workspace_path: target.clone(),
         repositories: vec![existing_workspace.clone()],
     })
-    .expect("creation plan should be prepared");
-    assert_eq!(plan.repositories[0].source_path, upstream);
-    assert_eq!(plan.repositories[0].head, upstream_head);
-    let database_path = root.join("state.sqlite");
-    let mut connection = trees::database::connect(&database_path).expect("database should open");
+    .expect_err("divergent workspace repo should be rejected");
+    assert!(matches!(
+        error,
+        WorkspaceError::Git(git::GitError::UpstreamHeadMismatch { .. })
+    ));
+    assert!(!target.exists());
+    assert_eq!(
+        git::inspect_repository(&upstream)
+            .expect("upstream should remain inspectable")
+            .head,
+        upstream_head
+    );
+    assert_eq!(
+        git::inspect_repository(
+            &CanonicalPath::resolve(&existing_workspace)
+                .expect("workspace repo should still resolve"),
+        )
+        .expect("workspace repo should remain inspectable")
+        .head,
+        workspace_head
+    );
 
-    let result =
-        create_with_connection(&mut connection, plan).expect("workspace should be created");
-
-    let created = git::find_worktree(&upstream, result.workspace_path.as_path())
-        .expect("new worktree should be listed");
-    assert_eq!(created.head.as_deref(), Some(upstream_head.as_str()));
-    assert!(created.detached);
-
-    git::remove_worktree(&upstream, result.workspace_path.as_path())
-        .expect("new worktree should be removable");
     git::remove_worktree(&upstream, &existing_workspace)
         .expect("existing worktree should be removable");
-    drop(connection);
-    fs::remove_file(database_path).expect("state database should be removable");
     fs::remove_dir_all(root).expect("test root should be removable");
 }
 

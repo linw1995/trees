@@ -128,7 +128,7 @@ pub fn inspect_repository(repository: &CanonicalPath) -> Result<RepositoryInfo, 
 }
 
 pub fn inspect_upstream_repository(repository: &CanonicalPath) -> Result<RepositoryInfo, GitError> {
-    let common_dir = inspect_repository_identity(repository)?;
+    let current = inspect_repository(repository)?;
     let upstream = list_worktrees(repository)?
         .into_iter()
         .next()
@@ -140,10 +140,18 @@ pub fn inspect_upstream_repository(repository: &CanonicalPath) -> Result<Reposit
         operation: "worktree list --porcelain".to_owned(),
         output: "upstream worktree has no HEAD".to_owned(),
     })?;
+    if current.head != head {
+        return Err(GitError::UpstreamHeadMismatch {
+            repository: current.root,
+            repository_head: current.head,
+            upstream: upstream.path,
+            upstream_head: head,
+        });
+    }
 
     Ok(RepositoryInfo {
         root: upstream.path,
-        common_dir,
+        common_dir: current.common_dir,
         head,
     })
 }
@@ -370,7 +378,12 @@ where
 {
     run_git_with_heartbeat(
         worktree_path,
-        &[arg("checkout"), arg("--detach"), arg(revision)],
+        &[
+            arg("checkout"),
+            arg("--detach"),
+            arg("--no-overwrite-ignore"),
+            arg(revision),
+        ],
         heartbeat,
     )?;
     Ok(())
@@ -661,6 +674,12 @@ pub enum GitError {
     Heartbeat(String),
     Canonicalize(CanonicalPathError),
     WorktreeNotFound(PathBuf),
+    UpstreamHeadMismatch {
+        repository: CanonicalPath,
+        repository_head: String,
+        upstream: CanonicalPath,
+        upstream_head: String,
+    },
 }
 
 impl fmt::Display for GitError {
@@ -692,6 +711,15 @@ impl fmt::Display for GitError {
             Self::WorktreeNotFound(path) => {
                 write!(formatter, "Git did not report worktree: {}", path.display())
             }
+            Self::UpstreamHeadMismatch {
+                repository,
+                repository_head,
+                upstream,
+                upstream_head,
+            } => write!(
+                formatter,
+                "repository {repository} is at {repository_head}, but upstream {upstream} is at {upstream_head}"
+            ),
         }
     }
 }
@@ -787,9 +815,6 @@ mod tests {
             .head;
         let linked_path = root.join("linked");
         add_detached_worktree(&repository, &linked_path).expect("worktree should be added");
-        fs::write(linked_path.join("README"), "linked\n")
-            .expect("linked worktree should be updated");
-        run_git_in(&linked_path, &["commit", "-qam", "linked"]);
 
         let from_upstream =
             inspect_upstream_repository(&repository).expect("upstream input should resolve");
@@ -803,6 +828,15 @@ mod tests {
         assert_eq!(from_upstream.head, upstream_head);
         assert_eq!(from_linked.head, upstream_head);
         assert_eq!(from_linked.common_dir, from_upstream.common_dir);
+
+        fs::write(linked_path.join("README"), "linked\n")
+            .expect("linked worktree should be updated");
+        run_git_in(&linked_path, &["commit", "-qam", "linked"]);
+        let error = inspect_upstream_repository(
+            &CanonicalPath::resolve(&linked_path).expect("linked worktree should resolve"),
+        )
+        .expect_err("divergent worktree should be rejected");
+        assert!(matches!(error, GitError::UpstreamHeadMismatch { .. }));
 
         remove_worktree(&repository, &linked_path).expect("worktree should be removed");
         fs::remove_dir_all(root).expect("test root should be removable");
@@ -953,6 +987,43 @@ mod tests {
         assert!(worktree.branch.is_none());
         assert_eq!(worktree.head.as_deref(), Some(updated_head.as_str()));
         assert!(is_worktree_clean(&worktree_path).expect("worktree status should succeed"));
+
+        remove_worktree(&repository, &worktree_path).expect("worktree should be removed");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn refuses_to_overwrite_an_ignored_file_during_alignment() {
+        let (root, repository) = repository();
+        fs::write(root.join(".gitignore"), "generated\n").expect("ignore file should be written");
+        run_git_in(&root, &["add", ".gitignore"]);
+        run_git_in(&root, &["commit", "-qm", "ignore generated file"]);
+        let base_head = inspect_repository(&repository)
+            .expect("repository should be inspectable")
+            .head;
+        fs::write(root.join("generated"), "upstream\n").expect("upstream file should be written");
+        run_git_in(&root, &["add", "-f", "generated"]);
+        run_git_in(&root, &["commit", "-qm", "track generated file"]);
+        let updated_head = inspect_repository(&repository)
+            .expect("repository should be inspectable")
+            .head;
+        let worktree_path = repository.as_path().join("workspace");
+        add_detached_worktree_at_with_heartbeat(&repository, &worktree_path, &base_head, || Ok(()))
+            .expect("worktree should be added at the base revision");
+        fs::write(worktree_path.join("generated"), "local\n")
+            .expect("ignored file should be written");
+
+        checkout_detached_with_heartbeat(&worktree_path, &updated_head, || Ok(()))
+            .expect_err("alignment should preserve the ignored file");
+
+        assert_eq!(
+            fs::read_to_string(worktree_path.join("generated"))
+                .expect("ignored file should remain readable"),
+            "local\n"
+        );
+        let worktree =
+            find_worktree(&repository, &worktree_path).expect("worktree should remain registered");
+        assert_eq!(worktree.head.as_deref(), Some(base_head.as_str()));
 
         remove_worktree(&repository, &worktree_path).expect("worktree should be removed");
         fs::remove_dir_all(root).expect("test root should be removable");
