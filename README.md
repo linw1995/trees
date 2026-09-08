@@ -117,6 +117,11 @@ only in this detail view. `--json` emits a versioned snapshot for the selected
 view. Workspace JSON retains complete claim, current operation, path, and
 repo-worktree details.
 
+Workspace `REPOS` uses `<ready>/<total>` followed by repository labels. Ready
+is the user-facing name for repo worktrees stored in the `attached` state. On
+interactive terminals, ready and total are green and blue; pipelines and
+`NO_COLOR` receive the same uncolored value.
+
 Status reads one consistent SQLite snapshot. It does not reconcile, recover an
 expired operation, run Git, inspect workspace files, or assert that an
 available workspace is currently reusable. Use `gc --dry-run` when the
