@@ -55,3 +55,10 @@
 - [x] 7.3 Emit versioned JSON matching the selected pool or workspace view
 - [x] 7.4 Update integration tests and documentation, then rerun the complete
   quality gates
+
+## 8. Capacity Presentation
+
+- [ ] 8.1 Replace allocated and available-capacity columns with one
+  available-total-abnormal capacity value and terminal-aware colors
+- [ ] 8.2 Update pool JSON, tests, and documentation, then rerun the complete
+  quality gates

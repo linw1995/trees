@@ -35,22 +35,22 @@ is `workspaces`.
 
 Each pool row SHALL represent one exact persisted repository-set pool.
 Capacity SHALL count its automatic workspaces whose state is not `reclaimed`.
-Allocated SHALL count capacity slots with an active workspace claim. Available
-SHALL count capacity slots whose persisted state is `ready` and which have
-neither an active workspace claim nor a retained operation lease. Allocated and
-available SHALL be disjoint. Status SHALL NOT describe persisted availability
-as live reusability.
+Available SHALL count capacity slots whose persisted state is `ready` and which
+have neither an active workspace claim nor a retained operation lease.
+Abnormal SHALL count capacity slots whose persisted state is `degraded` or
+`failed`; `creating` SHALL be treated as transient rather than abnormal. Status
+SHALL NOT describe persisted availability as live reusability.
 
-#### Scenario: Count Allocated and Available Slots
+#### Scenario: Count Available, Total, and Abnormal Slots
 
 - **WHEN** a pool contains two claimed slots, three ready slots without claims
   or operation leases, and one unclaimed degraded slot
-- **THEN** status reports allocated `2`, available `3`, and capacity `6`
+- **THEN** status reports available `3`, capacity `6`, and abnormal `1`
 
 #### Scenario: Exclude an Active Unclaimed Operation
 
 - **WHEN** a ready unclaimed slot has a retained operation lease
-- **THEN** it contributes to capacity but not allocated or available
+- **THEN** it contributes to capacity but not available or abnormal
 
 #### Scenario: Exclude Reclaimed and Manual Workspaces
 
@@ -80,14 +80,19 @@ on their canonical source-path lists and then pool ID.
 
 ### Requirement: Render Pool and Workspace Human Views
 
-The pool human view SHALL render `REPOS`, `ALLOCATED`,
-`AVAILABLE/CAPACITY`, and `UPDATED`. `UPDATED` SHALL be the greatest
-`updated_at` among current capacity slots. The workspace human view SHALL
-render `STATE`, `USAGE`, `MODE`, `REPOS`, `RECONCILED`, and `PATH`. It SHALL
-omit current operation details. Workspace `MODE` SHALL render as `🤖` for
-automatic and `👤` for manual. Workspace `REPOS` SHALL render attached
-repo-worktree count over total count followed by shortest unique source-path
-labels.
+The pool human view SHALL render `REPOS`, `CAPACITY`, and `UPDATED`. Capacity
+SHALL use `<available>/<total>/<abnormal>`. On an interactive terminal, the
+available, total, and abnormal numbers SHALL be green, blue, and red. With
+non-terminal standard output or `NO_COLOR`, status SHALL emit the same value
+without ANSI escapes. The order SHALL define the meaning independently from
+color. `UPDATED` SHALL be the greatest `updated_at` among current capacity
+slots.
+
+The workspace human view SHALL render `STATE`, `USAGE`, `MODE`, `REPOS`,
+`RECONCILED`, and `PATH`. It SHALL omit current operation details. Workspace
+`MODE` SHALL render as `🤖` for automatic and `👤` for manual. Workspace `REPOS`
+SHALL render attached repo-worktree count over total count followed by shortest
+unique source-path labels.
 
 Missing times SHALL render as `never`. Relative to `snapshot_at` in UTC, times
 SHALL render as `HH:MM` on the same date, `MM-DD HH:MM` within the same year,
@@ -98,9 +103,9 @@ spacing SHALL NOT be a machine-readable contract.
 
 #### Scenario: Render Compact Pool Capacity
 
-- **WHEN** a pool for `api,web` has two allocated, three available, and six
-  capacity slots
-- **THEN** its human row contains `api,web`, `2`, and `3/6`
+- **WHEN** a pool for `api,web` has three available, six total, and one abnormal
+  slot
+- **THEN** its human row contains `api,web` and `3/6/1`
 
 #### Scenario: Retain Paths in the Workspace View
 
@@ -113,7 +118,7 @@ With `--json`, status SHALL write exactly one JSON document to standard output.
 Every document SHALL contain integer `schema_version` equal to `1`, a `view`
 string, and one `snapshot_at` timestamp. Pool JSON SHALL use `view = "pools"`
 and contain a `pools` array. Each pool object SHALL contain `pool_id`, ordered
-`repositories`, `allocated`, `available`, `capacity`, and nullable `updated_at`.
+`repositories`, `available`, `capacity`, `abnormal`, and nullable `updated_at`.
 Each repository SHALL contain `origin_repository_id`, `source_path`, and
 `label`.
 

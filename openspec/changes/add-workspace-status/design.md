@@ -11,7 +11,7 @@ diagnosis but should be an explicit detail view rather than the default.
 **Goals:**
 
 - Make the default view one row per automatic repository-set pool.
-- Report allocated, available, and total current slot counts.
+- Report available, total, and abnormal current slot counts.
 - Retain an explicit per-workspace detail view.
 - Keep human output compact and provide versioned JSON for both views.
 - Read one consistent SQLite snapshot without changing persisted or external
@@ -40,14 +40,14 @@ repository set rather than by a caller-selected workspace path. Making the
 workspace view explicit prevents physical slot details from obscuring the
 capacity question.
 
-### Define Pool Counts as Disjoint Slot Classes
+### Define Pool Capacity Counts
 
 Each pool uses current non-reclaimed automatic workspaces as its capacity.
-`allocated` counts slots with an active workspace claim. `available` counts
-slots whose persisted workspace state is `ready`, with no active claim and no
-retained operation lease. These sets are disjoint. Remaining capacity is
-unavailable because it is unhealthy, incomplete, or has an operation without
-a claim.
+`available` counts slots whose persisted workspace state is `ready`, with no
+active claim and no retained operation lease. `abnormal` counts slots whose
+persisted state is `degraded` or `failed`. A `creating` slot is transient rather
+than abnormal. Claimed and operation-owned slots remain part of total capacity
+but do not require a separate human count.
 
 Availability is a persisted scheduling hint, not a live reusability promise.
 Automatic allocation still performs reconciliation before returning a slot.
@@ -68,9 +68,14 @@ non-reclaimed automatic slots are omitted.
 The human pool view contains these columns:
 
 - `REPOS`: comma-separated shortest unique repository labels.
-- `ALLOCATED`: slots with active claims.
-- `AVAILABLE/CAPACITY`: persisted available slots over current slots.
+- `CAPACITY`: persisted available, total, and abnormal slots as
+  `<available>/<total>/<abnormal>`.
 - `UPDATED`: the latest workspace `updated_at` in the pool, rendered compactly.
+
+On an interactive terminal, the three capacity numbers are green, blue, and
+red respectively. When standard output is not a terminal or `NO_COLOR` is set,
+the same ordered value is emitted without ANSI escapes. The order defines the
+meaning independently from color.
 
 The human workspace view contains these columns:
 
@@ -93,9 +98,9 @@ spacing is not a machine-readable compatibility contract.
 `schema_version`, `view`, and `snapshot_at`.
 
 The pool envelope contains `pools`. Each pool object contains `pool_id`, an
-ordered `repositories` array, `allocated`, `available`, `capacity`, and
-nullable `updated_at`. Each repository contains `origin_repository_id`,
-`source_path`, and its computed `label`.
+ordered `repositories` array, `available`, `capacity`, `abnormal`, and nullable
+`updated_at`. Each repository contains `origin_repository_id`, `source_path`,
+and its computed `label`.
 
 The workspace envelope contains `workspaces` and retains the complete existing
 workspace, claim, current operation, and repo-worktree projection. Canonical
