@@ -101,11 +101,20 @@ pub struct GcArgs {
 
 #[derive(Debug, Args)]
 pub struct StatusArgs {
-    #[arg(long, help = "Include reclaimed workspace records")]
+    #[arg(long, value_enum, default_value_t = StatusView::Pools)]
+    pub view: StatusView,
+
+    #[arg(long, help = "Include reclaimed records in the workspace view")]
     pub all: bool,
 
     #[arg(long, help = "Print the workspace status snapshot as JSON")]
     pub json: bool,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
+pub enum StatusView {
+    Pools,
+    Workspaces,
 }
 
 #[derive(Debug, Args)]
@@ -358,14 +367,27 @@ mod tests {
 
     #[test]
     fn parses_status_output_and_reclaimed_filters() {
-        let cli = Cli::try_parse_from(["trees", "status", "--all", "--json"])
-            .expect("status command should parse");
+        let cli =
+            Cli::try_parse_from(["trees", "status", "--view", "workspaces", "--all", "--json"])
+                .expect("status command should parse");
 
         let Command::Status(arguments) = cli.command else {
             panic!("expected status command");
         };
+        assert_eq!(arguments.view, StatusView::Workspaces);
         assert!(arguments.all);
         assert!(arguments.json);
+    }
+
+    #[test]
+    fn defaults_status_to_the_pool_view() {
+        let cli = Cli::try_parse_from(["trees", "status"]).expect("status command should parse");
+
+        let Command::Status(arguments) = cli.command else {
+            panic!("expected status command");
+        };
+        assert_eq!(arguments.view, StatusView::Pools);
+        assert!(!arguments.all);
     }
 
     #[test]

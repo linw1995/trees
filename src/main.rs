@@ -364,22 +364,63 @@ fn execute_gc_report(
 }
 
 fn run_status(arguments: trees::cli::StatusArgs) -> ExitCode {
-    let snapshot = match load_status_snapshot(arguments.all) {
+    if arguments.all && arguments.view != trees::cli::StatusView::Workspaces {
+        eprintln!("Error: --all requires --view workspaces");
+        return ExitCode::FAILURE;
+    }
+    match arguments.view {
+        trees::cli::StatusView::Pools => run_pool_status(arguments.json),
+        trees::cli::StatusView::Workspaces => run_workspace_status(arguments.all, arguments.json),
+    }
+}
+
+fn run_pool_status(json: bool) -> ExitCode {
+    let snapshot = match load_pool_status_snapshot() {
         Ok(snapshot) => snapshot,
         Err(error) => {
             eprintln!("Error: {error}");
             return ExitCode::FAILURE;
         }
     };
-    if arguments.json {
+    if json {
         print_json(&snapshot)
     } else {
-        println!("{}", trees::status::render_human(&snapshot));
+        println!("{}", trees::status::render_pools_human(&snapshot));
         ExitCode::SUCCESS
     }
 }
 
-fn load_status_snapshot(include_reclaimed: bool) -> Result<trees::status::StatusSnapshot, String> {
+fn load_pool_status_snapshot() -> Result<trees::status::PoolStatusSnapshot, String> {
+    let mut connection = match trees::database::open_read_only() {
+        Ok(connection) => connection,
+        Err(trees::database::DatabaseError::ReadOnlyDatabaseMissing(_)) => {
+            return Ok(trees::status::PoolStatusSnapshot::empty());
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    trees::status::load_pool_snapshot(&mut connection)
+        .map_err(|error| format!("failed to load workspace pool status: {error}"))
+}
+
+fn run_workspace_status(include_reclaimed: bool, json: bool) -> ExitCode {
+    let snapshot = match load_workspace_status_snapshot(include_reclaimed) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if json {
+        print_json(&snapshot)
+    } else {
+        println!("{}", trees::status::render_workspaces_human(&snapshot));
+        ExitCode::SUCCESS
+    }
+}
+
+fn load_workspace_status_snapshot(
+    include_reclaimed: bool,
+) -> Result<trees::status::StatusSnapshot, String> {
     let mut connection = match trees::database::open_read_only() {
         Ok(connection) => connection,
         Err(trees::database::DatabaseError::ReadOnlyDatabaseMissing(_)) => {

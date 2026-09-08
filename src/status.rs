@@ -221,12 +221,12 @@ pub fn load_snapshot(
     })
 }
 
-pub fn render_human(snapshot: &StatusSnapshot) -> String {
+pub fn render_workspaces_human(snapshot: &StatusSnapshot) -> String {
     if snapshot.workspaces.is_empty() {
         return "No workspaces.".to_owned();
     }
 
-    let headers = ["STATE", "USAGE", "MODE", "REPOS", "RECONCILED"];
+    let headers = ["STATE", "USAGE", "MODE", "REPOS", "RECONCILED", "PATH"];
     let rows = snapshot
         .workspaces
         .iter()
@@ -244,6 +244,7 @@ pub fn render_human(snapshot: &StatusSnapshot) -> String {
                     || "never".to_owned(),
                     |timestamp| compact_timestamp(timestamp, &snapshot.snapshot_at),
                 ),
+                workspace.path.to_string(),
             ]
         })
         .collect::<Vec<_>>();
@@ -932,7 +933,10 @@ mod tests {
 
     #[test]
     fn renders_empty_and_deterministic_human_output() {
-        assert_eq!(render_human(&StatusSnapshot::empty()), "No workspaces.");
+        assert_eq!(
+            render_workspaces_human(&StatusSnapshot::empty()),
+            "No workspaces."
+        );
 
         let workspace_id = WorkspaceId::new();
         let snapshot = StatusSnapshot {
@@ -967,12 +971,12 @@ mod tests {
             }],
         };
 
-        let output = render_human(&snapshot);
+        let output = render_workspaces_human(&snapshot);
 
         assert_eq!(
             output,
-            "STATE     USAGE    MODE  REPOS        RECONCILED\n\
-             degraded  claimed  🤖    0/1 example  10:00"
+            "STATE     USAGE    MODE  REPOS        RECONCILED  PATH\n\
+             degraded  claimed  🤖    0/1 example  10:00       /status/example"
         );
     }
 

@@ -41,7 +41,7 @@
 
 ## 6. Human Path Placement
 
-- [ ] 6.1 Keep canonical workspace paths out of the pool view and retain them
+- [x] 6.1 Keep canonical workspace paths out of the pool view and retain them
   only in the explicit workspace detail view
 - [ ] 6.2 Update output tests and documentation for the view-specific path
   contract
@@ -50,8 +50,8 @@
 
 - [x] 7.1 Add automatic repository-pool allocation, availability, and capacity
   projections alongside the existing workspace projection
-- [ ] 7.2 Add `--view pools|workspaces`, default to pools, and restrict `--all`
+- [x] 7.2 Add `--view pools|workspaces`, default to pools, and restrict `--all`
   to the workspace view
-- [ ] 7.3 Emit versioned JSON matching the selected pool or workspace view
+- [x] 7.3 Emit versioned JSON matching the selected pool or workspace view
 - [ ] 7.4 Update integration tests and documentation, then rerun the complete
   quality gates
