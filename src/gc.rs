@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use diesel::sqlite::SqliteConnection;
+use snafu::{ResultExt, Snafu};
 
 use crate::domain::{CanonicalPath, JsonDocument, Timestamp, WorkspaceId, WorkspaceState};
 use crate::git;
@@ -83,7 +84,8 @@ impl FromStr for GcDuration {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Snafu)]
+#[snafu(display("{message}"))]
 pub struct GcDurationError {
     message: String,
 }
@@ -95,14 +97,6 @@ impl GcDurationError {
         }
     }
 }
-
-impl fmt::Display for GcDurationError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for GcDurationError {}
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Default)]
 pub struct GcCounts {
@@ -246,14 +240,14 @@ pub fn scan_with_force(
     force: bool,
 ) -> Result<GcScan, GcError> {
     let cutoff = Timestamp::before_seconds(older_than.seconds());
-    let workspaces = list_automatic_workspaces(connection).map_err(GcError::Database)?;
+    let workspaces = list_automatic_workspaces(connection).context(DatabaseSnafu)?;
     let mut counts = GcCounts {
         automatic: workspaces.len(),
         ..GcCounts::default()
     };
     let mut candidates = Vec::with_capacity(workspaces.len());
     for workspace in workspaces {
-        let claim = find_workspace_claim(connection, &workspace.id).map_err(GcError::Database)?;
+        let claim = find_workspace_claim(connection, &workspace.id).context(DatabaseSnafu)?;
         let claimed = claim.is_some();
         if claimed {
             counts.claimed += 1;
@@ -269,7 +263,7 @@ pub fn scan_with_force(
             counts.age_eligible += 1;
         }
         let running_operation =
-            find_running_operation(connection, &workspace.id).map_err(GcError::Database)?;
+            find_running_operation(connection, &workspace.id).context(DatabaseSnafu)?;
         let active_operation = running_operation.is_some();
         let operation_expired =
             running_operation.is_some_and(|running| running.lease.lease_expires_at.has_expired());
@@ -283,8 +277,8 @@ pub fn scan_with_force(
             operation_expired,
         };
         if candidate.database_reason(force).is_none() {
-            let repositories = list_repo_worktrees(connection, &candidate.workspace.id)
-                .map_err(GcError::Database)?;
+            let repositories =
+                list_repo_worktrees(connection, &candidate.workspace.id).context(DatabaseSnafu)?;
             candidate.physical_reason =
                 prepare_removal(&candidate.workspace, &repositories, force).err();
         }
@@ -386,8 +380,8 @@ fn execute_started_candidate(
     force: bool,
     details_json: JsonDocument,
 ) -> Result<GcCandidateResult, GcError> {
-    let workspace = find_workspace(connection, workspace_id).map_err(GcError::Database)?;
-    let claim = find_workspace_claim(connection, workspace_id).map_err(GcError::Database)?;
+    let workspace = find_workspace(connection, workspace_id).context(DatabaseSnafu)?;
+    let claim = find_workspace_claim(connection, workspace_id).context(DatabaseSnafu)?;
     if claim.is_some() {
         finish_gc_skip(
             connection,
@@ -415,7 +409,7 @@ fn execute_started_candidate(
         }));
     }
 
-    let repositories = list_repo_worktrees(connection, workspace_id).map_err(GcError::Database)?;
+    let repositories = list_repo_worktrees(connection, workspace_id).context(DatabaseSnafu)?;
     let removal_plan = match prepare_removal(&workspace, &repositories, force) {
         Ok(plan) => plan,
         Err(reason) => {
@@ -510,8 +504,8 @@ fn recover_expired_automatic_operations(
     cutoff: &Timestamp,
     force: bool,
 ) -> Result<(), GcError> {
-    for workspace in list_automatic_workspaces(connection).map_err(GcError::Database)? {
-        let claim = find_workspace_claim(connection, &workspace.id).map_err(GcError::Database)?;
+    for workspace in list_automatic_workspaces(connection).context(DatabaseSnafu)? {
+        let claim = find_workspace_claim(connection, &workspace.id).context(DatabaseSnafu)?;
         if claim.is_some() {
             continue;
         }
@@ -526,7 +520,7 @@ fn recover_expired_automatic_operations(
             continue;
         }
         let Some(running_operation) =
-            find_running_operation(connection, &workspace.id).map_err(GcError::Database)?
+            find_running_operation(connection, &workspace.id).context(DatabaseSnafu)?
         else {
             continue;
         };
@@ -534,7 +528,7 @@ fn recover_expired_automatic_operations(
             continue;
         }
         reconciliation::recover_expired_operation(connection, &workspace.id)
-            .map_err(GcError::Reconciliation)?;
+            .context(ReconciliationSnafu)?;
     }
     Ok(())
 }
@@ -556,8 +550,8 @@ fn begin_gc_operation(
     let lease_id = intent.lease_id;
     match begin_operation(connection, &intent) {
         Ok(operation) => Ok(Some((operation, lease_id))),
-        Err(OperationIntentError::WorkspaceBusy(_)) => Ok(None),
-        Err(OperationIntentError::Database(error)) => Err(GcError::Database(error)),
+        Err(OperationIntentError::WorkspaceBusy { .. }) => Ok(None),
+        Err(OperationIntentError::Database { source }) => Err(GcError::Database { source }),
     }
 }
 
@@ -601,7 +595,7 @@ fn finish_gc_skip(
         Some(details_json),
         error_json,
     )
-    .map_err(GcError::Database)
+    .context(DatabaseSnafu)
 }
 
 fn finish_gc_failure(
@@ -622,7 +616,7 @@ fn finish_gc_failure(
         Some(details_json),
         error_json,
     )
-    .map_err(GcError::Database)
+    .context(DatabaseSnafu)
 }
 
 struct RemovalPlan {
@@ -772,8 +766,10 @@ fn unexpected_workspace_entries(
 
 fn workspace_root_reason(error: validation::WorkspaceRootError) -> GcCandidateReason {
     match error {
-        validation::WorkspaceRootError::UnexpectedEntry(_) => GcCandidateReason::UnexpectedContent,
-        validation::WorkspaceRootError::NotDirectory(_)
+        validation::WorkspaceRootError::UnexpectedEntry { .. } => {
+            GcCandidateReason::UnexpectedContent
+        }
+        validation::WorkspaceRootError::NotDirectory { .. }
         | validation::WorkspaceRootError::OutsideManagedRoot { .. }
         | validation::WorkspaceRootError::NotAbsolute { .. } => GcCandidateReason::UnsafeRoot,
         validation::WorkspaceRootError::ReadDirectory { .. } => {
@@ -884,22 +880,25 @@ where
     for worktree in &plan.worktrees {
         heartbeat()?;
         if worktree.remove_from_git {
-            let mut git_heartbeat =
-                || heartbeat().map_err(|error| git::GitError::Heartbeat(error.to_string()));
+            let mut git_heartbeat = || {
+                heartbeat().map_err(|error| git::GitError::Heartbeat {
+                    message: error.to_string(),
+                })
+            };
             if force {
                 git::remove_worktree_with_heartbeat(
                     &worktree.repository,
                     &worktree.path,
                     &mut git_heartbeat,
                 )
-                .map_err(GcPhysicalError::Git)?;
+                .map_err(|source| GcPhysicalError::Git { source })?;
             } else {
                 git::remove_clean_worktree_with_heartbeat(
                     &worktree.repository,
                     &worktree.path,
                     &mut git_heartbeat,
                 )
-                .map_err(GcPhysicalError::Git)?;
+                .map_err(|source| GcPhysicalError::Git { source })?;
             }
         } else if worktree.path.exists() {
             remove_path_with_heartbeat(&worktree.path, &mut heartbeat)?;
@@ -956,66 +955,37 @@ fn renew_gc_lease(
     connection: &mut SqliteConnection,
     lease_id: &crate::domain::LeaseId,
 ) -> Result<(), GcPhysicalError> {
-    match renew_operation_lease(connection, lease_id)
-        .map_err(|error| GcPhysicalError::Lease(error.to_string()))?
-    {
+    match renew_operation_lease(connection, lease_id).map_err(|error| GcPhysicalError::Lease {
+        message: error.to_string(),
+    })? {
         true => Ok(()),
-        false => Err(GcPhysicalError::Lease(
-            "operation lease is no longer owned".to_owned(),
-        )),
+        false => Err(GcPhysicalError::Lease {
+            message: "operation lease is no longer owned".to_owned(),
+        }),
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
 enum GcPhysicalError {
-    Git(crate::git::GitError),
-    Lease(String),
+    #[snafu(transparent)]
+    Git { source: crate::git::GitError },
+    #[snafu(display("GC operation lease renewal failed: {message}"))]
+    Lease { message: String },
+    #[snafu(display("GC filesystem operation failed for {}: {source}", path.display()))]
     Io {
         path: PathBuf,
         source: std::io::Error,
     },
 }
 
-impl fmt::Display for GcPhysicalError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Git(error) => error.fmt(formatter),
-            Self::Lease(error) => write!(formatter, "GC operation lease renewal failed: {error}"),
-            Self::Io { path, source } => {
-                write!(
-                    formatter,
-                    "GC filesystem operation failed for {}: {source}",
-                    path.display()
-                )
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
 pub enum GcError {
-    Database(diesel::result::Error),
-    Reconciliation(reconciliation::ReconciliationError),
-}
-
-impl fmt::Display for GcError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Database(error) => write!(formatter, "GC database operation failed: {error}"),
-            Self::Reconciliation(error) => {
-                write!(formatter, "GC reconciliation operation failed: {error}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for GcError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Database(error) => Some(error),
-            Self::Reconciliation(error) => Some(error),
-        }
-    }
+    #[snafu(display("GC database operation failed: {source}"))]
+    Database { source: diesel::result::Error },
+    #[snafu(display("GC reconciliation operation failed: {source}"))]
+    Reconciliation {
+        source: reconciliation::ReconciliationError,
+    },
 }
 
 #[cfg(test)]
@@ -1226,11 +1196,13 @@ mod tests {
         let mut heartbeat_count = 0;
         let error = remove_path_with_heartbeat(&root, &mut || {
             heartbeat_count += 1;
-            Err(GcPhysicalError::Lease("expired".to_owned()))
+            Err(GcPhysicalError::Lease {
+                message: "expired".to_owned(),
+            })
         })
         .expect_err("failed heartbeat should stop removal");
 
-        assert!(matches!(error, GcPhysicalError::Lease(message) if message == "expired"));
+        assert!(matches!(error, GcPhysicalError::Lease { message } if message == "expired"));
         assert_eq!(heartbeat_count, 1);
         fs::remove_dir_all(root).expect("test directory should be removable");
     }

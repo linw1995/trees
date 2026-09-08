@@ -1,9 +1,9 @@
 use std::collections::HashSet;
-use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::domain::{CanonicalPath, CanonicalPathError};
+use snafu::Snafu;
 
 pub fn validate_workspace_root(
     workspace_path: &Path,
@@ -23,7 +23,9 @@ pub fn validate_workspace_root(
         });
     }
     if !workspace_path.is_dir() {
-        return Err(WorkspaceRootError::NotDirectory(workspace_path.to_owned()));
+        return Err(WorkspaceRootError::NotDirectory {
+            path: workspace_path.to_owned(),
+        });
     }
 
     if expected_worktree_paths == [workspace_path] {
@@ -45,7 +47,7 @@ pub fn validate_workspace_root(
             source,
         })?;
         if !expected.contains(entry.path().as_path()) {
-            return Err(WorkspaceRootError::UnexpectedEntry(entry.path()));
+            return Err(WorkspaceRootError::UnexpectedEntry { path: entry.path() });
         }
     }
 
@@ -73,20 +75,22 @@ pub fn validate_repositories(
             source,
         })?;
         if !metadata.is_dir() {
-            return Err(ValidationError::NotDirectory(repository_path.clone()));
+            return Err(ValidationError::NotDirectory {
+                path: repository_path.clone(),
+            });
         }
 
-        let repository =
-            CanonicalPath::resolve(repository_path).map_err(ValidationError::Canonicalize)?;
+        let repository = CanonicalPath::resolve(repository_path)
+            .map_err(|source| ValidationError::Canonicalize { source })?;
         if !repository.as_path().join(".git").exists() {
-            return Err(ValidationError::NotGitRepository(
-                repository.into_path_buf(),
-            ));
+            return Err(ValidationError::NotGitRepository {
+                path: repository.into_path_buf(),
+            });
         }
         if !identities.insert(repository.as_path().to_owned()) {
-            return Err(ValidationError::DuplicateRepository(
-                repository.into_path_buf(),
-            ));
+            return Err(ValidationError::DuplicateRepository {
+                path: repository.into_path_buf(),
+            });
         }
 
         repositories.push(repository);
@@ -105,9 +109,9 @@ pub fn validate_create(
 
     let workspace_path = resolve_workspace_path(workspace_path)?;
     if workspace_path.as_path().exists() {
-        return Err(ValidationError::WorkspaceExists(
-            workspace_path.into_path_buf(),
-        ));
+        return Err(ValidationError::WorkspaceExists {
+            path: workspace_path.into_path_buf(),
+        });
     }
 
     let repositories = validate_repositories(repository_paths)?;
@@ -128,7 +132,8 @@ pub fn validate_create(
 
 pub fn resolve_workspace_path(path: &Path) -> Result<CanonicalPath, ValidationError> {
     if path.exists() {
-        return CanonicalPath::resolve(path).map_err(ValidationError::Canonicalize);
+        return CanonicalPath::resolve(path)
+            .map_err(|source| ValidationError::Canonicalize { source });
     }
 
     let absolute_path = if path.is_absolute() {
@@ -141,171 +146,86 @@ pub fn resolve_workspace_path(path: &Path) -> Result<CanonicalPath, ValidationEr
             })?
             .join(path)
     };
-    let file_name = absolute_path
-        .file_name()
-        .ok_or_else(|| ValidationError::InvalidWorkspacePath(absolute_path.clone()))?;
+    let file_name =
+        absolute_path
+            .file_name()
+            .ok_or_else(|| ValidationError::InvalidWorkspacePath {
+                path: absolute_path.clone(),
+            })?;
     let parent = absolute_path
         .parent()
-        .ok_or_else(|| ValidationError::InvalidWorkspacePath(absolute_path.clone()))?;
-    let parent = CanonicalPath::resolve(parent).map_err(ValidationError::Canonicalize)?;
+        .ok_or_else(|| ValidationError::InvalidWorkspacePath {
+            path: absolute_path.clone(),
+        })?;
+    let parent = CanonicalPath::resolve(parent)
+        .map_err(|source| ValidationError::Canonicalize { source })?;
 
     CanonicalPath::from_absolute(parent.as_path().join(file_name))
-        .map_err(ValidationError::Canonicalize)
+        .map_err(|source| ValidationError::Canonicalize { source })
 }
 
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
 pub enum ValidationError {
+    #[snafu(display("at least one repository is required"))]
     NoRepositories,
-    WorkspaceExists(PathBuf),
-    InvalidWorkspacePath(PathBuf),
+    #[snafu(display("workspace path already exists: {}", path.display()))]
+    WorkspaceExists { path: PathBuf },
+    #[snafu(display("invalid workspace path: {}", path.display()))]
+    InvalidWorkspacePath { path: PathBuf },
+    #[snafu(display("failed to inspect {}: {source}", path.display()))]
     PathIo {
         path: PathBuf,
         source: std::io::Error,
     },
-    Canonicalize(CanonicalPathError),
-    NotDirectory(PathBuf),
-    NotGitRepository(PathBuf),
-    DuplicateRepository(PathBuf),
+    #[snafu(transparent)]
+    Canonicalize { source: CanonicalPathError },
+    #[snafu(display("path is not a directory: {}", path.display()))]
+    NotDirectory { path: PathBuf },
+    #[snafu(display("path is not a Git repository: {}", path.display()))]
+    NotGitRepository { path: PathBuf },
+    #[snafu(display("repository was provided more than once: {}", path.display()))]
+    DuplicateRepository { path: PathBuf },
+    #[snafu(display(
+        "workspace {} is inside source repository {}",
+        workspace.display(),
+        repository.display()
+    ))]
     WorkspaceInsideRepository {
         workspace: PathBuf,
         repository: PathBuf,
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
+#[snafu(context(suffix(RootSnafu)))]
 pub enum WorkspaceRootError {
+    #[snafu(display(
+        "workspace and managed root must be absolute: {} / {}",
+        workspace.display(),
+        managed_root.display()
+    ))]
     NotAbsolute {
         workspace: PathBuf,
         managed_root: PathBuf,
     },
+    #[snafu(display(
+        "workspace {} is outside managed root {}",
+        workspace.display(),
+        managed_root.display()
+    ))]
     OutsideManagedRoot {
         workspace: PathBuf,
         managed_root: PathBuf,
     },
-    NotDirectory(PathBuf),
+    #[snafu(display("workspace root is not a directory: {}", path.display()))]
+    NotDirectory { path: PathBuf },
+    #[snafu(display("failed to read workspace root {}: {source}", path.display()))]
     ReadDirectory {
         path: PathBuf,
         source: std::io::Error,
     },
-    UnexpectedEntry(PathBuf),
-}
-
-impl fmt::Display for WorkspaceRootError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotAbsolute {
-                workspace,
-                managed_root,
-            } => write!(
-                formatter,
-                "workspace and managed root must be absolute: {} / {}",
-                workspace.display(),
-                managed_root.display()
-            ),
-            Self::OutsideManagedRoot {
-                workspace,
-                managed_root,
-            } => write!(
-                formatter,
-                "workspace {} is outside managed root {}",
-                workspace.display(),
-                managed_root.display()
-            ),
-            Self::NotDirectory(path) => {
-                write!(
-                    formatter,
-                    "workspace root is not a directory: {}",
-                    path.display()
-                )
-            }
-            Self::ReadDirectory { path, source } => {
-                write!(
-                    formatter,
-                    "failed to read workspace root {}: {source}",
-                    path.display()
-                )
-            }
-            Self::UnexpectedEntry(path) => {
-                write!(
-                    formatter,
-                    "workspace root contains unexpected entry: {}",
-                    path.display()
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for WorkspaceRootError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::ReadDirectory { source, .. } => Some(source),
-            _ => None,
-        }
-    }
-}
-
-impl fmt::Display for ValidationError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NoRepositories => formatter.write_str("at least one repository is required"),
-            Self::WorkspaceExists(path) => {
-                write!(
-                    formatter,
-                    "workspace path already exists: {}",
-                    path.display()
-                )
-            }
-            Self::InvalidWorkspacePath(path) => {
-                write!(formatter, "invalid workspace path: {}", path.display())
-            }
-            Self::PathIo { path, source } => {
-                write!(
-                    formatter,
-                    "failed to inspect {}: {}",
-                    path.display(),
-                    source
-                )
-            }
-            Self::Canonicalize(error) => error.fmt(formatter),
-            Self::NotDirectory(path) => {
-                write!(formatter, "path is not a directory: {}", path.display())
-            }
-            Self::NotGitRepository(path) => {
-                write!(
-                    formatter,
-                    "path is not a Git repository: {}",
-                    path.display()
-                )
-            }
-            Self::DuplicateRepository(path) => {
-                write!(
-                    formatter,
-                    "repository was provided more than once: {}",
-                    path.display()
-                )
-            }
-            Self::WorkspaceInsideRepository {
-                workspace,
-                repository,
-            } => write!(
-                formatter,
-                "workspace {} is inside source repository {}",
-                workspace.display(),
-                repository.display()
-            ),
-        }
-    }
-}
-
-impl std::error::Error for ValidationError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::PathIo { source, .. } => Some(source),
-            Self::Canonicalize(error) => Some(error),
-            _ => None,
-        }
-    }
+    #[snafu(display("workspace root contains unexpected entry: {}", path.display()))]
+    UnexpectedEntry { path: PathBuf },
 }
 
 #[cfg(test)]
@@ -350,12 +270,12 @@ mod tests {
 
         assert!(matches!(
             validate_create(&workspace, std::slice::from_ref(&repository)),
-            Err(ValidationError::WorkspaceExists(_))
+            Err(ValidationError::WorkspaceExists { .. })
         ));
         fs::remove_dir(&workspace).expect("workspace should be removable");
         assert!(matches!(
             validate_create(&workspace, &[repository.clone(), repository]),
-            Err(ValidationError::DuplicateRepository(_))
+            Err(ValidationError::DuplicateRepository { .. })
         ));
         fs::remove_dir_all(root).expect("test root should be removable");
     }
@@ -379,16 +299,18 @@ mod tests {
         let path = PathBuf::from("/tmp/repository");
         let errors = [
             ValidationError::NoRepositories,
-            ValidationError::WorkspaceExists(path.clone()),
-            ValidationError::InvalidWorkspacePath(path.clone()),
+            ValidationError::WorkspaceExists { path: path.clone() },
+            ValidationError::InvalidWorkspacePath { path: path.clone() },
             ValidationError::PathIo {
                 path: path.clone(),
                 source: std::io::Error::new(std::io::ErrorKind::NotFound, "missing"),
             },
-            ValidationError::Canonicalize(CanonicalPathError::NotAbsolute { path: path.clone() }),
-            ValidationError::NotDirectory(path.clone()),
-            ValidationError::NotGitRepository(path.clone()),
-            ValidationError::DuplicateRepository(path.clone()),
+            ValidationError::Canonicalize {
+                source: CanonicalPathError::NotAbsolute { path: path.clone() },
+            },
+            ValidationError::NotDirectory { path: path.clone() },
+            ValidationError::NotGitRepository { path: path.clone() },
+            ValidationError::DuplicateRepository { path: path.clone() },
             ValidationError::WorkspaceInsideRepository {
                 workspace: path.clone(),
                 repository: path,
@@ -417,7 +339,7 @@ mod tests {
             .expect("unexpected file should be written");
         assert!(matches!(
             validate_workspace_root(&workspace, &managed_root, std::slice::from_ref(&worktree)),
-            Err(WorkspaceRootError::UnexpectedEntry(_))
+            Err(WorkspaceRootError::UnexpectedEntry { .. })
         ));
 
         fs::remove_dir_all(root).expect("test root should be removable");
@@ -435,12 +357,12 @@ mod tests {
                 workspace: path.clone(),
                 managed_root: PathBuf::from("/tmp/managed"),
             },
-            WorkspaceRootError::NotDirectory(path.clone()),
+            WorkspaceRootError::NotDirectory { path: path.clone() },
             WorkspaceRootError::ReadDirectory {
                 path: path.clone(),
                 source: std::io::Error::other("read failed"),
             },
-            WorkspaceRootError::UnexpectedEntry(path),
+            WorkspaceRootError::UnexpectedEntry { path },
         ];
 
         for error in errors {

@@ -117,7 +117,10 @@ fn rejects_an_unmanaged_workspace() {
     let mut connection = trees::database::connect(&database_path).expect("database should open");
 
     let error = prepare(&mut connection, &root).expect_err("workspace should be unmanaged");
-    assert!(matches!(error, WorkspacePreparationError::NotManaged(_)));
+    assert!(matches!(
+        error,
+        WorkspacePreparationError::NotManaged { .. }
+    ));
 
     drop(connection);
     fs::remove_file(database_path).expect("database should be removable");

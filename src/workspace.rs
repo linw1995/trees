@@ -1,9 +1,9 @@
-use std::fmt;
 use std::fs;
 use std::path::PathBuf;
 
 use diesel::sqlite::SqliteConnection;
 use serde::Serialize;
+use snafu::{ResultExt, Snafu};
 
 use crate::claim::WorkspaceClaim;
 use crate::domain::{
@@ -118,9 +118,11 @@ pub fn prepare_automatic(
         });
     }
     let workspace_root = CanonicalPath::from_absolute(
-        crate::paths::managed_workspace_directory().map_err(WorkspaceError::Path)?,
+        crate::paths::managed_workspace_directory().context(PathSnafu)?,
     )
-    .map_err(|error| WorkspaceError::Validation(ValidationError::Canonicalize(error)))?;
+    .map_err(|source| WorkspaceError::Validation {
+        source: ValidationError::Canonicalize { source },
+    })?;
 
     Ok(AutomaticAllocationPlan {
         workspace_root,
@@ -142,7 +144,7 @@ fn resolve_repository_set(
                 &repository.source_path,
             )
             .map(|origin| origin.id)
-            .map_err(WorkspaceError::Database)
+            .context(DatabaseSnafu)
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(crate::pool::RepositorySetKey::from_repository_ids(
@@ -169,17 +171,16 @@ fn list_idle_automatic_candidates(
     plan: &AutomaticAllocationPlan,
 ) -> Result<Vec<crate::storage::WorkspaceRow>, WorkspaceError> {
     let repository_set = resolve_repository_set(connection, plan)?;
-    let Some(pool) =
-        find_workspace_pool(connection, &repository_set).map_err(WorkspaceError::Database)?
+    let Some(pool) = find_workspace_pool(connection, &repository_set).context(DatabaseSnafu)?
     else {
         return Ok(Vec::new());
     };
     let candidates = crate::storage::list_automatic_workspace_candidates(connection, &pool.id)
-        .map_err(WorkspaceError::Database)?;
+        .context(DatabaseSnafu)?;
     let mut idle_candidates = Vec::new();
     for workspace in candidates {
         match reconciliation::recover_expired_operation(connection, &workspace.id)
-            .map_err(WorkspaceError::Reconciliation)?
+            .context(ReconciliationSnafu)?
         {
             reconciliation::RecoveryOutcome::LeaseActive => continue,
             reconciliation::RecoveryOutcome::NoRunningOperation
@@ -188,13 +189,13 @@ fn list_idle_automatic_candidates(
             | reconciliation::RecoveryOutcome::Failed => {}
         }
         if crate::storage::find_running_operation(connection, &workspace.id)
-            .map_err(WorkspaceError::Database)?
+            .context(DatabaseSnafu)?
             .is_some()
         {
             continue;
         }
         if find_workspace_claim(connection, &workspace.id)
-            .map_err(WorkspaceError::Database)?
+            .context(DatabaseSnafu)?
             .is_some()
         {
             continue;
@@ -214,16 +215,21 @@ fn list_idle_automatic_candidates(
 
 fn is_retryable_allocation_error(error: &WorkspaceError) -> bool {
     match error {
-        WorkspaceError::OperationActive(_)
-        | WorkspaceError::NotAutomatic(_)
-        | WorkspaceError::NotReusable(_)
-        | WorkspaceError::ClaimActive(_)
-        | WorkspaceError::Database(diesel::result::Error::NotFound)
-        | WorkspaceError::Database(diesel::result::Error::DatabaseError(
-            diesel::result::DatabaseErrorKind::UniqueViolation,
-            _,
-        )) => true,
-        WorkspaceError::Database(error) => is_retryable_database_error(error),
+        WorkspaceError::OperationActive { workspace_id: _ }
+        | WorkspaceError::NotAutomatic { path: _ }
+        | WorkspaceError::NotReusable { path: _ }
+        | WorkspaceError::ClaimActive { workspace_id: _ }
+        | WorkspaceError::Database {
+            source: diesel::result::Error::NotFound,
+        }
+        | WorkspaceError::Database {
+            source:
+                diesel::result::Error::DatabaseError(
+                    diesel::result::DatabaseErrorKind::UniqueViolation,
+                    _,
+                ),
+        } => true,
+        WorkspaceError::Database { source: error } => is_retryable_database_error(error),
         _ => false,
     }
 }
@@ -242,7 +248,7 @@ pub fn acquire_automatic_candidate(
     plan: &AutomaticAllocationPlan,
     candidate: &crate::storage::WorkspaceRow,
 ) -> Result<AutomaticClaimResult, WorkspaceError> {
-    let intent_json = JsonDocument::from_serializable(plan).map_err(WorkspaceError::Json)?;
+    let intent_json = JsonDocument::from_serializable(plan)?;
     let intent = OperationIntent::new(
         candidate.id,
         "acquire",
@@ -260,28 +266,36 @@ pub fn acquire_automatic_candidate(
     ) {
         Ok(boundary) => boundary,
         Err(error) => {
-            let primary = WorkspaceError::Reconciliation(error);
+            let primary = WorkspaceError::Reconciliation { source: error };
             fail_operation(connection, &lease_id, &primary);
             return Err(primary);
         }
     };
     if boundary.workspace.management_mode != crate::domain::WorkspaceManagementMode::Automatic {
-        let primary = WorkspaceError::NotAutomatic(candidate.canonical_path.clone());
+        let primary = WorkspaceError::NotAutomatic {
+            path: candidate.canonical_path.clone(),
+        };
         fail_operation(connection, &lease_id, &primary);
         return Err(primary);
     }
     let Some(pool_id) = boundary.workspace.pool_id else {
-        let primary = WorkspaceError::RepositorySetMismatch(candidate.id);
+        let primary = WorkspaceError::RepositorySetMismatch {
+            workspace_id: candidate.id,
+        };
         fail_operation(connection, &lease_id, &primary);
         return Err(primary);
     };
     if boundary.claim.is_some() {
-        let primary = WorkspaceError::ClaimActive(candidate.id);
+        let primary = WorkspaceError::ClaimActive {
+            workspace_id: candidate.id,
+        };
         fail_operation(connection, &lease_id, &primary);
         return Err(primary);
     }
     if boundary.summary.workspace_state != WorkspaceState::Ready {
-        let primary = WorkspaceError::NotReusable(candidate.canonical_path.clone());
+        let primary = WorkspaceError::NotReusable {
+            path: candidate.canonical_path.clone(),
+        };
         fail_operation(connection, &lease_id, &primary);
         return Err(primary);
     }
@@ -291,7 +305,7 @@ pub fn acquire_automatic_candidate(
     let record_result =
         record_workspace_acquire(connection, &lease_id, &claim, Some(details_json.clone()));
     if let Err(error) = record_result {
-        let primary = WorkspaceError::Database(error);
+        let primary = WorkspaceError::Database { source: error };
         fail_operation(connection, &lease_id, &primary);
         return Err(primary);
     }
@@ -304,7 +318,7 @@ pub fn acquire_automatic_candidate(
     ) {
         Ok(boundary) => boundary,
         Err(error) => {
-            let primary = WorkspaceError::Reconciliation(error);
+            let primary = WorkspaceError::Reconciliation { source: error };
             return Err(fail_acquire(
                 connection,
                 &lease_id,
@@ -318,7 +332,9 @@ pub fn acquire_automatic_candidate(
     if final_boundary.summary.workspace_state != WorkspaceState::Ready
         || final_boundary.claim.as_ref().map(|value| value.id) != Some(claim.id)
     {
-        let primary = WorkspaceError::NotReusable(candidate.canonical_path.clone());
+        let primary = WorkspaceError::NotReusable {
+            path: candidate.canonical_path.clone(),
+        };
         return Err(fail_acquire(
             connection,
             &lease_id,
@@ -337,7 +353,7 @@ pub fn acquire_automatic_candidate(
             .with_pending_step("acquire complete")
             .with_details(details_json.clone()),
     ) {
-        let primary = WorkspaceError::Database(error);
+        let primary = WorkspaceError::Database { source: error };
         fail_operation(connection, &lease_id, &primary);
         return Err(primary);
     }
@@ -359,10 +375,10 @@ fn acquire_details(claim: &WorkspaceClaim, pool_id: PoolId) -> JsonDocument {
 
 fn map_operation_error(error: OperationIntentError) -> WorkspaceError {
     match error {
-        OperationIntentError::WorkspaceBusy(workspace_id) => {
-            WorkspaceError::OperationActive(workspace_id)
+        OperationIntentError::WorkspaceBusy { workspace_id } => {
+            WorkspaceError::OperationActive { workspace_id }
         }
-        OperationIntentError::Database(error) => WorkspaceError::Database(error),
+        OperationIntentError::Database { source } => WorkspaceError::Database { source },
     }
 }
 
@@ -397,7 +413,7 @@ fn fail_acquire(
         Ok(()) => primary,
         Err(error) => WorkspaceError::Rollback {
             primary: Box::new(primary),
-            rollback: Box::new(WorkspaceError::Database(error)),
+            rollback: Box::new(WorkspaceError::Database { source: error }),
         },
     }
 }
@@ -423,8 +439,10 @@ fn release_identity_for_workspace_path(
     workspace_path: &CanonicalPath,
 ) -> Result<(CanonicalPath, ClaimId), WorkspaceError> {
     let workspace = find_workspace_by_path(connection, workspace_path)
-        .map_err(WorkspaceError::Database)?
-        .ok_or_else(|| WorkspaceError::WorkspaceNotFound(workspace_path.clone()))?;
+        .context(DatabaseSnafu)?
+        .ok_or_else(|| WorkspaceError::WorkspaceNotFound {
+            path: workspace_path.clone(),
+        })?;
     release_identity_for_workspace(connection, workspace)
 }
 
@@ -435,13 +453,13 @@ fn release_identity_for_current_directory(
     for ancestor in current_directory.as_path().ancestors() {
         let path = CanonicalPath::from_absolute(ancestor)
             .expect("an ancestor of an absolute path should be absolute");
-        if let Some(workspace) =
-            find_workspace_by_path(connection, &path).map_err(WorkspaceError::Database)?
-        {
+        if let Some(workspace) = find_workspace_by_path(connection, &path).context(DatabaseSnafu)? {
             return release_identity_for_workspace(connection, workspace);
         }
     }
-    Err(WorkspaceError::WorkspaceNotFound(current_directory.clone()))
+    Err(WorkspaceError::WorkspaceNotFound {
+        path: current_directory.clone(),
+    })
 }
 
 fn release_identity_for_claim(
@@ -451,14 +469,15 @@ fn release_identity_for_claim(
     let claim = match find_workspace_claim_by_id(connection, &claim_id) {
         Ok(claim) => claim,
         Err(diesel::result::Error::NotFound) => {
-            return Err(WorkspaceError::ClaimNotFound(claim_id));
+            return Err(WorkspaceError::ClaimNotFound { claim_id });
         }
-        Err(error) => return Err(WorkspaceError::Database(error)),
+        Err(error) => return Err(WorkspaceError::Database { source: error }),
     };
-    let workspace =
-        find_workspace(connection, &claim.workspace_id).map_err(WorkspaceError::Database)?;
+    let workspace = find_workspace(connection, &claim.workspace_id).context(DatabaseSnafu)?;
     if workspace.management_mode != WorkspaceManagementMode::Automatic {
-        return Err(WorkspaceError::NotAutomatic(workspace.canonical_path));
+        return Err(WorkspaceError::NotAutomatic {
+            path: workspace.canonical_path,
+        });
     }
     Ok((workspace.canonical_path, claim.id))
 }
@@ -468,11 +487,15 @@ fn release_identity_for_workspace(
     workspace: WorkspaceRow,
 ) -> Result<(CanonicalPath, ClaimId), WorkspaceError> {
     if workspace.management_mode != WorkspaceManagementMode::Automatic {
-        return Err(WorkspaceError::NotAutomatic(workspace.canonical_path));
+        return Err(WorkspaceError::NotAutomatic {
+            path: workspace.canonical_path,
+        });
     }
     let claim = find_workspace_claim(connection, &workspace.id)
-        .map_err(WorkspaceError::Database)?
-        .ok_or_else(|| WorkspaceError::WorkspaceUnclaimed(workspace.canonical_path.clone()))?;
+        .context(DatabaseSnafu)?
+        .ok_or_else(|| WorkspaceError::WorkspaceUnclaimed {
+            path: workspace.canonical_path.clone(),
+        })?;
     Ok((workspace.canonical_path, claim.id))
 }
 
@@ -482,23 +505,26 @@ pub fn release_automatic_workspace(
     claim_id: ClaimId,
 ) -> Result<ReleaseResult, WorkspaceError> {
     let workspace = find_workspace_by_path(connection, workspace_path)
-        .map_err(WorkspaceError::Database)?
-        .ok_or_else(|| WorkspaceError::WorkspaceNotFound(workspace_path.clone()))?;
+        .context(DatabaseSnafu)?
+        .ok_or_else(|| WorkspaceError::WorkspaceNotFound {
+            path: workspace_path.clone(),
+        })?;
     if workspace.management_mode != WorkspaceManagementMode::Automatic {
-        return Err(WorkspaceError::NotAutomatic(workspace.canonical_path));
+        return Err(WorkspaceError::NotAutomatic {
+            path: workspace.canonical_path,
+        });
     }
     let claim_matches = find_workspace_claim(connection, &workspace.id)
-        .map_err(WorkspaceError::Database)?
+        .context(DatabaseSnafu)?
         .is_some_and(|claim| claim.id == claim_id);
     if !claim_matches {
-        return Err(WorkspaceError::ClaimNotFound(claim_id));
+        return Err(WorkspaceError::ClaimNotFound { claim_id });
     }
 
     let intent_json = JsonDocument::from_serializable(&serde_json::json!({
         "workspace_path": workspace_path,
         "claim_id": claim_id,
-    }))
-    .map_err(WorkspaceError::Json)?;
+    }))?;
     let intent = OperationIntent::new(
         workspace.id,
         "release",
@@ -516,23 +542,25 @@ pub fn release_automatic_workspace(
     ) {
         Ok(boundary) => boundary,
         Err(error) => {
-            let primary = WorkspaceError::Reconciliation(error);
+            let primary = WorkspaceError::Reconciliation { source: error };
             fail_operation(connection, &lease_id, &primary);
             return Err(primary);
         }
     };
     if boundary.workspace.management_mode != WorkspaceManagementMode::Automatic {
-        let primary = WorkspaceError::NotAutomatic(boundary.workspace.canonical_path);
+        let primary = WorkspaceError::NotAutomatic {
+            path: boundary.workspace.canonical_path,
+        };
         fail_operation(connection, &lease_id, &primary);
         return Err(primary);
     }
     let Some(active_claim) = boundary.claim.as_ref() else {
-        let primary = WorkspaceError::ClaimNotFound(claim_id);
+        let primary = WorkspaceError::ClaimNotFound { claim_id };
         fail_operation(connection, &lease_id, &primary);
         return Err(primary);
     };
     if active_claim.id != claim_id {
-        let primary = WorkspaceError::ClaimNotFound(claim_id);
+        let primary = WorkspaceError::ClaimNotFound { claim_id };
         fail_operation(connection, &lease_id, &primary);
         return Err(primary);
     }
@@ -554,7 +582,7 @@ pub fn release_automatic_workspace(
     ) {
         Ok(boundary) => boundary,
         Err(error) => {
-            let primary = WorkspaceError::Reconciliation(error);
+            let primary = WorkspaceError::Reconciliation { source: error };
             return Err(fail_release(
                 connection,
                 &lease_id,
@@ -565,7 +593,9 @@ pub fn release_automatic_workspace(
         }
     };
     if final_boundary.summary.workspace_state != WorkspaceState::Ready {
-        let primary = WorkspaceError::NotReusable(workspace.canonical_path.clone());
+        let primary = WorkspaceError::NotReusable {
+            path: workspace.canonical_path.clone(),
+        };
         return Err(fail_release(
             connection,
             &lease_id,
@@ -581,15 +611,17 @@ pub fn release_automatic_workspace(
         &claim_id,
         Some(details_json),
     ) {
-        let primary = WorkspaceError::Database(error);
+        let primary = WorkspaceError::Database { source: error };
         fail_operation(connection, &lease_id, &primary);
         return Err(primary);
     }
-    let released_workspace =
-        find_workspace(connection, &workspace.id).map_err(WorkspaceError::Database)?;
-    let released_at = released_workspace
-        .last_released_at
-        .ok_or_else(|| WorkspaceError::Database(diesel::result::Error::NotFound))?;
+    let released_workspace = find_workspace(connection, &workspace.id).context(DatabaseSnafu)?;
+    let released_at =
+        released_workspace
+            .last_released_at
+            .ok_or_else(|| WorkspaceError::Database {
+                source: diesel::result::Error::NotFound,
+            })?;
     Ok(ReleaseResult {
         workspace_path: released_workspace.canonical_path,
         claim_id,
@@ -608,8 +640,8 @@ fn align_release_worktrees(
     workspace: &WorkspaceRow,
     lease_id: &LeaseId,
 ) -> Result<(), WorkspaceError> {
-    let repositories = crate::storage::list_repo_worktrees(connection, &workspace.id)
-        .map_err(WorkspaceError::Database)?;
+    let repositories =
+        crate::storage::list_repo_worktrees(connection, &workspace.id).context(DatabaseSnafu)?;
     let mut alignments = Vec::with_capacity(repositories.len());
 
     // Validate every worktree before changing any of them. Release must never
@@ -617,9 +649,9 @@ fn align_release_worktrees(
     for repository in repositories {
         let source = git::inspect_repository(&repository.source_path)?;
         if source.common_dir != repository.repository_identity {
-            return Err(WorkspaceError::NotReusable(
-                workspace.canonical_path.clone(),
-            ));
+            return Err(WorkspaceError::NotReusable {
+                path: workspace.canonical_path.clone(),
+            });
         }
         let worktree =
             git::find_worktree(&repository.source_path, repository.worktree_path.as_path())?;
@@ -629,9 +661,9 @@ fn align_release_worktrees(
                 != repository.repository_identity
             || !git::is_worktree_clean(repository.worktree_path.as_path())?
         {
-            return Err(WorkspaceError::NotReusable(
-                workspace.canonical_path.clone(),
-            ));
+            return Err(WorkspaceError::NotReusable {
+                path: workspace.canonical_path.clone(),
+            });
         }
         let needs_checkout = worktree.head.as_deref() != Some(source.head.as_str())
             || !worktree.detached
@@ -659,16 +691,18 @@ fn align_release_worktrees(
             format!("align {}", alignment.repository.worktree_path),
             details.clone(),
         )
-        .map_err(WorkspaceError::Database)?;
+        .context(DatabaseSnafu)?;
         git::checkout_detached_with_heartbeat(
             alignment.repository.worktree_path.as_path(),
             &alignment.target_head,
             || match crate::storage::renew_operation_lease(connection, lease_id) {
                 Ok(true) => Ok(()),
-                Ok(false) => Err(GitError::Heartbeat(
-                    "operation lease is no longer owned".to_owned(),
-                )),
-                Err(error) => Err(GitError::Heartbeat(error.to_string())),
+                Ok(false) => Err(GitError::Heartbeat {
+                    message: "operation lease is no longer owned".to_owned(),
+                }),
+                Err(error) => Err(GitError::Heartbeat {
+                    message: error.to_string(),
+                }),
             },
         )?;
         record_worktree_step_result(
@@ -679,7 +713,7 @@ fn align_release_worktrees(
             Some(alignment.target_head.clone()),
             TransitionMetadata::new("worktree_aligned", "trees").with_details(details),
         )
-        .map_err(WorkspaceError::Database)?;
+        .context(DatabaseSnafu)?;
     }
     Ok(())
 }
@@ -710,7 +744,7 @@ fn fail_release(
         Ok(()) => primary,
         Err(error) => WorkspaceError::Rollback {
             primary: Box::new(primary),
-            rollback: Box::new(WorkspaceError::Database(error)),
+            rollback: Box::new(WorkspaceError::Database { source: error }),
         },
     }
 }
@@ -727,7 +761,9 @@ fn provision_automatic_new(
     plan: &AutomaticAllocationPlan,
 ) -> Result<AutomaticClaimResult, WorkspaceError> {
     if plan.repositories.is_empty() {
-        return Err(WorkspaceError::Validation(ValidationError::NoRepositories));
+        return Err(WorkspaceError::Validation {
+            source: ValidationError::NoRepositories,
+        });
     }
     for repository in &plan.repositories {
         if plan
@@ -735,12 +771,12 @@ fn provision_automatic_new(
             .as_path()
             .starts_with(repository.source_path.as_path())
         {
-            return Err(WorkspaceError::Validation(
-                ValidationError::WorkspaceInsideRepository {
+            return Err(WorkspaceError::Validation {
+                source: ValidationError::WorkspaceInsideRepository {
                     workspace: plan.workspace_root.as_path().to_owned(),
                     repository: repository.source_path.as_path().to_owned(),
                 },
-            ));
+            });
         }
     }
     fs::create_dir_all(plan.workspace_root.as_path()).map_err(|source| WorkspaceError::Io {
@@ -753,7 +789,7 @@ fn provision_automatic_new(
 
     let repository_set = resolve_repository_set(connection, &normalized_plan)?;
     let pool = crate::storage::ensure_workspace_pool(connection, &repository_set)
-        .map_err(WorkspaceError::Database)?;
+        .context(DatabaseSnafu)?;
 
     let (workspace_id, workspace_path) =
         next_generated_workspace(connection, normalized_plan.workspace_root.as_path())?;
@@ -764,8 +800,7 @@ fn provision_automatic_new(
         "workspace_id": workspace_id,
         "workspace_path": workspace_path,
         "claim_id": claim.id,
-    }))
-    .map_err(WorkspaceError::Json)?;
+    }))?;
     let context = initialize_creation_with_mode(
         connection,
         creation_plan,
@@ -781,7 +816,7 @@ fn provision_automatic_new(
         &context.operation_id,
         &context.lease_id,
     ) {
-        let primary = WorkspaceError::Reconciliation(error);
+        let primary = WorkspaceError::Reconciliation { source: error };
         return fail_creation(connection, &context, &[], None, Some(&claim), primary)
             .map(|_| unreachable!("automatic provisioning rollback always fails the operation"));
     }
@@ -794,7 +829,7 @@ fn provision_automatic_new(
     ) {
         Ok(summary) => summary,
         Err(error) => {
-            let primary = WorkspaceError::Reconciliation(error);
+            let primary = WorkspaceError::Reconciliation { source: error };
             let completed = context.repositories.iter().collect::<Vec<_>>();
             return fail_creation(
                 connection,
@@ -808,7 +843,9 @@ fn provision_automatic_new(
         }
     };
     if summary.workspace_state != WorkspaceState::Ready {
-        let primary = WorkspaceError::NotReusable(context.plan.workspace_path.clone());
+        let primary = WorkspaceError::NotReusable {
+            path: context.plan.workspace_path.clone(),
+        };
         let completed = context.repositories.iter().collect::<Vec<_>>();
         return fail_creation(
             connection,
@@ -829,7 +866,7 @@ fn provision_automatic_new(
         &claim,
         Some(details_json),
     ) {
-        let primary = WorkspaceError::Database(error);
+        let primary = WorkspaceError::Database { source: error };
         let completed = context.repositories.iter().collect::<Vec<_>>();
         return fail_creation(
             connection,
@@ -860,18 +897,21 @@ fn next_generated_workspace(
         if workspace_path.exists() {
             continue;
         }
-        let workspace_path = CanonicalPath::from_absolute(workspace_path)
-            .map_err(|error| WorkspaceError::Validation(ValidationError::Canonicalize(error)))?;
+        let workspace_path = CanonicalPath::from_absolute(workspace_path).map_err(|source| {
+            WorkspaceError::Validation {
+                source: ValidationError::Canonicalize { source },
+            }
+        })?;
         if find_workspace_by_path(connection, &workspace_path)
-            .map_err(WorkspaceError::Database)?
+            .context(DatabaseSnafu)?
             .is_none()
         {
             return Ok((workspace_id, workspace_path));
         }
     }
-    Err(WorkspaceError::GeneratedPathUnavailable(
-        workspace_root.to_owned(),
-    ))
+    Err(WorkspaceError::GeneratedPathUnavailable {
+        path: workspace_root.to_owned(),
+    })
 }
 
 fn automatic_creation_plan(
@@ -930,7 +970,7 @@ pub fn initialize_creation(
     connection: &mut SqliteConnection,
     plan: CreationPlan,
 ) -> Result<CreationContext, WorkspaceError> {
-    let intent_json = JsonDocument::from_serializable(&plan).map_err(WorkspaceError::Json)?;
+    let intent_json = JsonDocument::from_serializable(&plan)?;
     initialize_creation_with_mode(
         connection,
         plan,
@@ -950,10 +990,12 @@ fn initialize_creation_with_mode(
     intent_json: JsonDocument,
 ) -> Result<CreationContext, WorkspaceError> {
     if find_workspace_by_path(connection, &plan.workspace_path)
-        .map_err(WorkspaceError::Database)?
+        .context(DatabaseSnafu)?
         .is_some()
     {
-        return Err(WorkspaceError::AlreadyManaged(plan.workspace_path));
+        return Err(WorkspaceError::AlreadyManaged {
+            path: plan.workspace_path,
+        });
     }
 
     let workspace_id = claim.map(|claim| claim.workspace_id).unwrap_or_default();
@@ -973,7 +1015,7 @@ fn initialize_creation_with_mode(
                 &repository.repository_identity,
                 &repository.source_path,
             )
-            .map_err(WorkspaceError::Database)?;
+            .context(DatabaseSnafu)?;
             if let Some(pool_id) = pool_id {
                 insert_workspace_pool_repositories(
                     connection,
@@ -982,7 +1024,7 @@ fn initialize_creation_with_mode(
                         repository_id: origin.id,
                     }],
                 )
-                .map_err(WorkspaceError::Database)?;
+                .context(DatabaseSnafu)?;
             }
             Ok(TrackedRepository {
                 id: RepoWorktreeId::new(),
@@ -1065,7 +1107,7 @@ fn initialize_creation_with_mode(
         }
         Ok::<(), diesel::result::Error>(())
     })
-    .map_err(WorkspaceError::Database)?;
+    .context(DatabaseSnafu)?;
 
     Ok(CreationContext {
         workspace_id,
@@ -1131,7 +1173,7 @@ pub struct CreationResult {
 
 pub fn create(request: CreateRequest) -> Result<CreationResult, WorkspaceError> {
     let workspace_path = validation::resolve_workspace_path(&request.workspace_path)?;
-    let mut connection = crate::database::open_default().map_err(WorkspaceError::DatabaseOpen)?;
+    let mut connection = crate::database::open_default().context(DatabaseOpenSnafu)?;
     reconcile_before_creation(&mut connection, &workspace_path)?;
     let plan = prepare_create(&request)?;
     create_with_connection(&mut connection, plan)
@@ -1149,7 +1191,7 @@ pub fn create_with_connection(
         &context.operation_id,
         &context.lease_id,
     )
-    .map_err(WorkspaceError::Reconciliation)?;
+    .context(ReconciliationSnafu)?;
     execute_creation(connection, &context)?;
     reconciliation::reconcile_workspace_with_lease(
         connection,
@@ -1157,9 +1199,9 @@ pub fn create_with_connection(
         &context.operation_id,
         &context.lease_id,
     )
-    .map_err(WorkspaceError::Reconciliation)?;
+    .context(ReconciliationSnafu)?;
     finalize_persisted_creation(connection, &context.workspace_id, &context.lease_id)
-        .map_err(WorkspaceError::Database)?;
+        .context(DatabaseSnafu)?;
     Ok(CreationResult {
         workspace_path: context.plan.workspace_path,
         worktree_paths: context
@@ -1175,17 +1217,17 @@ fn reconcile_before_creation(
     workspace_path: &CanonicalPath,
 ) -> Result<(), WorkspaceError> {
     let Some(workspace) =
-        find_workspace_by_path(connection, workspace_path).map_err(WorkspaceError::Database)?
+        find_workspace_by_path(connection, workspace_path).context(DatabaseSnafu)?
     else {
         return Ok(());
     };
 
     match reconciliation::recover_expired_operation(connection, &workspace.id)
-        .map_err(WorkspaceError::Reconciliation)?
+        .context(ReconciliationSnafu)?
     {
-        reconciliation::RecoveryOutcome::LeaseActive => {
-            Err(WorkspaceError::OperationActive(workspace.id))
-        }
+        reconciliation::RecoveryOutcome::LeaseActive => Err(WorkspaceError::OperationActive {
+            workspace_id: workspace.id,
+        }),
         reconciliation::RecoveryOutcome::NoRunningOperation
         | reconciliation::RecoveryOutcome::Succeeded
         | reconciliation::RecoveryOutcome::RolledBack
@@ -1198,15 +1240,14 @@ fn execute_repository_step(
     context: &CreationContext,
     repository: &TrackedRepository,
 ) -> Result<(), WorkspaceError> {
-    let intent_json =
-        JsonDocument::from_serializable(&repository.plan).map_err(WorkspaceError::Json)?;
+    let intent_json = JsonDocument::from_serializable(&repository.plan)?;
     persist_operation_step_intent(
         connection,
         &context.lease_id,
         format!("attach {}", repository.plan.source_path),
         intent_json,
     )
-    .map_err(WorkspaceError::Database)?;
+    .context(DatabaseSnafu)?;
     // The subprocess and lease-renewal callback run outside SQLite
     // transactions; each renewal is an independent short operation update.
     let lease_id = context.lease_id;
@@ -1215,10 +1256,12 @@ fn execute_repository_step(
         &repository.plan.worktree_path,
         || match crate::storage::renew_operation_lease(connection, &lease_id) {
             Ok(true) => Ok(()),
-            Ok(false) => Err(GitError::Heartbeat(
-                "operation lease is no longer owned".to_owned(),
-            )),
-            Err(error) => Err(GitError::Heartbeat(error.to_string())),
+            Ok(false) => Err(GitError::Heartbeat {
+                message: "operation lease is no longer owned".to_owned(),
+            }),
+            Err(error) => Err(GitError::Heartbeat {
+                message: error.to_string(),
+            }),
         },
     )?;
     let worktree =
@@ -1231,18 +1274,16 @@ fn execute_repository_step(
         worktree.head,
         TransitionMetadata::new("worktree_attached", "trees")
             .with_pending_step("worktree attached")
-            .with_details(
-                JsonDocument::from_serializable(&repository.plan).map_err(WorkspaceError::Json)?,
-            ),
+            .with_details(JsonDocument::from_serializable(&repository.plan)?),
     )
-    .map_err(WorkspaceError::Database)?;
+    .context(DatabaseSnafu)?;
     reconciliation::reconcile_workspace_with_lease(
         connection,
         &context.workspace_id,
         &context.operation_id,
         &context.lease_id,
     )
-    .map_err(WorkspaceError::Reconciliation)?;
+    .context(ReconciliationSnafu)?;
     Ok(())
 }
 
@@ -1324,10 +1365,12 @@ fn rollback_repository(
                 &repository.plan.worktree_path,
                 || match crate::storage::renew_operation_lease(connection, &context.lease_id) {
                     Ok(true) => Ok(()),
-                    Ok(false) => Err(GitError::Heartbeat(
-                        "operation lease is no longer owned".to_owned(),
-                    )),
-                    Err(error) => Err(GitError::Heartbeat(error.to_string())),
+                    Ok(false) => Err(GitError::Heartbeat {
+                        message: "operation lease is no longer owned".to_owned(),
+                    }),
+                    Err(error) => Err(GitError::Heartbeat {
+                        message: error.to_string(),
+                    }),
                 },
             ) {
                 errors.push(error.to_string());
@@ -1337,7 +1380,7 @@ fn rollback_repository(
             "refusing to remove branch-attached worktree {} ({:?})",
             worktree.path, worktree.branch
         )),
-        Err(GitError::WorktreeNotFound(_)) => {}
+        Err(GitError::WorktreeNotFound { .. }) => {}
         Err(_error) if is_failed_repository => {}
         Err(error) => errors.push(error.to_string()),
     }
@@ -1433,155 +1476,67 @@ fn error_document(error: &WorkspaceError) -> JsonDocument {
     .expect("JSON error document should serialize")
 }
 
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
 pub enum WorkspaceError {
-    Validation(ValidationError),
-    Naming(NamingError),
-    Git(GitError),
-    Database(diesel::result::Error),
-    DatabaseOpen(crate::database::DatabaseError),
-    Path(crate::paths::PathError),
-    Reconciliation(ReconciliationError),
-    OperationActive(WorkspaceId),
-    NotAutomatic(CanonicalPath),
-    NotReusable(CanonicalPath),
-    ClaimActive(WorkspaceId),
-    GeneratedPathUnavailable(PathBuf),
-    ClaimNotFound(ClaimId),
-    WorkspaceUnclaimed(CanonicalPath),
-    RepositorySetMismatch(WorkspaceId),
-    WorkspaceNotFound(CanonicalPath),
-    Json(crate::domain::JsonDocumentError),
-    AlreadyManaged(CanonicalPath),
+    #[snafu(transparent)]
+    Validation { source: ValidationError },
+    #[snafu(transparent)]
+    Naming { source: NamingError },
+    #[snafu(transparent)]
+    Git { source: GitError },
+    #[snafu(display("database operation failed: {source}"))]
+    Database { source: diesel::result::Error },
+    #[snafu(display("failed to open lifecycle database: {source}"))]
+    DatabaseOpen {
+        source: crate::database::DatabaseError,
+    },
+    #[snafu(display("failed to resolve workspace root: {source}"))]
+    Path { source: crate::paths::PathError },
+    #[snafu(display("reconciliation failed: {source}"))]
+    Reconciliation { source: ReconciliationError },
+    #[snafu(display("workspace has an active operation: {workspace_id}"))]
+    OperationActive { workspace_id: WorkspaceId },
+    #[snafu(display("workspace is not managed by the automatic workspace pool: {path}"))]
+    NotAutomatic { path: CanonicalPath },
+    #[snafu(display("automatic workspace is not reusable: {path}"))]
+    NotReusable { path: CanonicalPath },
+    #[snafu(display("workspace has an active claim: {workspace_id}"))]
+    ClaimActive { workspace_id: WorkspaceId },
+    #[snafu(display(
+        "could not allocate a generated workspace path below {}",
+        path.display()
+    ))]
+    GeneratedPathUnavailable { path: PathBuf },
+    #[snafu(display("workspace claim was not found: {claim_id}"))]
+    ClaimNotFound { claim_id: ClaimId },
+    #[snafu(display("workspace has no active claim: {path}"))]
+    WorkspaceUnclaimed { path: CanonicalPath },
+    #[snafu(display("repository set does not match workspace pool: {workspace_id}"))]
+    RepositorySetMismatch { workspace_id: WorkspaceId },
+    #[snafu(display("managed workspace was not found: {path}"))]
+    WorkspaceNotFound { path: CanonicalPath },
+    #[snafu(transparent)]
+    Json {
+        source: crate::domain::JsonDocumentError,
+    },
+    #[snafu(display("workspace is already managed: {path}"))]
+    AlreadyManaged { path: CanonicalPath },
+    #[snafu(display("workspace creation failed: {primary}; rollback failed: {rollback}"))]
     Rollback {
+        #[snafu(source)]
         primary: Box<WorkspaceError>,
         rollback: Box<WorkspaceError>,
     },
-    RollbackFailure {
-        errors: Vec<String>,
-    },
+    #[snafu(display("workspace rollback failed: {}", errors.join("; ")))]
+    RollbackFailure { errors: Vec<String> },
+    #[snafu(display(
+        "workspace filesystem operation failed for {}: {source}",
+        path.display()
+    ))]
     Io {
         path: PathBuf,
         source: std::io::Error,
     },
-}
-
-impl fmt::Display for WorkspaceError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Validation(error) => error.fmt(formatter),
-            Self::Naming(error) => error.fmt(formatter),
-            Self::Git(error) => error.fmt(formatter),
-            Self::Database(error) => write!(formatter, "database operation failed: {error}"),
-            Self::DatabaseOpen(error) => {
-                write!(formatter, "failed to open lifecycle database: {error}")
-            }
-            Self::Path(error) => write!(formatter, "failed to resolve workspace root: {error}"),
-            Self::Reconciliation(error) => write!(formatter, "reconciliation failed: {error}"),
-            Self::OperationActive(workspace_id) => {
-                write!(
-                    formatter,
-                    "workspace has an active operation: {workspace_id}"
-                )
-            }
-            Self::NotAutomatic(path) => write!(
-                formatter,
-                "workspace is not managed by the automatic workspace pool: {path}"
-            ),
-            Self::NotReusable(path) => {
-                write!(formatter, "automatic workspace is not reusable: {path}")
-            }
-            Self::ClaimActive(workspace_id) => {
-                write!(formatter, "workspace has an active claim: {workspace_id}")
-            }
-            Self::GeneratedPathUnavailable(path) => write!(
-                formatter,
-                "could not allocate a generated workspace path below {}",
-                path.display()
-            ),
-            Self::ClaimNotFound(claim_id) => {
-                write!(formatter, "workspace claim was not found: {claim_id}")
-            }
-            Self::WorkspaceUnclaimed(path) => {
-                write!(formatter, "workspace has no active claim: {path}")
-            }
-            Self::RepositorySetMismatch(workspace_id) => write!(
-                formatter,
-                "repository set does not match workspace pool: {workspace_id}"
-            ),
-            Self::WorkspaceNotFound(path) => {
-                write!(formatter, "managed workspace was not found: {path}")
-            }
-            Self::Json(error) => error.fmt(formatter),
-            Self::AlreadyManaged(path) => write!(formatter, "workspace is already managed: {path}"),
-            Self::Rollback { primary, rollback } => {
-                write!(
-                    formatter,
-                    "workspace creation failed: {primary}; rollback failed: {rollback}"
-                )
-            }
-            Self::RollbackFailure { errors } => {
-                write!(
-                    formatter,
-                    "workspace rollback failed: {}",
-                    errors.join("; ")
-                )
-            }
-            Self::Io { path, source } => {
-                write!(
-                    formatter,
-                    "workspace filesystem operation failed for {}: {source}",
-                    path.display()
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for WorkspaceError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Validation(error) => Some(error),
-            Self::Naming(error) => Some(error),
-            Self::Git(error) => Some(error),
-            Self::Database(error) => Some(error),
-            Self::DatabaseOpen(error) => Some(error),
-            Self::Path(error) => Some(error),
-            Self::Reconciliation(error) => Some(error),
-            Self::OperationActive(_) => None,
-            Self::NotAutomatic(_) => None,
-            Self::NotReusable(_) => None,
-            Self::ClaimActive(_) => None,
-            Self::GeneratedPathUnavailable(_) => None,
-            Self::ClaimNotFound(_) => None,
-            Self::WorkspaceUnclaimed(_) => None,
-            Self::RepositorySetMismatch(_) => None,
-            Self::WorkspaceNotFound(_) => None,
-            Self::Json(error) => Some(error),
-            Self::AlreadyManaged(_) => None,
-            Self::Rollback { primary, .. } => Some(primary),
-            Self::RollbackFailure { .. } => None,
-            Self::Io { source, .. } => Some(source),
-        }
-    }
-}
-
-impl From<ValidationError> for WorkspaceError {
-    fn from(error: ValidationError) -> Self {
-        Self::Validation(error)
-    }
-}
-
-impl From<NamingError> for WorkspaceError {
-    fn from(error: NamingError) -> Self {
-        Self::Naming(error)
-    }
-}
-
-impl From<GitError> for WorkspaceError {
-    fn from(error: GitError) -> Self {
-        Self::Git(error)
-    }
 }
 
 #[cfg(test)]
@@ -1997,7 +1952,7 @@ mod tests {
 
         assert!(matches!(
             acquire_automatic_candidate(&mut connection, &plan, &candidate),
-            Err(WorkspaceError::ClaimActive(workspace_id)) if workspace_id == candidate.id
+            Err(WorkspaceError::ClaimActive { workspace_id }) if workspace_id == candidate.id
         ));
         assert_eq!(
             crate::storage::find_workspace_claim(&mut connection, &candidate.id)
@@ -2149,7 +2104,7 @@ mod tests {
                 &mut connection,
                 ReleaseTarget::WorkspacePath(nested_directory.clone()),
             ),
-            Err(WorkspaceError::WorkspaceNotFound(path)) if path == nested_directory
+            Err(WorkspaceError::WorkspaceNotFound { path }) if path == nested_directory
         ));
         let cwd_result = release_automatic_workspace_by_target(
             &mut connection,
@@ -2163,14 +2118,14 @@ mod tests {
                 &mut connection,
                 ReleaseTarget::WorkspacePath(candidate.canonical_path.clone()),
             ),
-            Err(WorkspaceError::WorkspaceUnclaimed(path)) if path == candidate.canonical_path
+            Err(WorkspaceError::WorkspaceUnclaimed { path }) if path == candidate.canonical_path
         ));
         assert!(matches!(
             release_automatic_workspace_by_target(
                 &mut connection,
                 ReleaseTarget::ClaimId(cwd_claim.claim_id),
             ),
-            Err(WorkspaceError::ClaimNotFound(claim_id)) if claim_id == cwd_claim.claim_id
+            Err(WorkspaceError::ClaimNotFound { claim_id }) if claim_id == cwd_claim.claim_id
         ));
 
         crate::git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
@@ -2204,7 +2159,7 @@ mod tests {
         .expect_err("second release should exit busy");
         assert!(matches!(
             error,
-            WorkspaceError::OperationActive(workspace_id) if workspace_id == candidate.id
+            WorkspaceError::OperationActive { workspace_id } if workspace_id == candidate.id
         ));
         assert_eq!(
             crate::storage::operation_state(&mut connection, &operation.id)
@@ -2250,7 +2205,7 @@ mod tests {
             acquire.claim_id,
         )
         .expect_err("dirty release should be rejected");
-        assert!(matches!(error, WorkspaceError::NotReusable(_)));
+        assert!(matches!(error, WorkspaceError::NotReusable { path: _ }));
         assert_eq!(
             crate::storage::find_workspace_claim(&mut connection, &candidate.id)
                 .expect("claim lookup should succeed")
@@ -2328,7 +2283,7 @@ mod tests {
         )
         .expect_err("dirty release should be rejected before alignment");
 
-        assert!(matches!(error, WorkspaceError::NotReusable(_)));
+        assert!(matches!(error, WorkspaceError::NotReusable { path: _ }));
         let first_after = git::find_worktree(&first_source.source_path, first_worktree)
             .expect("first worktree should remain registered");
         assert_eq!(first_after.head.as_deref(), Some(first_head.as_str()));
@@ -2368,7 +2323,7 @@ mod tests {
 
         assert!(matches!(
             release_automatic_workspace(&mut connection, &candidate.canonical_path, wrong_claim_id),
-            Err(WorkspaceError::ClaimNotFound(claim_id)) if claim_id == wrong_claim_id
+            Err(WorkspaceError::ClaimNotFound { claim_id }) if claim_id == wrong_claim_id
         ));
         assert_eq!(
             crate::storage::find_workspace_claim(&mut connection, &candidate.id)
@@ -2497,7 +2452,7 @@ mod tests {
         let error = provision_automatic(&mut connection, &plan)
             .expect_err("changed repository identity should roll back provisioning");
         let workspace_path = match &error {
-            WorkspaceError::NotReusable(path) => path.clone().into_path_buf(),
+            WorkspaceError::NotReusable { path } => path.clone().into_path_buf(),
             other => panic!("unexpected provisioning error: {other}"),
         };
         assert!(!workspace_path.exists());
@@ -2622,7 +2577,7 @@ mod tests {
             .expect_err("active operation should reject a competing creation");
         assert!(matches!(
             error,
-            WorkspaceError::OperationActive(workspace_id) if workspace_id == context.workspace_id
+            WorkspaceError::OperationActive { workspace_id } if workspace_id == context.workspace_id
         ));
         assert_eq!(
             crate::storage::operation_state(&mut connection, &context.operation_id).unwrap(),
@@ -2661,7 +2616,7 @@ mod tests {
 
         let error = create_with_connection(&mut connection, context.plan.clone())
             .expect_err("recovered workspace should remain managed");
-        assert!(matches!(error, WorkspaceError::AlreadyManaged(_)));
+        assert!(matches!(error, WorkspaceError::AlreadyManaged { path: _ }));
         assert_eq!(
             crate::storage::operation_state(&mut connection, &context.operation_id).unwrap(),
             Some(OperationState::Succeeded)
@@ -2688,28 +2643,54 @@ mod tests {
     #[test]
     fn formats_workspace_errors_and_sources() {
         let path = CanonicalPath::resolve(".").expect("workspace path should resolve");
-        let primary = WorkspaceError::AlreadyManaged(path.clone());
+        let primary = WorkspaceError::AlreadyManaged { path: path.clone() };
         let errors = [
-            WorkspaceError::Validation(ValidationError::NoRepositories),
-            WorkspaceError::Naming(NamingError::MissingRepositoryName(path.clone())),
-            WorkspaceError::Git(GitError::WorktreeNotFound(path.as_path().to_owned())),
-            WorkspaceError::Database(diesel::result::Error::NotFound),
-            WorkspaceError::DatabaseOpen(crate::database::DatabaseError::Path(
-                crate::paths::PathError::HomeDirectoryUnavailable,
-            )),
-            WorkspaceError::OperationActive(WorkspaceId::new()),
-            WorkspaceError::NotAutomatic(path.clone()),
-            WorkspaceError::NotReusable(path.clone()),
-            WorkspaceError::ClaimActive(WorkspaceId::new()),
-            WorkspaceError::GeneratedPathUnavailable(path.as_path().to_owned()),
-            WorkspaceError::ClaimNotFound(ClaimId::new()),
-            WorkspaceError::WorkspaceUnclaimed(path.clone()),
-            WorkspaceError::RepositorySetMismatch(WorkspaceId::new()),
-            WorkspaceError::WorkspaceNotFound(path.clone()),
-            WorkspaceError::Json(JsonDocument::parse("not json").unwrap_err()),
+            WorkspaceError::Validation {
+                source: ValidationError::NoRepositories,
+            },
+            WorkspaceError::Naming {
+                source: NamingError::MissingRepositoryName {
+                    repository: path.clone(),
+                },
+            },
+            WorkspaceError::Git {
+                source: GitError::WorktreeNotFound {
+                    path: path.as_path().to_owned(),
+                },
+            },
+            WorkspaceError::Database {
+                source: diesel::result::Error::NotFound,
+            },
+            WorkspaceError::DatabaseOpen {
+                source: crate::database::DatabaseError::Path {
+                    source: crate::paths::PathError::HomeDirectoryUnavailable,
+                },
+            },
+            WorkspaceError::OperationActive {
+                workspace_id: WorkspaceId::new(),
+            },
+            WorkspaceError::NotAutomatic { path: path.clone() },
+            WorkspaceError::NotReusable { path: path.clone() },
+            WorkspaceError::ClaimActive {
+                workspace_id: WorkspaceId::new(),
+            },
+            WorkspaceError::GeneratedPathUnavailable {
+                path: path.as_path().to_owned(),
+            },
+            WorkspaceError::ClaimNotFound {
+                claim_id: ClaimId::new(),
+            },
+            WorkspaceError::WorkspaceUnclaimed { path: path.clone() },
+            WorkspaceError::RepositorySetMismatch {
+                workspace_id: WorkspaceId::new(),
+            },
+            WorkspaceError::WorkspaceNotFound { path: path.clone() },
+            WorkspaceError::Json {
+                source: JsonDocument::parse("not json").unwrap_err(),
+            },
             primary,
             WorkspaceError::Rollback {
-                primary: Box::new(WorkspaceError::AlreadyManaged(path.clone())),
+                primary: Box::new(WorkspaceError::AlreadyManaged { path: path.clone() }),
                 rollback: Box::new(WorkspaceError::RollbackFailure {
                     errors: vec!["rollback error".to_owned()],
                 }),

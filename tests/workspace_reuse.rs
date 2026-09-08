@@ -102,7 +102,7 @@ fn automatic_fixture() -> AutomaticFixture {
 
 fn cleanup_fixture(fixture: AutomaticFixture) {
     match git::remove_worktree(&fixture.source, &fixture.worktree_path) {
-        Ok(()) | Err(git::GitError::WorktreeNotFound(_)) => {}
+        Ok(()) | Err(git::GitError::WorktreeNotFound { .. }) => {}
         Err(error) => panic!("test worktree should be removable: {error}"),
     }
     drop(fixture.connection);
@@ -419,7 +419,7 @@ fn dry_run_scan_uses_a_read_only_connection_and_preserves_state() {
 
     drop(read_only);
     match git::remove_worktree(&fixture.source, &fixture.worktree_path) {
-        Ok(()) | Err(git::GitError::WorktreeNotFound(_)) => {}
+        Ok(()) | Err(git::GitError::WorktreeNotFound { .. }) => {}
         Err(error) => panic!("test worktree should be removable: {error}"),
     }
     fs::remove_file(fixture.database_path).expect("database should be removable");

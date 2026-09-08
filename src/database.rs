@@ -1,10 +1,10 @@
-use std::fmt;
 use std::path::{Path, PathBuf};
 
 use diesel::connection::SimpleConnection;
 use diesel::sqlite::SqliteConnection;
 use diesel::Connection;
 use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
+use snafu::{OptionExt, ResultExt, Snafu};
 
 use crate::paths::{self, PathError, StateDirectoryError};
 
@@ -28,100 +28,60 @@ pub(crate) fn restore_busy_timeout(
 }
 
 pub fn open_default() -> Result<SqliteConnection, DatabaseError> {
-    let path = paths::database_path().map_err(DatabaseError::Path)?;
-    paths::ensure_state_directory().map_err(DatabaseError::StateDirectory)?;
+    let path = paths::database_path()?;
+    paths::ensure_state_directory()?;
     connect(&path)
 }
 
 pub fn open_read_only() -> Result<SqliteConnection, DatabaseError> {
-    let path = paths::database_path().map_err(DatabaseError::Path)?;
+    let path = paths::database_path()?;
     if !path.exists() {
-        return Err(DatabaseError::ReadOnlyDatabaseMissing(path));
+        return ReadOnlyDatabaseMissingSnafu { path }.fail();
     }
     connect_read_only(&path)
 }
 
 pub fn connect_read_only(path: &Path) -> Result<SqliteConnection, DatabaseError> {
     if !path.exists() {
-        return Err(DatabaseError::ReadOnlyDatabaseMissing(path.to_owned()));
+        return ReadOnlyDatabaseMissingSnafu { path }.fail();
     }
-    let path_text = path
-        .to_str()
-        .ok_or_else(|| DatabaseError::PathNotUtf8(path.to_owned()))?;
+    let path_text = path.to_str().context(PathNotUtf8Snafu { path })?;
     let database_url = format!("sqlite://{path_text}?mode=ro");
-    SqliteConnection::establish(&database_url).map_err(DatabaseError::Connection)
+    SqliteConnection::establish(&database_url).context(ConnectionSnafu)
 }
 
 pub fn connect(path: &Path) -> Result<SqliteConnection, DatabaseError> {
-    let path_text = path
-        .to_str()
-        .ok_or_else(|| DatabaseError::PathNotUtf8(path.to_owned()))?;
-    let mut connection =
-        SqliteConnection::establish(path_text).map_err(DatabaseError::Connection)?;
+    let path_text = path.to_str().context(PathNotUtf8Snafu { path })?;
+    let mut connection = SqliteConnection::establish(path_text).context(ConnectionSnafu)?;
 
     connection
         .batch_execute(CONNECTION_PRAGMAS)
-        .map_err(DatabaseError::Configuration)?;
+        .context(ConfigurationSnafu)?;
     connection
         .run_pending_migrations(MIGRATIONS)
-        .map_err(DatabaseError::Migration)?;
+        .context(MigrationSnafu)?;
 
     Ok(connection)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
 pub enum DatabaseError {
-    Path(PathError),
-    StateDirectory(StateDirectoryError),
-    PathNotUtf8(PathBuf),
-    ReadOnlyDatabaseMissing(PathBuf),
-    Connection(diesel::ConnectionError),
-    Configuration(diesel::result::Error),
-    Migration(Box<dyn std::error::Error + Send + Sync>),
-}
-
-impl fmt::Display for DatabaseError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Path(error) => error.fmt(formatter),
-            Self::StateDirectory(error) => error.fmt(formatter),
-            Self::PathNotUtf8(path) => {
-                write!(
-                    formatter,
-                    "database path is not valid UTF-8: {}",
-                    path.display()
-                )
-            }
-            Self::ReadOnlyDatabaseMissing(path) => {
-                write!(
-                    formatter,
-                    "read-only lifecycle database does not exist: {}",
-                    path.display()
-                )
-            }
-            Self::Connection(error) => write!(formatter, "failed to open SQLite database: {error}"),
-            Self::Configuration(error) => {
-                write!(formatter, "failed to configure SQLite connection: {error}")
-            }
-            Self::Migration(error) => {
-                write!(formatter, "failed to apply database migrations: {error}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for DatabaseError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Path(error) => Some(error),
-            Self::StateDirectory(error) => Some(error),
-            Self::PathNotUtf8(_) => None,
-            Self::ReadOnlyDatabaseMissing(_) => None,
-            Self::Connection(error) => Some(error),
-            Self::Configuration(error) => Some(error),
-            Self::Migration(error) => Some(&**error),
-        }
-    }
+    #[snafu(transparent)]
+    Path { source: PathError },
+    #[snafu(transparent)]
+    StateDirectory { source: StateDirectoryError },
+    #[snafu(display("database path is not valid UTF-8: {}", path.display()))]
+    PathNotUtf8 { path: PathBuf },
+    #[snafu(display("read-only lifecycle database does not exist: {}", path.display()))]
+    ReadOnlyDatabaseMissing { path: PathBuf },
+    #[snafu(display("failed to open SQLite database: {source}"))]
+    Connection { source: diesel::ConnectionError },
+    #[snafu(display("failed to configure SQLite connection: {source}"))]
+    Configuration { source: diesel::result::Error },
+    #[snafu(display("failed to apply database migrations: {source}"))]
+    Migration {
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
 }
 
 #[cfg(test)]
@@ -155,18 +115,26 @@ mod tests {
     fn formats_database_errors() {
         let path = PathBuf::from("/tmp/trees.sqlite");
         let errors = [
-            DatabaseError::Path(PathError::HomeDirectoryUnavailable),
-            DatabaseError::StateDirectory(StateDirectoryError::new(
-                path.clone(),
-                std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
-            )),
-            DatabaseError::PathNotUtf8(path.clone()),
-            DatabaseError::ReadOnlyDatabaseMissing(path.clone()),
-            DatabaseError::Connection(diesel::ConnectionError::InvalidConnectionUrl(
-                "invalid".to_owned(),
-            )),
-            DatabaseError::Configuration(diesel::result::Error::NotFound),
-            DatabaseError::Migration(Box::new(std::io::Error::other("migration failed"))),
+            DatabaseError::Path {
+                source: PathError::HomeDirectoryUnavailable,
+            },
+            DatabaseError::StateDirectory {
+                source: StateDirectoryError::new(
+                    path.clone(),
+                    std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
+                ),
+            },
+            DatabaseError::PathNotUtf8 { path: path.clone() },
+            DatabaseError::ReadOnlyDatabaseMissing { path: path.clone() },
+            DatabaseError::Connection {
+                source: diesel::ConnectionError::InvalidConnectionUrl("invalid".to_owned()),
+            },
+            DatabaseError::Configuration {
+                source: diesel::result::Error::NotFound,
+            },
+            DatabaseError::Migration {
+                source: Box::new(std::io::Error::other("migration failed")),
+            },
         ];
 
         for error in errors {

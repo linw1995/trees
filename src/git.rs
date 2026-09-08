@@ -1,5 +1,4 @@
 use std::ffi::OsString;
-use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -7,6 +6,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{CanonicalPath, CanonicalPathError};
+use snafu::Snafu;
 
 #[derive(Debug, Clone)]
 pub struct RepositoryInfo {
@@ -150,7 +150,9 @@ pub fn find_worktree(
     list_worktrees(repository)?
         .into_iter()
         .find(|worktree| worktree.path.as_path() == worktree_path)
-        .ok_or_else(|| GitError::WorktreeNotFound(worktree_path.to_owned()))
+        .ok_or_else(|| GitError::WorktreeNotFound {
+            path: worktree_path.to_owned(),
+        })
 }
 
 pub fn is_worktree_clean(worktree_path: &Path) -> Result<bool, GitError> {
@@ -422,7 +424,7 @@ fn absolute_worktree_path(
     } else {
         repository.as_path().join(path)
     };
-    CanonicalPath::from_absolute(path).map_err(GitError::Canonicalize)
+    CanonicalPath::from_absolute(path).map_err(|source| GitError::Canonicalize { source })
 }
 
 fn path_from_output(repository: &CanonicalPath, output: String) -> Result<CanonicalPath, GitError> {
@@ -432,7 +434,7 @@ fn path_from_output(repository: &CanonicalPath, output: String) -> Result<Canoni
     } else {
         repository.as_path().join(path)
     };
-    CanonicalPath::resolve(path).map_err(GitError::Canonicalize)
+    CanonicalPath::resolve(path).map_err(|source| GitError::Canonicalize { source })
 }
 
 fn inspect_common_directory(path: &Path) -> Result<CanonicalPath, GitError> {
@@ -446,7 +448,7 @@ fn inspect_common_directory(path: &Path) -> Result<CanonicalPath, GitError> {
     } else {
         path.join(common_dir)
     };
-    CanonicalPath::resolve(common_dir).map_err(GitError::Canonicalize)
+    CanonicalPath::resolve(common_dir).map_err(|source| GitError::Canonicalize { source })
 }
 
 fn inspect_common_directory_with_heartbeat<F>(
@@ -470,7 +472,7 @@ where
     } else {
         path.join(common_dir)
     };
-    CanonicalPath::resolve(common_dir).map_err(GitError::Canonicalize)
+    CanonicalPath::resolve(common_dir).map_err(|source| GitError::Canonicalize { source })
 }
 
 fn single_line(operation: &str, output: String) -> Result<String, GitError> {
@@ -607,70 +609,29 @@ fn command_operation(program: &str, args: &[OsString]) -> String {
         .join(" ")
 }
 
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
 pub enum GitError {
+    #[snafu(display("failed to run git {operation}: {source}"))]
     Io {
         operation: String,
         source: std::io::Error,
     },
+    #[snafu(display("git {operation} failed with status {status:?}: {stderr}"))]
     CommandFailed {
         operation: String,
         status: Option<i32>,
         stderr: String,
     },
-    InvalidUtf8 {
-        operation: String,
-    },
-    InvalidOutput {
-        operation: String,
-        output: String,
-    },
-    Heartbeat(String),
-    Canonicalize(CanonicalPathError),
-    WorktreeNotFound(PathBuf),
-}
-
-impl fmt::Display for GitError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io { operation, source } => {
-                write!(formatter, "failed to run git {operation}: {source}")
-            }
-            Self::CommandFailed {
-                operation,
-                status,
-                stderr,
-            } => write!(
-                formatter,
-                "git {operation} failed with status {:?}: {}",
-                status, stderr
-            ),
-            Self::InvalidUtf8 { operation } => {
-                write!(formatter, "git {operation} returned invalid UTF-8")
-            }
-            Self::InvalidOutput { operation, output } => {
-                write!(
-                    formatter,
-                    "git {operation} returned invalid output: {output:?}"
-                )
-            }
-            Self::Heartbeat(error) => write!(formatter, "Git heartbeat failed: {error}"),
-            Self::Canonicalize(error) => error.fmt(formatter),
-            Self::WorktreeNotFound(path) => {
-                write!(formatter, "Git did not report worktree: {}", path.display())
-            }
-        }
-    }
-}
-
-impl std::error::Error for GitError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Io { source, .. } => Some(source),
-            Self::Canonicalize(error) => Some(error),
-            _ => None,
-        }
-    }
+    #[snafu(display("git {operation} returned invalid UTF-8"))]
+    InvalidUtf8 { operation: String },
+    #[snafu(display("git {operation} returned invalid output: {output:?}"))]
+    InvalidOutput { operation: String, output: String },
+    #[snafu(display("Git heartbeat failed: {message}"))]
+    Heartbeat { message: String },
+    #[snafu(transparent)]
+    Canonicalize { source: CanonicalPathError },
+    #[snafu(display("Git did not report worktree: {}", path.display()))]
+    WorktreeNotFound { path: PathBuf },
 }
 
 #[cfg(test)]
@@ -783,10 +744,14 @@ mod tests {
             &[OsString::from("5")],
             "sleep 5",
             Duration::from_millis(20),
-            || Err(GitError::Heartbeat("lease lost".to_owned())),
+            || {
+                Err(GitError::Heartbeat {
+                    message: "lease lost".to_owned(),
+                })
+            },
         )
         .expect_err("heartbeat failure should stop the command");
-        assert!(matches!(error, GitError::Heartbeat(message) if message == "lease lost"));
+        assert!(matches!(error, GitError::Heartbeat { message } if message == "lease lost"));
     }
 
     #[test]

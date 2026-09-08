@@ -1,9 +1,9 @@
-use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
+use snafu::Snafu;
 use uuid::Uuid;
 
 use crate::codex::app_server::{AppServerError, RpcClient};
@@ -192,20 +192,19 @@ fn root_values(roots: &[PathBuf]) -> Vec<Value> {
 
 fn validate_inputs(name: &str, roots: &[PathBuf]) -> Result<(), ProjectSyncError> {
     if name.trim().is_empty() {
-        return Err(ProjectSyncError::InvalidInput(
-            "project name must not be empty".to_owned(),
-        ));
+        return Err(ProjectSyncError::InvalidInput {
+            message: "project name must not be empty".to_owned(),
+        });
     }
     if roots.is_empty() {
-        return Err(ProjectSyncError::InvalidInput(
-            "project must contain at least one root".to_owned(),
-        ));
+        return Err(ProjectSyncError::InvalidInput {
+            message: "project must contain at least one root".to_owned(),
+        });
     }
     if let Some(path) = roots.iter().find(|path| !path.is_absolute()) {
-        return Err(ProjectSyncError::InvalidInput(format!(
-            "project root must be absolute: {}",
-            path.display()
-        )));
+        return Err(ProjectSyncError::InvalidInput {
+            message: format!("project root must be absolute: {}", path.display()),
+        });
     }
     Ok(())
 }
@@ -226,61 +225,27 @@ fn is_deleted_project_error(error: &AppServerError) -> bool {
     )
 }
 
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
 pub enum ProjectSyncError {
-    AppServer(AppServerError),
-    InvalidInput(String),
+    #[snafu(transparent)]
+    AppServer { source: AppServerError },
+    #[snafu(display("{message}"))]
+    InvalidInput { message: String },
+    #[snafu(display("malformed {method} response: {source}"))]
     MalformedResponse {
         method: String,
         source: serde_json::Error,
     },
-    InvalidResponse {
-        method: String,
-        message: String,
-    },
+    #[snafu(display("invalid {method} response: {message}"))]
+    InvalidResponse { method: String, message: String },
+    #[snafu(display(
+        "multiple Codex projects belong to workspace {workspace_id}: {}",
+        project_ids.join(", ")
+    ))]
     AmbiguousOwnership {
         workspace_id: String,
         project_ids: Vec<String>,
     },
-}
-
-impl From<AppServerError> for ProjectSyncError {
-    fn from(error: AppServerError) -> Self {
-        Self::AppServer(error)
-    }
-}
-
-impl fmt::Display for ProjectSyncError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::AppServer(error) => error.fmt(formatter),
-            Self::InvalidInput(message) => formatter.write_str(message),
-            Self::MalformedResponse { method, source } => {
-                write!(formatter, "malformed {method} response: {source}")
-            }
-            Self::InvalidResponse { method, message } => {
-                write!(formatter, "invalid {method} response: {message}")
-            }
-            Self::AmbiguousOwnership {
-                workspace_id,
-                project_ids,
-            } => write!(
-                formatter,
-                "multiple Codex projects belong to workspace {workspace_id}: {}",
-                project_ids.join(", ")
-            ),
-        }
-    }
-}
-
-impl std::error::Error for ProjectSyncError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::AppServer(error) => Some(error),
-            Self::MalformedResponse { source, .. } => Some(source),
-            _ => None,
-        }
-    }
 }
 
 #[cfg(test)]

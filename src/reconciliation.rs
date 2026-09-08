@@ -1,6 +1,5 @@
-use std::fmt;
-
 use diesel::sqlite::SqliteConnection;
+use snafu::{ResultExt, Snafu};
 
 use crate::domain::{
     JsonDocument, LeaseId, OperationId, OperationState, RepoWorktreeState, Timestamp, WorkspaceId,
@@ -43,10 +42,8 @@ fn load_access_boundary(
     workspace_id: &WorkspaceId,
     summary: ReconciliationSummary,
 ) -> Result<AccessBoundary, ReconciliationError> {
-    let workspace =
-        find_workspace(connection, workspace_id).map_err(ReconciliationError::Database)?;
-    let claim =
-        find_workspace_claim(connection, workspace_id).map_err(ReconciliationError::Database)?;
+    let workspace = find_workspace(connection, workspace_id).context(DatabaseSnafu)?;
+    let claim = find_workspace_claim(connection, workspace_id).context(DatabaseSnafu)?;
     Ok(AccessBoundary {
         summary,
         workspace,
@@ -77,16 +74,14 @@ fn reconcile_workspace_inner(
     operation_id: &OperationId,
     lease_id: Option<&LeaseId>,
 ) -> Result<ReconciliationSummary, ReconciliationError> {
-    let workspace =
-        find_workspace(connection, workspace_id).map_err(ReconciliationError::Database)?;
+    let workspace = find_workspace(connection, workspace_id).context(DatabaseSnafu)?;
     if workspace.state == WorkspaceState::Reclaimed {
         return Ok(ReconciliationSummary {
             changed_worktrees: 0,
             workspace_state: WorkspaceState::Reclaimed,
         });
     }
-    let repositories =
-        list_repo_worktrees(connection, workspace_id).map_err(ReconciliationError::Database)?;
+    let repositories = list_repo_worktrees(connection, workspace_id).context(DatabaseSnafu)?;
     let mut changed_worktrees = 0;
     let mut observed_states = Vec::with_capacity(repositories.len());
 
@@ -94,8 +89,7 @@ fn reconcile_workspace_inner(
         let observation = match lease_id {
             Some(lease_id) => observe_repository(&repository, || renew_lease(connection, lease_id)),
             None => observe_repository(&repository, || Ok(())),
-        }
-        .map_err(ReconciliationError::Git)?;
+        }?;
         let (state, head, details, error_json) = observation.into_record();
         observed_states.push(state);
         if state != repository.state || head.as_deref() != repository.last_head.as_deref() {
@@ -114,7 +108,7 @@ fn reconcile_workspace_inner(
                     error_json,
                 },
             )
-            .map_err(ReconciliationError::Database)?;
+            .context(DatabaseSnafu)?;
         }
     }
 
@@ -146,11 +140,11 @@ fn reconcile_workspace_inner(
             workspace_state,
             TransitionMetadata::new("workspace_reconciled", "reconciliation"),
         )
-        .map_err(ReconciliationError::Database)?;
+        .context(DatabaseSnafu)?;
     } else {
         let now = crate::domain::Timestamp::now();
         update_workspace_observation(connection, workspace_id, workspace_state, &now, &now)
-            .map_err(ReconciliationError::Database)?;
+            .context(DatabaseSnafu)?;
     }
 
     Ok(ReconciliationSummary {
@@ -160,13 +154,13 @@ fn reconcile_workspace_inner(
 }
 
 fn renew_lease(connection: &mut SqliteConnection, lease_id: &LeaseId) -> Result<(), GitError> {
-    match renew_operation_lease(connection, lease_id)
-        .map_err(|error| GitError::Heartbeat(error.to_string()))?
-    {
+    match renew_operation_lease(connection, lease_id).map_err(|error| GitError::Heartbeat {
+        message: error.to_string(),
+    })? {
         true => Ok(()),
-        false => Err(GitError::Heartbeat(
-            "operation lease is no longer owned".to_owned(),
-        )),
+        false => Err(GitError::Heartbeat {
+            message: "operation lease is no longer owned".to_owned(),
+        }),
     }
 }
 
@@ -259,7 +253,7 @@ where
                                 })
                             }
                         }
-                        Err(error) if matches!(&error, GitError::Heartbeat(_)) => Err(error),
+                        Err(error) if matches!(&error, GitError::Heartbeat { .. }) => Err(error),
                         Err(error) => Ok(Observation::Diverged {
                             head: worktree.head,
                             branch: worktree.branch,
@@ -288,7 +282,7 @@ where
                                 identity
                             )),
                         }),
-                        Err(error) if matches!(&error, GitError::Heartbeat(_)) => Err(error),
+                        Err(error) if matches!(&error, GitError::Heartbeat { .. }) => Err(error),
                         Err(error) => Ok(Observation::Diverged {
                             head: None,
                             branch: None,
@@ -303,7 +297,7 @@ where
 }
 
 fn observation_from_git_error(error: GitError) -> Result<Observation, GitError> {
-    if matches!(&error, GitError::Heartbeat(_)) {
+    if matches!(&error, GitError::Heartbeat { .. }) {
         Err(error)
     } else {
         Ok(Observation::Failed(error.to_string()))
@@ -323,12 +317,11 @@ pub fn recover_expired_operation(
     connection: &mut SqliteConnection,
     workspace_id: &WorkspaceId,
 ) -> Result<RecoveryOutcome, ReconciliationError> {
-    let running_operation = match find_running_operation(connection, workspace_id)
-        .map_err(ReconciliationError::Database)?
-    {
-        Some(operation) => operation,
-        None => return Ok(RecoveryOutcome::NoRunningOperation),
-    };
+    let running_operation =
+        match find_running_operation(connection, workspace_id).context(DatabaseSnafu)? {
+            Some(operation) => operation,
+            None => return Ok(RecoveryOutcome::NoRunningOperation),
+        };
     let operation = running_operation.operation;
     let lease = running_operation.lease;
     if !lease.lease_expires_at.has_expired() {
@@ -343,17 +336,14 @@ pub fn recover_expired_operation(
         &recovery_lease_id,
         &recovery_lease,
     )
-    .map_err(ReconciliationError::Database)?
+    .context(DatabaseSnafu)?
     {
         return Ok(RecoveryOutcome::LeaseActive);
     }
-    let operation =
-        find_operation(connection, &operation.id).map_err(ReconciliationError::Database)?;
+    let operation = find_operation(connection, &operation.id).context(DatabaseSnafu)?;
 
-    let workspace =
-        find_workspace(connection, workspace_id).map_err(ReconciliationError::Database)?;
-    let repositories =
-        list_repo_worktrees(connection, workspace_id).map_err(ReconciliationError::Database)?;
+    let workspace = find_workspace(connection, workspace_id).context(DatabaseSnafu)?;
+    let repositories = list_repo_worktrees(connection, workspace_id).context(DatabaseSnafu)?;
     if operation.kind != "create" {
         return recover_non_creation_operation(
             connection,
@@ -366,8 +356,7 @@ pub fn recover_expired_operation(
     let observations = repositories
         .iter()
         .map(|repository| observe_for_recovery(repository, &mut heartbeat))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(ReconciliationError::Git)?;
+        .collect::<Result<Vec<_>, _>>()?;
     let complete = !repositories.is_empty()
         && repositories
             .iter()
@@ -413,7 +402,7 @@ fn recover_non_creation_operation(
             .with_pending_step("non-creation operation recovery complete")
             .with_error(json_error("non-creation operation expired")),
     )
-    .map_err(ReconciliationError::Database)?;
+    .context(DatabaseSnafu)?;
     Ok(RecoveryOutcome::Failed)
 }
 
@@ -471,7 +460,7 @@ where
                 "worktree identity {} is not listed by the source repository",
                 identity
             ))),
-            Err(error) if matches!(&error, GitError::Heartbeat(_)) => Err(error),
+            Err(error) if matches!(&error, GitError::Heartbeat { .. }) => Err(error),
             Err(error) => Ok(unsafe_recovery_observation(format!(
                 "worktree path is not a Git worktree: {error}"
             ))),
@@ -526,7 +515,7 @@ where
 }
 
 fn recovery_observation_from_git_error(error: GitError) -> Result<RecoveryObservation, GitError> {
-    if matches!(&error, GitError::Heartbeat(_)) {
+    if matches!(&error, GitError::Heartbeat { .. }) {
         Err(error)
     } else {
         Ok(unsafe_recovery_observation(error.to_string()))
@@ -566,11 +555,10 @@ fn recover_completed_operation(
                 head,
                 TransitionMetadata::new("worktree_recovered", "recovery"),
             )
-            .map_err(ReconciliationError::Database)?;
+            .context(DatabaseSnafu)?;
         }
     }
-    finalize_recovered_creation(connection, workspace_id, lease_id)
-        .map_err(ReconciliationError::Database)?;
+    finalize_recovered_creation(connection, workspace_id, lease_id).context(DatabaseSnafu)?;
     Ok(RecoveryOutcome::Succeeded)
 }
 
@@ -660,7 +648,7 @@ fn recover_incomplete_operation(
         WorkspaceState::Failed,
         TransitionMetadata::new("workspace_recovery_failed", "recovery").with_error(error_json),
     )
-    .map_err(ReconciliationError::Database)?;
+    .context(DatabaseSnafu)?;
     if errors.is_empty() {
         Ok(RecoveryOutcome::RolledBack)
     } else {
@@ -759,33 +747,12 @@ fn recovery_error(errors: &[String]) -> JsonDocument {
     .expect("recovery error should serialize")
 }
 
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
 pub enum ReconciliationError {
-    Database(diesel::result::Error),
-    Git(GitError),
-}
-
-impl fmt::Display for ReconciliationError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Database(error) => {
-                write!(
-                    formatter,
-                    "reconciliation database operation failed: {error}"
-                )
-            }
-            Self::Git(error) => error.fmt(formatter),
-        }
-    }
-}
-
-impl std::error::Error for ReconciliationError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Database(error) => Some(error),
-            Self::Git(error) => Some(error),
-        }
-    }
+    #[snafu(display("reconciliation database operation failed: {source}"))]
+    Database { source: diesel::result::Error },
+    #[snafu(transparent)]
+    Git { source: GitError },
 }
 
 #[cfg(test)]
