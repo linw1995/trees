@@ -89,6 +89,26 @@ automatic. No `--mode` option is needed. Manual workspaces keep detached
 worktrees using the repository-count-based layout and are never removed by
 automatic GC.
 
+Inspect the persisted workspace inventory without changing lifecycle or Git
+state:
+
+```sh
+trees status
+trees status --all
+trees status --json
+```
+
+The human-readable view reports workspace health, claim usage, current
+operation lease status, management mode, repo-worktree state counts, last
+reconciliation time, and canonical path. Reclaimed workspace records are
+hidden by default; `--all` includes them. `--json` emits a versioned snapshot
+with complete workspace, claim, current operation, and repo-worktree details.
+
+Status reads one consistent SQLite snapshot. It does not reconcile, recover an
+expired operation, run Git, inspect workspace files, or assert that an
+unclaimed workspace is currently reusable. Use `gc --dry-run` when the question
+is which workspaces currently satisfy reclamation checks.
+
 Configure the automatic workspace content directory independently from the
 lifecycle database:
 
@@ -185,6 +205,6 @@ See the [contributing guide](CONTRIBUTING.md) for the development workflow and t
 ## Current Scope
 
 The current CLI provides manual and automatic workspace creation, explicit
-acquire and release, configured automatic workspace roots, and time-bounded
-automatic GC. Branch selection, repair, and user-facing status or history
-commands are not part of the current command surface.
+acquire and release, read-only workspace status, configured automatic
+workspace roots, and time-bounded automatic GC. Branch selection, repair, and
+user-facing history commands are not part of the current command surface.

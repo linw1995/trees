@@ -20,6 +20,6 @@
   operations, repo states, ordering, missing database, and failure exits
 - [x] 3.2 Prove status performs no database writes, lifecycle event appends,
   Git commands, filesystem observations, or operation recovery
-- [ ] 3.3 Document status semantics and the distinction from `gc --dry-run`
+- [x] 3.3 Document status semantics and the distinction from `gc --dry-run`
 - [ ] 3.4 Run complete Rust checks, repository hooks, strict OpenSpec
   validation, and Nix flake evaluation
