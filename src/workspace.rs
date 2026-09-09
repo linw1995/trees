@@ -110,10 +110,17 @@ pub struct CreationContext {
 pub fn prepare_automatic(
     request: &AutomaticCreateRequest,
 ) -> Result<AutomaticAllocationPlan, WorkspaceError> {
+    prepare_automatic_resolved(request, &[])
+}
+
+pub fn prepare_automatic_resolved(
+    request: &AutomaticCreateRequest,
+    expected: &[git::RepositoryInfo],
+) -> Result<AutomaticAllocationPlan, WorkspaceError> {
     let repositories = validation::validate_repositories(&request.repositories)?;
     let mut plans = Vec::with_capacity(repositories.len());
     for source_path in repositories {
-        let info = inspect_create_repository(&source_path, request.offline)?;
+        let info = inspect_expected_repository(&source_path, request.offline, expected)?;
         plans.push(AutomaticRepositoryPlan {
             source_path: info.root,
             repository_identity: info.common_dir,
@@ -1007,11 +1014,18 @@ fn automatic_creation_plan(
 }
 
 pub fn prepare_create(request: &CreateRequest) -> Result<CreationPlan, WorkspaceError> {
+    prepare_create_resolved(request, &[])
+}
+
+pub fn prepare_create_resolved(
+    request: &CreateRequest,
+    expected: &[git::RepositoryInfo],
+) -> Result<CreationPlan, WorkspaceError> {
     let input = validation::validate_create(&request.workspace_path, &request.repositories)?;
     let worktrees = naming::plan_worktrees(&input)?;
     let repositories = worktrees
         .into_iter()
-        .map(|plan| repository_plan(plan, request.offline))
+        .map(|plan| repository_plan(plan, request.offline, expected))
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(CreationPlan {
@@ -1020,14 +1034,37 @@ pub fn prepare_create(request: &CreateRequest) -> Result<CreationPlan, Workspace
     })
 }
 
-fn repository_plan(plan: WorktreePlan, offline: bool) -> Result<RepositoryPlan, WorkspaceError> {
-    let info = inspect_create_repository(&plan.repository, offline)?;
+fn repository_plan(
+    plan: WorktreePlan,
+    offline: bool,
+    expected: &[git::RepositoryInfo],
+) -> Result<RepositoryPlan, WorkspaceError> {
+    let info = inspect_expected_repository(&plan.repository, offline, expected)?;
     Ok(RepositoryPlan {
         source_path: info.root,
         repository_identity: info.common_dir,
         worktree_path: plan.worktree_path,
         head: info.head,
     })
+}
+
+fn inspect_expected_repository(
+    repository: &CanonicalPath,
+    offline: bool,
+    expected: &[git::RepositoryInfo],
+) -> Result<git::RepositoryInfo, WorkspaceError> {
+    if !expected.is_empty() {
+        let current = git::inspect_upstream_repository(repository)?;
+        snafu::ensure!(
+            expected
+                .iter()
+                .any(|info| info.root == current.root && info.common_dir == current.common_dir),
+            SourceChangedSnafu {
+                path: repository.clone()
+            }
+        );
+    }
+    Ok(inspect_create_repository(repository, offline)?)
 }
 
 fn inspect_create_repository(
@@ -1247,10 +1284,17 @@ pub struct CreationResult {
 }
 
 pub fn create(request: CreateRequest) -> Result<CreationResult, WorkspaceError> {
+    create_resolved(request, &[])
+}
+
+pub fn create_resolved(
+    request: CreateRequest,
+    expected: &[git::RepositoryInfo],
+) -> Result<CreationResult, WorkspaceError> {
     let workspace_path = validation::resolve_workspace_path(&request.workspace_path)?;
     let mut connection = crate::database::open_default().context(DatabaseOpenSnafu)?;
     reconcile_before_creation(&mut connection, &workspace_path)?;
-    let plan = prepare_create(&request)?;
+    let plan = prepare_create_resolved(&request, expected)?;
     create_with_connection(&mut connection, plan)
 }
 
@@ -1550,6 +1594,8 @@ fn error_document(error: &WorkspaceError) -> JsonDocument {
 
 #[derive(Debug, Snafu)]
 pub enum WorkspaceError {
+    #[snafu(display("source repository identity changed before creation: {path}"))]
+    SourceChanged { path: CanonicalPath },
     #[snafu(transparent)]
     Validation { source: ValidationError },
     #[snafu(transparent)]

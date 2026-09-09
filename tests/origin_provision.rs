@@ -171,3 +171,50 @@ fn recovers_interrupted_owned_clone_and_preserves_unproven_content() {
             .is_some()
     );
 }
+
+fn trees(fixture: &Fixture) -> Command {
+    let home = fixture.0.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_trees"));
+    command
+        .current_dir(&fixture.0)
+        .env("HOME", home)
+        .env("XDG_STATE_HOME", fixture.0.join("state"))
+        .env("XDG_DATA_HOME", fixture.0.join("data"))
+        .env("XDG_CONFIG_HOME", fixture.0.join("config"));
+    command
+}
+
+fn success(output: std::process::Output) -> serde_json::Value {
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn creates_from_url_then_reuses_directory_name() {
+    let fixture = Fixture::new();
+    success(
+        trees(&fixture)
+            .args(["create", "one", "--repo", &fixture.url(), "--json"])
+            .output()
+            .unwrap(),
+    );
+    let second = success(
+        trees(&fixture)
+            .current_dir(fixture.0.join("home"))
+            .args(["create", "two", "--repo", "remote", "--offline", "--json"])
+            .output()
+            .unwrap(),
+    );
+    assert!(Path::new(second["workspace_path"].as_str().unwrap()).exists());
+    let unknown = trees(&fixture)
+        .args(["create", "three", "--repo", "unknown-repository"])
+        .output()
+        .unwrap();
+    assert!(!unknown.status.success());
+    assert!(String::from_utf8_lossy(&unknown.stderr).contains("no registered repository"));
+}

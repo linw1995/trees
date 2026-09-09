@@ -31,7 +31,7 @@ pub struct CreateArgs {
     #[arg(value_name = "WORKSPACE_PATH")]
     pub workspace_path: Option<PathBuf>,
 
-    #[arg(long = "repo", required = true, value_name = "REPOSITORY_PATH")]
+    #[arg(long = "repo", required = true, value_name = "PATH|URL|NAME")]
     pub repositories: Vec<PathBuf>,
 
     #[arg(long, help = "Print the create result as JSON")]

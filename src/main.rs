@@ -38,13 +38,21 @@ fn run_create(arguments: trees::cli::CreateArgs) -> Result<ExitCode, CliError> {
         open,
     } = arguments;
     let open = resolve_open_program(open)?;
+    let expected = trees::origin::resolve::resolve(&repositories, offline)?;
+    let repositories = expected
+        .iter()
+        .map(|info| info.root.as_path().to_owned())
+        .collect();
     match workspace_path {
         Some(workspace_path) => {
-            let result = trees::workspace::create(trees::workspace::CreateRequest {
-                workspace_path,
-                repositories,
-                offline,
-            })?;
+            let result = trees::workspace::create_resolved(
+                trees::workspace::CreateRequest {
+                    workspace_path,
+                    repositories,
+                    offline,
+                },
+                &expected,
+            )?;
             if let Some(program) = open.as_deref() {
                 return open_workspace(program, result.workspace_path.as_path());
             }
@@ -57,7 +65,7 @@ fn run_create(arguments: trees::cli::CreateArgs) -> Result<ExitCode, CliError> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        None => run_automatic_create(repositories, json, offline, open.as_deref()),
+        None => run_automatic_create(repositories, json, offline, open.as_deref(), &expected),
     }
 }
 
@@ -86,11 +94,15 @@ fn run_automatic_create(
     json: bool,
     offline: bool,
     open: Option<&OsStr>,
+    expected: &[trees::git::RepositoryInfo],
 ) -> Result<ExitCode, CliError> {
-    let plan = trees::workspace::prepare_automatic(&trees::workspace::AutomaticCreateRequest {
-        repositories,
-        offline,
-    })?;
+    let plan = trees::workspace::prepare_automatic_resolved(
+        &trees::workspace::AutomaticCreateRequest {
+            repositories,
+            offline,
+        },
+        expected,
+    )?;
     let mut connection = trees::database::open_default()?;
     run_automatic_allocation(&mut connection, &plan, json, open)
 }
@@ -545,6 +557,10 @@ fn exit_code(status: ExitStatus) -> ExitCode {
 
 #[derive(Debug, Snafu)]
 enum CliError {
+    #[snafu(transparent)]
+    OriginInput {
+        source: trees::origin::resolve::ResolveError,
+    },
     #[snafu(display("{option_name} program must not be empty"))]
     EmptyProgram { option_name: &'static str },
     #[snafu(display("$SHELL is unset or empty; use {option_name}=<PROGRAM>"))]
