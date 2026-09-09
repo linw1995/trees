@@ -26,6 +26,6 @@
 
 ## 5. Documentation and Integration Validation
 
-- [ ] 5.1 Update README and CLI help for direct URL creation, directory-name resolution, `origins-dir`, repos status, and remove dispatch; verify examples match help and clearly describe retained clones and metadata-only repo removal.
+- [x] 5.1 Update README and CLI help for direct URL creation, directory-name resolution, `origins-dir`, repos status, and remove dispatch; verify examples match help and clearly describe retained clones and metadata-only repo removal.
 - [ ] 5.2 Run full Rust tests and applicable repository checks, including SQL boundaries and formatting; verify create/reuse/release/status/remove/GC regressions across both origin modes and migration integrity.
 - [ ] 5.3 Run strict OpenSpec validation and map all new scenarios to implementation verification before marking the change complete.

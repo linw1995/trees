@@ -39,6 +39,45 @@ Create a workspace from one or more Git repositories:
 trees create ./workspace --repo /path/to/api --repo /path/to/web
 ```
 
+Each `--repo` accepts a local path, a remote URL, or the directory name of a
+registered source repository:
+
+```sh
+trees create --repo https://github.com/example/api.git
+trees create --repo api
+trees create ./workspace --repo api --repo /path/to/web
+trees config set origins-dir /path/to/origins
+```
+
+A local path registers a manual source. A remote URL clones an automatic source
+below the configured origin directory, or reuses the automatic source already
+recorded for that exact URL. Different URL spellings are distinct lookup keys.
+An existing local directory takes precedence over a registered directory name.
+Otherwise, a bare name must match exactly one registered source; use the full
+path when multiple sources have the same name. Prefix local paths containing a
+colon with `./` to avoid interpreting them as remote addresses.
+
+Repository mode and workspace mode are independent. A manually supplied source
+remains manual even inside the managed origin directory. Using an existing
+automatic source by path or name preserves its mode and identity. No aliases or
+separate repository commands are needed.
+
+The default origin directory is `trees/origins` below the platform data
+directory. `repository.origins_dir` in the configuration file overrides it;
+relative values resolve against that file's directory. Each new clone occupies
+`<origins-dir>/<origin-id>/<directory-name>`. Changing the setting affects only
+new allocations and does not move existing sources. Known URLs keep using their
+original source. A missing or replaced known source produces an identity error
+instead of silently replacing the recorded repository.
+
+`--offline` can reuse a known source but cannot clone an unknown URL. If a later
+input or workspace step fails, successfully registered clones remain available
+for retry and their IDs are printed to standard error. Failed partial clones
+are cleaned only when their ownership is proven. Retry the same URL to recover
+an interrupted clone; concurrent provisioning for that URL reports that the
+operation is in progress. Do not downgrade while clone operations are pending;
+older binaries do not honor the new ownership and reservation metadata.
+
 With one repository, `./workspace` is the worktree root. With multiple repositories, each repository becomes a direct child worktree under `./workspace`. The source repositories remain at their original paths.
 Repository arguments may name either an upstream repository or one of its
 linked workspace repos. In both cases, create resolves the upstream primary
@@ -117,6 +156,8 @@ trees status
 trees status --json
 trees status --view workspaces
 trees status --view workspaces --all
+trees status --view repos
+trees status --view repos --all --json
 trees open WORKSPACE_ID
 trees open WORKSPACE_ID --program=codex
 ```
@@ -135,9 +176,17 @@ Use `--view workspaces` for individual manual and automatic workspaces.
 `STATUS` shows workspace health and appends `🔒` when an active claim exists;
 absence of the lock means unclaimed. Automatic mode is shown as `🤖`, while
 manual mode is shown as `👤`. Reclaimed workspace records are hidden by default;
-`--all` includes them only in this detail view. `--json` emits a versioned
+`--all` includes them in this detail view. `--json` emits a versioned
 snapshot for the selected view. Workspace JSON retains separate state and claim
 fields plus complete current operation, path, and repo-worktree details.
+
+Use `--view repos` for source repositories, with directory labels, management
+mode, registration status, full source paths, and stable IDs. Conflicting labels
+expand to unique path suffixes. `--all` includes sources whose registration was
+removed. JSON uses the version-1 envelope with `view: "repos"` and a `repos`
+array containing identity, path, mode, registration, root, and remote URL fields.
+This view reads stored metadata without probing Git, migrating storage, or
+recovering clone operations. A missing source remains visible.
 
 The human workspace view identifies each record by stable workspace ID rather
 than path. `trees open` resolves that ID and starts `$SHELL` in the persisted
@@ -200,6 +249,20 @@ remove dirty worktrees or unexpected content, but it does not break an active
 claim or operation and does not bypass path or repository identity guards.
 Successful removal keeps the workspace and worktree records as reclaimed
 tombstones.
+
+The same remove command accepts a source repository ID from the repos view:
+
+```sh
+trees remove <repo-id> --dry-run
+trees remove <repo-id> --yes
+```
+
+For repository targets, removal only clears registration. Both manual and
+automatic source files, IDs, pool relations, and workspace history remain
+intact, including with `--force`. Existing workspaces can still be released or
+removed. Repeated removal succeeds without changes; create by an explicit
+source path or its recorded URL restores registration with the original ID.
+Directory-name lookup excludes sources whose registration was removed.
 
 Launch an interactive Codex session for a managed workspace:
 
