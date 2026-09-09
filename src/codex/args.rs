@@ -1,7 +1,8 @@
 use std::ffi::OsString;
-use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use snafu::Snafu;
 
 const WORKSPACE_CONTEXT_SEPARATOR: &str = "\n\n--- Trees workspace context ---\n";
 
@@ -204,24 +205,13 @@ fn normalize_path(path: &Path, cwd: &Path) -> PathBuf {
     fs::canonicalize(&absolute).unwrap_or(absolute)
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Snafu)]
 pub enum CodexArgumentError {
+    #[snafu(display("{option} requires a directory"))]
     MissingValue { option: String },
+    #[snafu(display("{option} requires a non-empty directory"))]
     EmptyValue { option: String },
 }
-
-impl fmt::Display for CodexArgumentError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingValue { option } => write!(formatter, "{option} requires a directory"),
-            Self::EmptyValue { option } => {
-                write!(formatter, "{option} requires a non-empty directory")
-            }
-        }
-    }
-}
-
-impl std::error::Error for CodexArgumentError {}
 
 #[cfg(test)]
 mod tests {

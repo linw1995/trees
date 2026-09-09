@@ -1,5 +1,4 @@
 use std::ffi::OsString;
-use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -7,6 +6,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{CanonicalPath, CanonicalPathError};
+use snafu::{IntoError, ResultExt, Snafu};
 
 #[derive(Debug, Clone)]
 pub struct RepositoryInfo {
@@ -170,7 +170,9 @@ pub fn find_worktree(
     list_worktrees(repository)?
         .into_iter()
         .find(|worktree| worktree.path.as_path() == worktree_path)
-        .ok_or_else(|| GitError::WorktreeNotFound(worktree_path.to_owned()))
+        .ok_or_else(|| GitError::WorktreeNotFound {
+            path: worktree_path.to_owned(),
+        })
 }
 
 pub fn is_worktree_clean(worktree_path: &Path) -> Result<bool, GitError> {
@@ -459,7 +461,7 @@ fn absolute_worktree_path(
     } else {
         repository.as_path().join(path)
     };
-    CanonicalPath::from_absolute(path).map_err(GitError::Canonicalize)
+    Ok(CanonicalPath::from_absolute(path)?)
 }
 
 fn path_from_output(repository: &CanonicalPath, output: String) -> Result<CanonicalPath, GitError> {
@@ -469,7 +471,7 @@ fn path_from_output(repository: &CanonicalPath, output: String) -> Result<Canoni
     } else {
         repository.as_path().join(path)
     };
-    CanonicalPath::resolve(path).map_err(GitError::Canonicalize)
+    Ok(CanonicalPath::resolve(path)?)
 }
 
 fn inspect_common_directory(path: &Path) -> Result<CanonicalPath, GitError> {
@@ -483,7 +485,7 @@ fn inspect_common_directory(path: &Path) -> Result<CanonicalPath, GitError> {
     } else {
         path.join(common_dir)
     };
-    CanonicalPath::resolve(common_dir).map_err(GitError::Canonicalize)
+    Ok(CanonicalPath::resolve(common_dir)?)
 }
 
 fn inspect_common_directory_with_heartbeat<F>(
@@ -507,7 +509,7 @@ where
     } else {
         path.join(common_dir)
     };
-    CanonicalPath::resolve(common_dir).map_err(GitError::Canonicalize)
+    Ok(CanonicalPath::resolve(common_dir)?)
 }
 
 fn single_line(operation: &str, output: String) -> Result<String, GitError> {
@@ -560,10 +562,7 @@ fn run_command(program: &str, args: &[OsString], operation: &str) -> Result<Stri
     let output = Command::new(program)
         .args(args)
         .output()
-        .map_err(|source| GitError::Io {
-            operation: operation.to_owned(),
-            source,
-        })?;
+        .context(IoSnafu { operation })?;
     if !output.status.success() {
         return Err(GitError::CommandFailed {
             operation: operation.to_owned(),
@@ -571,9 +570,7 @@ fn run_command(program: &str, args: &[OsString], operation: &str) -> Result<Stri
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         });
     }
-    String::from_utf8(output.stdout).map_err(|_| GitError::InvalidUtf8 {
-        operation: operation.to_owned(),
-    })
+    String::from_utf8(output.stdout).context(InvalidUtf8Snafu { operation })
 }
 
 fn run_command_with_heartbeat<F>(
@@ -591,17 +588,11 @@ where
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|source| GitError::Io {
-            operation: operation.to_owned(),
-            source,
-        })?;
+        .context(IoSnafu { operation })?;
     let mut last_heartbeat = Instant::now();
 
     loop {
-        match child.try_wait().map_err(|source| GitError::Io {
-            operation: operation.to_owned(),
-            source,
-        })? {
+        match child.try_wait().context(IoSnafu { operation })? {
             Some(_) => break,
             None => {
                 if last_heartbeat.elapsed() >= poll_interval {
@@ -618,10 +609,7 @@ where
         }
     }
 
-    let output = child.wait_with_output().map_err(|source| GitError::Io {
-        operation: operation.to_owned(),
-        source,
-    })?;
+    let output = child.wait_with_output().context(IoSnafu { operation })?;
     if !output.status.success() {
         return Err(GitError::CommandFailed {
             operation: operation.to_owned(),
@@ -629,9 +617,7 @@ where
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         });
     }
-    String::from_utf8(output.stdout).map_err(|_| GitError::InvalidUtf8 {
-        operation: operation.to_owned(),
-    })
+    String::from_utf8(output.stdout).context(InvalidUtf8Snafu { operation })
 }
 
 fn command_operation(program: &str, args: &[OsString]) -> String {
@@ -644,69 +630,47 @@ fn command_operation(program: &str, args: &[OsString]) -> String {
         .join(" ")
 }
 
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
 pub enum GitError {
+    #[snafu(display("failed to run git {operation}: {source}"))]
     Io {
         operation: String,
         source: std::io::Error,
     },
+    #[snafu(display("git {operation} failed with status {status:?}: {stderr}"))]
     CommandFailed {
         operation: String,
         status: Option<i32>,
         stderr: String,
     },
+    #[snafu(display("git {operation} returned invalid UTF-8"))]
     InvalidUtf8 {
         operation: String,
+        source: std::string::FromUtf8Error,
     },
-    InvalidOutput {
-        operation: String,
-        output: String,
+    #[snafu(display("git {operation} returned invalid output: {output:?}"))]
+    InvalidOutput { operation: String, output: String },
+    #[snafu(display("Git heartbeat failed: {message}"))]
+    Heartbeat { message: String },
+    #[snafu(display("Git heartbeat failed: {source}"))]
+    HeartbeatFailure {
+        source: Box<dyn std::error::Error + Send + Sync>,
     },
-    Heartbeat(String),
-    Canonicalize(CanonicalPathError),
-    WorktreeNotFound(PathBuf),
+    #[snafu(transparent)]
+    Canonicalize { source: CanonicalPathError },
+    #[snafu(display("Git did not report worktree: {}", path.display()))]
+    WorktreeNotFound { path: PathBuf },
 }
 
-impl fmt::Display for GitError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io { operation, source } => {
-                write!(formatter, "failed to run git {operation}: {source}")
-            }
-            Self::CommandFailed {
-                operation,
-                status,
-                stderr,
-            } => write!(
-                formatter,
-                "git {operation} failed with status {:?}: {}",
-                status, stderr
-            ),
-            Self::InvalidUtf8 { operation } => {
-                write!(formatter, "git {operation} returned invalid UTF-8")
-            }
-            Self::InvalidOutput { operation, output } => {
-                write!(
-                    formatter,
-                    "git {operation} returned invalid output: {output:?}"
-                )
-            }
-            Self::Heartbeat(error) => write!(formatter, "Git heartbeat failed: {error}"),
-            Self::Canonicalize(error) => error.fmt(formatter),
-            Self::WorktreeNotFound(path) => {
-                write!(formatter, "Git did not report worktree: {}", path.display())
-            }
-        }
+impl GitError {
+    pub(crate) fn from_heartbeat_source(
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        HeartbeatFailureSnafu.into_error(Box::new(source))
     }
-}
 
-impl std::error::Error for GitError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Io { source, .. } => Some(source),
-            Self::Canonicalize(error) => Some(error),
-            _ => None,
-        }
+    pub(crate) fn is_heartbeat(&self) -> bool {
+        matches!(self, Self::Heartbeat { .. } | Self::HeartbeatFailure { .. })
     }
 }
 
@@ -873,10 +837,14 @@ mod tests {
             &[OsString::from("5")],
             "sleep 5",
             Duration::from_millis(20),
-            || Err(GitError::Heartbeat("lease lost".to_owned())),
+            || {
+                Err(GitError::Heartbeat {
+                    message: "lease lost".to_owned(),
+                })
+            },
         )
         .expect_err("heartbeat failure should stop the command");
-        assert!(matches!(error, GitError::Heartbeat(message) if message == "lease lost"));
+        assert!(matches!(error, GitError::Heartbeat { message } if message == "lease lost"));
     }
 
     #[test]

@@ -6,6 +6,7 @@ use std::str::FromStr;
 use diesel::{AsExpression, FromSqlRow};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use snafu::{ResultExt, Snafu};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -58,7 +59,7 @@ macro_rules! uuid_identifier {
             type Error = IdentifierError;
 
             fn try_from(value: String) -> Result<Self, Self::Error> {
-                let uuid = Uuid::parse_str(&value).map_err(IdentifierError::InvalidUuid)?;
+                let uuid = Uuid::parse_str(&value).context(InvalidUuidSnafu)?;
                 if uuid.get_version_num() != 7 {
                     return Err(IdentifierError::NotUuidV7 { value });
                 }
@@ -121,28 +122,12 @@ impl FromStr for WorkspaceManagementMode {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
 pub enum IdentifierError {
-    InvalidUuid(uuid::Error),
+    #[snafu(display("invalid UUID: {source}"))]
+    InvalidUuid { source: uuid::Error },
+    #[snafu(display("UUID is not version 7: {value}"))]
     NotUuidV7 { value: String },
-}
-
-impl fmt::Display for IdentifierError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidUuid(error) => write!(formatter, "invalid UUID: {error}"),
-            Self::NotUuidV7 { value } => write!(formatter, "UUID is not version 7: {value}"),
-        }
-    }
-}
-
-impl std::error::Error for IdentifierError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::InvalidUuid(error) => Some(error),
-            Self::NotUuidV7 { .. } => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, AsExpression, FromSqlRow)]
@@ -296,7 +281,8 @@ impl FromStr for OperationState {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Snafu)]
+#[snafu(display("invalid lifecycle state {value:?}; expected one of {expected:?}"))]
 pub struct StateParseError {
     value: String,
     expected: &'static [&'static str],
@@ -311,18 +297,6 @@ impl StateParseError {
     }
 }
 
-impl fmt::Display for StateParseError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "invalid lifecycle state {:?}; expected one of {:?}",
-            self.value, self.expected
-        )
-    }
-}
-
-impl std::error::Error for StateParseError {}
-
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, AsExpression, FromSqlRow)]
 #[diesel(sql_type = diesel::sql_types::Text)]
 #[serde(transparent)]
@@ -332,8 +306,8 @@ impl CanonicalPath {
     pub fn resolve(path: impl AsRef<Path>) -> Result<Self, CanonicalPathError> {
         let path = path.as_ref().to_owned();
         std::fs::canonicalize(&path)
+            .context(IoSnafu { path })
             .map(Self)
-            .map_err(|source| CanonicalPathError::Io { path, source })
     }
 
     pub fn from_absolute(path: impl AsRef<Path>) -> Result<Self, CanonicalPathError> {
@@ -374,42 +348,15 @@ impl FromStr for CanonicalPath {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
 pub enum CanonicalPathError {
+    #[snafu(display("failed to canonicalize {}: {source}", path.display()))]
     Io {
         path: PathBuf,
         source: std::io::Error,
     },
-    NotAbsolute {
-        path: PathBuf,
-    },
-}
-
-impl fmt::Display for CanonicalPathError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io { path, source } => {
-                write!(
-                    formatter,
-                    "failed to canonicalize {}: {}",
-                    path.display(),
-                    source
-                )
-            }
-            Self::NotAbsolute { path } => {
-                write!(formatter, "path is not absolute: {}", path.display())
-            }
-        }
-    }
-}
-
-impl std::error::Error for CanonicalPathError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Io { source, .. } => Some(source),
-            Self::NotAbsolute { .. } => None,
-        }
-    }
+    #[snafu(display("path is not absolute: {}", path.display()))]
+    NotAbsolute { path: PathBuf },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, AsExpression, FromSqlRow)]
@@ -419,14 +366,12 @@ pub struct JsonDocument(Value);
 impl JsonDocument {
     pub fn from_serializable<T: Serialize>(value: &T) -> Result<Self, JsonDocumentError> {
         serde_json::to_value(value)
+            .context(SerializeSnafu)
             .map(Self)
-            .map_err(JsonDocumentError::Serialize)
     }
 
     pub fn parse(text: &str) -> Result<Self, JsonDocumentError> {
-        serde_json::from_str(text)
-            .map(Self)
-            .map_err(JsonDocumentError::Parse)
+        serde_json::from_str(text).context(ParseSnafu).map(Self)
     }
 }
 
@@ -444,27 +389,12 @@ impl FromStr for JsonDocument {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
 pub enum JsonDocumentError {
-    Parse(serde_json::Error),
-    Serialize(serde_json::Error),
-}
-
-impl fmt::Display for JsonDocumentError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Parse(error) => write!(formatter, "invalid JSON: {error}"),
-            Self::Serialize(error) => write!(formatter, "failed to serialize JSON: {error}"),
-        }
-    }
-}
-
-impl std::error::Error for JsonDocumentError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Parse(error) | Self::Serialize(error) => Some(error),
-        }
-    }
+    #[snafu(display("invalid JSON: {source}"))]
+    Parse { source: serde_json::Error },
+    #[snafu(display("failed to serialize JSON: {source}"))]
+    Serialize { source: serde_json::Error },
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, AsExpression, FromSqlRow)]
@@ -507,8 +437,8 @@ impl Timestamp {
     pub fn parse(value: impl Into<String>) -> Result<Self, TimestampError> {
         let value = value.into();
         OffsetDateTime::parse(&value, &Rfc3339)
+            .context(TimestampSnafu)
             .map(|_| Self(value))
-            .map_err(TimestampError)
     }
 
     pub fn as_str(&self) -> &str {
@@ -538,19 +468,10 @@ impl fmt::Display for Timestamp {
     }
 }
 
-#[derive(Debug)]
-pub struct TimestampError(time::error::Parse);
-
-impl fmt::Display for TimestampError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "invalid RFC 3339 timestamp: {}", self.0)
-    }
-}
-
-impl std::error::Error for TimestampError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.0)
-    }
+#[derive(Debug, Snafu)]
+#[snafu(display("invalid RFC 3339 timestamp: {source}"))]
+pub struct TimestampError {
+    source: time::error::Parse,
 }
 
 #[cfg(test)]

@@ -104,7 +104,7 @@ fn automatic_fixture() -> AutomaticFixture {
 
 fn cleanup_fixture(fixture: AutomaticFixture) {
     match git::remove_worktree(&fixture.source, &fixture.worktree_path) {
-        Ok(()) | Err(git::GitError::WorktreeNotFound(_)) => {}
+        Ok(()) | Err(git::GitError::WorktreeNotFound { .. }) => {}
         Err(error) => panic!("test worktree should be removable: {error}"),
     }
     drop(fixture.connection);
@@ -222,7 +222,9 @@ fn fails_acquire_when_upstream_alignment_would_overwrite_an_ignored_file() {
 
     assert!(matches!(
         error,
-        WorkspaceError::Git(git::GitError::CommandFailed { .. })
+        WorkspaceError::Git {
+            source: git::GitError::CommandFailed { .. },
+        }
     ));
     assert!(
         find_workspace_claim(&mut fixture.connection, &fixture.workspace.id)
@@ -670,7 +672,7 @@ fn removal_preflight_is_read_only_and_rejects_unknown_or_reclaimed_ids() {
     assert_eq!(preflight.reason, gc::GcCandidateReason::Eligible);
     assert!(matches!(
         gc::scan_removal(&mut read_only, &trees::domain::WorkspaceId::new(), false),
-        Err(gc::GcError::WorkspaceNotFound(_))
+        Err(gc::GcError::WorkspaceNotFound { .. })
     ));
     let after_events = trees::schema::lifecycle_events::table
         .count()
@@ -728,7 +730,7 @@ fn dry_run_scan_uses_a_read_only_connection_and_preserves_state() {
 
     drop(read_only);
     match git::remove_worktree(&fixture.source, &fixture.worktree_path) {
-        Ok(()) | Err(git::GitError::WorktreeNotFound(_)) => {}
+        Ok(()) | Err(git::GitError::WorktreeNotFound { .. }) => {}
         Err(error) => panic!("test worktree should be removable: {error}"),
     }
     fs::remove_file(fixture.database_path).expect("database should be removable");

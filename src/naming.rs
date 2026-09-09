@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::fmt;
 use std::path::PathBuf;
+
+use snafu::Snafu;
 
 use crate::domain::CanonicalPath;
 use crate::validation::ValidatedCreateInput;
@@ -23,7 +24,9 @@ pub fn plan_worktrees(input: &ValidatedCreateInput) -> Result<Vec<WorktreePlan>,
             .as_path()
             .file_name()
             .filter(|name| !name.is_empty())
-            .ok_or_else(|| NamingError::MissingRepositoryName(repository.clone()))?
+            .ok_or_else(|| NamingError::MissingRepositoryName {
+                repository: repository.clone(),
+            })?
             .to_owned();
         if let Some(previous_repository) = names.insert(name.clone(), repository.clone()) {
             return Err(NamingError::DuplicateName {
@@ -47,39 +50,19 @@ pub fn plan_worktrees(input: &ValidatedCreateInput) -> Result<Vec<WorktreePlan>,
     Ok(plans)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
 pub enum NamingError {
-    MissingRepositoryName(CanonicalPath),
+    #[snafu(display("repository has no usable base name: {repository}"))]
+    MissingRepositoryName { repository: CanonicalPath },
+    #[snafu(display(
+        "repository name {name:?} collides between {first_repository} and {second_repository}"
+    ))]
     DuplicateName {
         name: OsString,
         first_repository: CanonicalPath,
         second_repository: CanonicalPath,
     },
 }
-
-impl fmt::Display for NamingError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingRepositoryName(repository) => {
-                write!(
-                    formatter,
-                    "repository has no usable base name: {repository}"
-                )
-            }
-            Self::DuplicateName {
-                name,
-                first_repository,
-                second_repository,
-            } => write!(
-                formatter,
-                "repository name {:?} collides between {} and {}",
-                name, first_repository, second_repository
-            ),
-        }
-    }
-}
-
-impl std::error::Error for NamingError {}
 
 #[cfg(test)]
 mod tests {

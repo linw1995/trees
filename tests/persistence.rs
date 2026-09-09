@@ -396,7 +396,7 @@ fn database_constraints_and_immutable_events_are_enforced() {
                 JsonDocument::parse("{}").unwrap(),
             ),
         ),
-        Err(OperationIntentError::WorkspaceBusy(_))
+        Err(OperationIntentError::WorkspaceBusy { .. })
     ));
 
     drop(connection);

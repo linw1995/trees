@@ -1,9 +1,9 @@
-use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::{json, Value};
+use snafu::{ResultExt, Snafu};
 
 use crate::codex::app_server::{AppServerError, RpcClient};
 
@@ -38,26 +38,24 @@ pub fn start_thread_with_instructions<R: RpcClient>(
     timeout: Duration,
 ) -> Result<ThreadStartResponse, ThreadStartError> {
     if project_id.trim().is_empty() {
-        return Err(ThreadStartError::InvalidInput(
-            "project identifier must not be empty".to_owned(),
-        ));
+        return Err(ThreadStartError::InvalidInput {
+            message: "project identifier must not be empty".to_owned(),
+        });
     }
     if !cwd.is_absolute() {
-        return Err(ThreadStartError::InvalidInput(format!(
-            "thread cwd must be absolute: {}",
-            cwd.display()
-        )));
+        return Err(ThreadStartError::InvalidInput {
+            message: format!("thread cwd must be absolute: {}", cwd.display()),
+        });
     }
     if roots.is_empty() {
-        return Err(ThreadStartError::InvalidInput(
-            "thread must contain at least one runtime root".to_owned(),
-        ));
+        return Err(ThreadStartError::InvalidInput {
+            message: "thread must contain at least one runtime root".to_owned(),
+        });
     }
     if let Some(path) = roots.iter().find(|path| !path.is_absolute()) {
-        return Err(ThreadStartError::InvalidInput(format!(
-            "runtime root must be absolute: {}",
-            path.display()
-        )));
+        return Err(ThreadStartError::InvalidInput {
+            message: format!("runtime root must be absolute: {}", path.display()),
+        });
     }
 
     let mut params = json!({
@@ -70,52 +68,26 @@ pub fn start_thread_with_instructions<R: RpcClient>(
     }
 
     let response = rpc.request("thread/start", params, timeout)?;
-    let response: ThreadStartResponse = serde_json::from_value(response)
-        .map_err(|source| ThreadStartError::MalformedResponse { source })?;
+    let response: ThreadStartResponse =
+        serde_json::from_value(response).context(MalformedResponseSnafu)?;
     if response.thread.id.trim().is_empty() {
-        return Err(ThreadStartError::InvalidResponse(
-            "thread/start returned an empty thread identifier".to_owned(),
-        ));
+        return Err(ThreadStartError::InvalidResponse {
+            message: "thread/start returned an empty thread identifier".to_owned(),
+        });
     }
     Ok(response)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
 pub enum ThreadStartError {
-    AppServer(AppServerError),
-    InvalidInput(String),
+    #[snafu(transparent)]
+    AppServer { source: AppServerError },
+    #[snafu(display("{message}"))]
+    InvalidInput { message: String },
+    #[snafu(display("malformed thread/start response: {source}"))]
     MalformedResponse { source: serde_json::Error },
-    InvalidResponse(String),
-}
-
-impl From<AppServerError> for ThreadStartError {
-    fn from(error: AppServerError) -> Self {
-        Self::AppServer(error)
-    }
-}
-
-impl fmt::Display for ThreadStartError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::AppServer(error) => error.fmt(formatter),
-            Self::InvalidInput(message) | Self::InvalidResponse(message) => {
-                formatter.write_str(message)
-            }
-            Self::MalformedResponse { source } => {
-                write!(formatter, "malformed thread/start response: {source}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for ThreadStartError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::AppServer(error) => Some(error),
-            Self::MalformedResponse { source } => Some(source),
-            _ => None,
-        }
-    }
+    #[snafu(display("{message}"))]
+    InvalidResponse { message: String },
 }
 
 #[cfg(test)]
@@ -219,6 +191,6 @@ mod tests {
         )
         .expect_err("empty project id should fail");
 
-        assert!(matches!(error, ThreadStartError::InvalidInput(_)));
+        assert!(matches!(error, ThreadStartError::InvalidInput { .. }));
     }
 }
