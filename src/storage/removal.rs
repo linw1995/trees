@@ -33,8 +33,34 @@ pub fn resolve(
     })
 }
 
+pub fn unregister(
+    connection: &mut SqliteConnection,
+    expected: &OriginRepositoryRow,
+) -> Result<(), TargetError> {
+    let id = expected.id.to_string().parse::<WorkspaceId>()?;
+    connection.immediate_transaction(|connection| {
+        let target = resolve(connection, id)?;
+        let RemovalTarget::Origin(current) = target else {
+            return ChangedSnafu { id }.fail();
+        };
+        snafu::ensure!(
+            current.repository_identity == expected.repository_identity
+                && current.source_path == expected.source_path,
+            ChangedSnafu { id }
+        );
+        super::origin::set_registered(connection, current.id, false).context(StorageSnafu)?;
+        Ok(())
+    })
+}
+
 #[derive(Debug, Snafu)]
 pub enum TargetError {
+    #[snafu(transparent)]
+    Identifier {
+        source: crate::domain::IdentifierError,
+    },
+    #[snafu(display("removal target {id} changed after preflight; retry"))]
+    Changed { id: WorkspaceId },
     #[snafu(display("no workspace or repository with ID {id}"))]
     Unknown { id: WorkspaceId },
     #[snafu(display(

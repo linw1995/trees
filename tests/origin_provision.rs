@@ -416,3 +416,103 @@ fn repos_json_is_versioned_and_reports_missing_sources_without_mutation() {
     assert_eq!(before["repos"], after["repos"]);
     assert!(!source.exists());
 }
+
+#[test]
+fn unregister_preserves_sources_claims_and_identity_for_both_modes() {
+    for automatic in [false, true] {
+        let fixture = Fixture::new();
+        let input = if automatic {
+            fixture.url()
+        } else {
+            fixture.0.join("remote").to_string_lossy().into_owned()
+        };
+        let created = success(
+            trees(&fixture)
+                .args(["create", "--repo", &input, "--json"])
+                .output()
+                .unwrap(),
+        );
+        let status = success(
+            trees(&fixture)
+                .args(["status", "--view", "repos", "--json"])
+                .output()
+                .unwrap(),
+        );
+        let row = &status["repos"][0];
+        let id = row["origin_repository_id"].as_str().unwrap();
+        let preview = trees(&fixture)
+            .args(["remove", id, "--dry-run"])
+            .output()
+            .unwrap();
+        assert!(preview.status.success());
+        assert!(String::from_utf8_lossy(&preview.stdout).contains("action=unregister_repository"));
+        assert_eq!(
+            success(
+                trees(&fixture)
+                    .args(["status", "--view", "repos", "--json"])
+                    .output()
+                    .unwrap()
+            )["repos"],
+            status["repos"]
+        );
+        let removed = trees(&fixture)
+            .args(["remove", id, "--force"])
+            .output()
+            .unwrap();
+        assert!(
+            removed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&removed.stderr)
+        );
+        assert!(Path::new(row["source_path"].as_str().unwrap()).exists());
+        assert!(success(
+            trees(&fixture)
+                .args(["status", "--view", "repos", "--json"])
+                .output()
+                .unwrap()
+        )["repos"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        let all = success(
+            trees(&fixture)
+                .args(["status", "--view", "repos", "--all", "--json"])
+                .output()
+                .unwrap(),
+        );
+        assert_eq!(all["repos"][0]["registered"], false);
+        assert!(trees(&fixture)
+            .args(["remove", id, "--yes"])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        let release = trees(&fixture)
+            .args([
+                "release",
+                "--claim-id",
+                created["claim_id"].as_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            release.status.success(),
+            "{}",
+            String::from_utf8_lossy(&release.stderr)
+        );
+        let reused = success(
+            trees(&fixture)
+                .args(["create", "--repo", &input, "--offline", "--json"])
+                .output()
+                .unwrap(),
+        );
+        assert_eq!(created["pool_id"], reused["pool_id"]);
+        let current = success(
+            trees(&fixture)
+                .args(["status", "--view", "repos", "--json"])
+                .output()
+                .unwrap(),
+        );
+        assert_eq!(current["repos"][0]["origin_repository_id"], id);
+    }
+}

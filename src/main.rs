@@ -355,7 +355,36 @@ fn execute_gc_report(
 }
 
 fn run_remove(arguments: trees::cli::RemoveArgs) -> Result<ExitCode, CliError> {
-    run_remove_command(&arguments)
+    let target = {
+        let mut connection = trees::database::open_read_only()?;
+        trees::storage::removal::resolve(&mut connection, arguments.workspace_id)?
+    };
+    match target {
+        trees::storage::removal::RemovalTarget::Workspace(_) => run_remove_command(&arguments),
+        trees::storage::removal::RemovalTarget::Origin(row) => run_origin_removal(&arguments, &row),
+    }
+}
+
+fn run_origin_removal(
+    arguments: &trees::cli::RemoveArgs,
+    row: &trees::storage::OriginRepositoryRow,
+) -> Result<ExitCode, CliError> {
+    println!("repo_id={}", row.id);
+    println!("repo_path={}", row.source_path.to_string().escape_debug());
+    println!("action=unregister_repository");
+    if arguments.dry_run || !row.registered {
+        return Ok(ExitCode::SUCCESS);
+    }
+    if matches!(
+        confirm_entity_removal(arguments.force, arguments.yes, true)?,
+        GcConfirmation::Cancelled
+    ) {
+        return Ok(ExitCode::SUCCESS);
+    }
+    let mut connection = trees::database::open_default()?;
+    trees::storage::removal::unregister(&mut connection, row)?;
+    println!("unregistered=true");
+    Ok(ExitCode::SUCCESS)
 }
 
 fn run_remove_command(arguments: &trees::cli::RemoveArgs) -> Result<ExitCode, CliError> {
@@ -387,6 +416,17 @@ fn load_removal_preflight(
 }
 
 fn confirm_removal(force: bool, yes: bool) -> Result<GcConfirmation, CliError> {
+    confirm_entity_removal(force, yes, false)
+}
+
+fn confirm_entity_removal(
+    force: bool,
+    yes: bool,
+    repository: bool,
+) -> Result<GcConfirmation, CliError> {
+    if force && repository {
+        return Ok(GcConfirmation::Proceed);
+    }
     if force {
         eprintln!("Warning: --force may remove dirty worktrees and unexpected workspace content.");
         return Ok(GcConfirmation::Proceed);
@@ -397,7 +437,14 @@ fn confirm_removal(force: bool, yes: bool) -> Result<GcConfirmation, CliError> {
     if !io::stdin().is_terminal() {
         return InteractiveConfirmationUnavailableSnafu.fail();
     }
-    print!("Remove this workspace? [y/N] ");
+    print!(
+        "{} [y/N] ",
+        if repository {
+            "Unregister this repository (keep source files)?"
+        } else {
+            "Remove this workspace?"
+        }
+    );
     io::stdout().flush().context(FlushConfirmationSnafu)?;
     let mut answer = String::new();
     io::stdin()
@@ -579,6 +626,10 @@ fn exit_code(status: ExitStatus) -> ExitCode {
 
 #[derive(Debug, Snafu)]
 enum CliError {
+    #[snafu(transparent)]
+    RemovalTarget {
+        source: trees::storage::removal::TargetError,
+    },
     #[snafu(transparent)]
     OriginInput {
         source: trees::origin::resolve::ResolveError,
