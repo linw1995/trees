@@ -7,6 +7,7 @@ pub mod domain;
 pub mod gc;
 pub mod git;
 pub mod naming;
+pub mod origin;
 pub mod paths;
 pub mod pool;
 pub mod reconciliation;

@@ -1,7 +1,7 @@
 ## 1. Origin Persistence and Input Resolution
 
 - [x] 1.1 Add registration, management mode, ownership, exact URL uniqueness, and pending-clone schema with typed Snafu errors; verify legacy origins become manual without changing IDs, pool keys, or foreign keys.
-- [ ] 1.2 Classify create repo inputs as explicit paths, supported URLs, or directory-name fallbacks; verify colon-bearing paths, Windows paths, existing-path precedence, unique NAME lookup in both modes, unknown and ambiguous names, and unsupported inputs before side effects.
+- [x] 1.2 Classify create repo inputs as explicit paths, supported URLs, or directory-name fallbacks; verify colon-bearing paths, Windows paths, existing-path precedence, unique NAME lookup in both modes, unknown and ambiguous names, and unsupported inputs before side effects.
 - [ ] 1.3 Add transactional identity and URL resolution plus base name lookup; verify duplicate base names remain legal, manual repositories inside `origins-dir` remain manual, and linked paths preserve existing automatic ownership.
 
 ## 2. Automatic Source Provisioning
