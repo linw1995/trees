@@ -218,3 +218,93 @@ fn creates_from_url_then_reuses_directory_name() {
     assert!(!unknown.status.success());
     assert!(String::from_utf8_lossy(&unknown.stderr).contains("no registered repository"));
 }
+
+#[test]
+fn repeated_url_reuses_pool_and_offline_requires_a_known_clone() {
+    let fixture = Fixture::new();
+    let unknown = trees(&fixture)
+        .args(["create", "--repo", &fixture.url(), "--offline", "--json"])
+        .output()
+        .unwrap();
+    assert!(!unknown.status.success());
+    assert!(String::from_utf8_lossy(&unknown.stderr).contains("offline creation cannot clone"));
+    let first = success(
+        trees(&fixture)
+            .args(["create", "--repo", &fixture.url(), "--json"])
+            .output()
+            .unwrap(),
+    );
+    let release = trees(&fixture)
+        .args(["release", "--claim-id", first["claim_id"].as_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        release.status.success(),
+        "{}",
+        String::from_utf8_lossy(&release.stderr)
+    );
+    let second = success(
+        trees(&fixture)
+            .args(["create", "--repo", &fixture.url(), "--offline", "--json"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(first["pool_id"], second["pool_id"]);
+    assert_eq!(first["workspace_path"], second["workspace_path"]);
+    assert_ne!(first["claim_id"], second["claim_id"]);
+}
+
+#[test]
+fn mixed_manual_and_automatic_origins_support_both_workspace_modes() {
+    let fixture = Fixture::new();
+    let local = fixture.0.join("web");
+    fs::create_dir(&local).unwrap();
+    git(&local, &["init", "-b", "main"]);
+    git(
+        &local,
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "initial",
+        ],
+    );
+    let local = local.to_str().unwrap();
+    let manual = success(
+        trees(&fixture)
+            .args([
+                "create",
+                "manual",
+                "--repo",
+                local,
+                "--repo",
+                &fixture.url(),
+                "--json",
+            ])
+            .output()
+            .unwrap(),
+    );
+    let automatic = success(
+        trees(&fixture)
+            .args([
+                "create",
+                "--repo",
+                local,
+                "--repo",
+                &fixture.url(),
+                "--offline",
+                "--json",
+            ])
+            .output()
+            .unwrap(),
+    );
+    for result in [manual, automatic] {
+        let root = Path::new(result["workspace_path"].as_str().unwrap());
+        assert!(root.join("web/.git").is_file());
+        assert!(root.join("remote/.git").is_file());
+    }
+}
