@@ -8,4 +8,4 @@
 
 ## 3. Documentation and Validation
 
-- [ ] 3.1 Update CLI help, README, and verification evidence; run full Rust tests, repository hooks, Flake validation, and the complexity gate before committing the correction.
+- [x] 3.1 Update CLI help, README, and verification evidence; run full Rust tests, repository hooks, Flake validation, and the complexity gate before committing the correction.
