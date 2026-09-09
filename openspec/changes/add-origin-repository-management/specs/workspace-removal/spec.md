@@ -22,7 +22,7 @@ threshold.
 #### Scenario: Dispatch an Origin Identifier
 
 - **WHEN** the ID matches only an origin repository
-- **THEN** remove performs repository registration removal rather than workspace removal
+- **THEN** remove performs origin record removal rather than workspace removal
 
 #### Scenario: Reject Ambiguous Entity Identity
 
@@ -31,22 +31,21 @@ threshold.
 
 ## ADDED Requirements
 
-### Requirement: Apply Remove Options to Repository Targets
+### Requirement: Apply Remove Options to Origin Records
 
-For repo targets, `--dry-run` SHALL use read-only storage and report entity type,
-path, and the registration removal action without mutation or recovery. Execution
-SHALL use the existing confirmation policy, explicitly identifying repository
-registration removal. Neither `--yes` nor `--force` SHALL authorize source file deletion;
-`--force` SHALL only imply confirmation for repository targets. Workspace option
-semantics SHALL remain unchanged. Already unregistered origins SHALL succeed
-without additional changes.
+For repo IDs, `--dry-run` SHALL report the source path, record-removal action,
+and counts of worktree and pool references using read-only storage. Confirmed
+execution SHALL reject referenced records and otherwise delete only the origin
+row. `--yes` and `--force` SHALL skip confirmation but never override references
+or delete source files. Unknown IDs SHALL fail. Workspace options SHALL remain
+unchanged.
 
-#### Scenario: Preview Repository Registration Removal
+#### Scenario: Preview Origin Record Removal
 
 - **WHEN** remove receives a repo ID with `--dry-run`
-- **THEN** it reports repository registration removal and preserves both database and source files
+- **THEN** it reports reference counts without database or filesystem mutation
 
-#### Scenario: Force Does Not Delete an Origin
+#### Scenario: Force Preserves Referenced Origins
 
-- **WHEN** remove receives an automatic repo ID with `--force`
-- **THEN** it skips confirmation and removes registration for the origin while preserving source files and references
+- **WHEN** remove receives a referenced repo ID with `--force`
+- **THEN** it fails and preserves the origin record and source files

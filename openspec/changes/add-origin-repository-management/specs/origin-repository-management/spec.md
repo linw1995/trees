@@ -1,126 +1,99 @@
 ## Purpose
 
-Manage automatically provisioned and manually registered source repositories
-through existing workspace commands while preserving repository identity and
-explicit ownership independently of directory placement.
+Manage source repositories through existing commands using their existing Git
+identity and path, without introducing persistent repository management modes.
 
 ## ADDED Requirements
 
-### Requirement: Preserve Explicit Repository Management Modes
+### Requirement: Reuse Existing Origin Records
 
-New origins registered from local paths SHALL be manual. Origins cloned by
-Trees from remote inputs SHALL be automatic. Existing records SHALL migrate as
-manual regardless of their location. Registration through an existing origin's
-primary or linked path SHALL preserve its ID and mode. Neither directory
-containment nor configuration changes SHALL convert management modes. Either
-origin mode SHALL support either workspace mode.
+Origins SHALL retain only their existing ID, canonical Git common-directory
+identity, and primary source path. Local registration and automatic cloning
+SHALL converge on the same origin model. Registration SHALL reuse an existing
+ID for the same identity. No management mode, soft-delete state, source root,
+or remote URL SHALL be added to origin records. Directory placement SHALL NOT
+imply ownership or deletion policy.
 
-#### Scenario: Register a Manual Repository Inside the Managed Root
+#### Scenario: Register a Local Source Inside the Clone Root
 
-- **WHEN** create receives a previously unknown local checkout inside `origins-dir`
-- **THEN** its origin is manual and its files remain user-owned
+- **WHEN** create receives a local source inside the configured clone root
+- **THEN** it registers the same kind of origin record as any other local or cloned source
 
-#### Scenario: Resolve an Existing Automatic Origin by Path
+#### Scenario: Reuse a Linked Worktree Input
 
-- **WHEN** create receives a path to an automatic source or a linked worktree
-- **THEN** it retains the existing ID, automatic mode, managed root, and URL metadata
+- **WHEN** a local input resolves to an existing origin through a linked worktree
+- **THEN** it retains that origin ID and primary source path
 
-### Requirement: Derive Names from Source Directories
+### Requirement: Configure Future Clone Placement
 
-Origins SHALL use primary source directory base names as their names without
-stored aliases or global name uniqueness. Duplicate base names SHALL remain
-valid origin records. No dedicated repo command group or alias mutation
-interface SHALL be introduced.
+`trees config set origins-dir <PATH>` SHALL store `repository.origins_dir`,
+with the existing platform default. Relative paths SHALL resolve against the
+configuration file directory. The setting SHALL affect future allocations
+without moving existing sources. Local registration SHALL NOT create the root.
 
-#### Scenario: Keep Same-Named Repositories Distinct
+#### Scenario: Change the Root
 
-- **WHEN** two origins have source paths ending in `api`
-- **THEN** both retain their distinct origin IDs and paths without requiring a rename
+- **WHEN** the root is changed before cloning a new URL
+- **THEN** the new clone uses that root and existing sources remain in place
 
-### Requirement: Configure Automatic Origin Placement
+### Requirement: Reuse Sources Through Git Remote Configuration
 
-`trees config set origins-dir <PATH>` SHALL persist `repository.origins_dir`,
-with a default of `trees/origins` below the platform data base. Relative paths
-SHALL resolve against the configuration file directory. Changing configuration
-SHALL preserve unrelated settings and affect only future allocations. Each
-automatic origin SHALL retain its allocation root. Manual registration SHALL
-NOT create, move into, or claim ownership of the configured directory.
+URL lookup SHALL inspect local, readable, identity-matching origin repositories
+and compare their Git `remote.origin.url` values exactly. A unique matching
+source SHALL be reused regardless of creation method. Multiple matching origins
+SHALL fail with candidate paths. Missing or identity-mismatched origins SHALL
+not match but SHALL retain their records. Unknown URLs SHALL be cloned into
+an exclusive contained destination and registered after usable HEAD validation.
+Remote configuration changes SHALL take effect without updating origin rows.
 
-#### Scenario: Change the Root for New Clones
+#### Scenario: Reuse a Manually Registered Source by URL
 
-- **WHEN** the root changes and create receives a previously unseen URL
-- **THEN** the clone is allocated under the new root and existing origins remain in place
+- **WHEN** one existing source has the requested Git remote URL
+- **THEN** create reuses its ID and pool without cloning
 
-### Requirement: Provision or Reuse an Automatic Origin by URL
+#### Scenario: Observe a Changed Remote
 
-A remote create input SHALL reuse a known automatic origin for the exact
-provisioning URL after validating its stored identity, or clone a new source
-under the configured root. URL lookup SHALL be independent of current root
-configuration and SHALL NOT adopt manual repositories by their remote URL.
-Missing or replaced known clones SHALL fail without rebinding their IDs.
-Different URL spellings SHALL NOT be assumed equivalent. A new clone SHALL
-use a contained exclusive target and SHALL be registered only after Git cloning
-and primary HEAD validation succeed. Existing contents SHALL NOT be overwritten.
+- **WHEN** the user changes a source's Git remote URL
+- **THEN** subsequent URL lookup uses the changed configuration
 
-#### Scenario: Reuse a URL Across Workspace Creations
+#### Scenario: Reject Ambiguous URLs
 
-- **WHEN** create receives the same URL again, including after `origins-dir` changes
-- **THEN** it uses the original valid automatic origin and the same repository-set pool identity
+- **WHEN** two recorded sources have the requested URL
+- **THEN** create fails with their paths instead of choosing one silently
 
-#### Scenario: Clone a New Source
+### Requirement: Recover Partial Clone Operations
 
-- **WHEN** create receives an unknown reachable remote URL
-- **THEN** Trees clones and registers an automatic origin before workspace creation
-- **AND** a remote base name `api.git` produces a source directory named `api`
+The clone intent SHALL be persisted separately from origin records before file
+creation. Per-URL locks SHALL serialize provisioning and the lookup SHALL be
+repeated after acquiring the lock. The cleanup SHALL affect only proven operation
+files. Successful publication SHALL consume pending intent; published sources
+SHALL survive subsequent workspace failure. Recovery SHALL retain evidence
+when ownership cannot be proven and SHALL NOT take over live operations.
 
-#### Scenario: Reject a Broken Retained Clone
+#### Scenario: Recover an Interrupted Clone
 
-- **WHEN** a known URL's source is missing or its common directory differs
-- **THEN** create fails with the origin ID and path without replacing the retained identity
+- **WHEN** create retries a URL with abandoned operation intent
+- **THEN** it acquires the lock and recovers only owned partial files
 
-### Requirement: Recover Partial Provisioning Without Removing Published Origins
+#### Scenario: Preserve a Published Source
 
-Trees SHALL persist clone intent before filesystem mutation, isolate targets,
-and serialize provisioning for the same exact URL. A live concurrent reservation
-SHALL produce an in-progress error without a duplicate clone. Failure cleanup
-SHALL affect only provably owned partial files within the recorded root.
-Interrupted provisioning SHALL be recoverable on subsequent create for that
-URL. Uncertain ownership or cleanup failure SHALL retain an actionable operation
-record. Published origins SHALL survive subsequent workspace or other input
-failures and SHALL be reported for reuse. Partial origins SHALL NOT be available for selection.
+- **WHEN** workspace creation fails after an origin was published
+- **THEN** its files and origin ID remain available for retry
 
-#### Scenario: Fail During Clone
+### Requirement: Remove Only Origin Records Without References
 
-- **WHEN** Git fails or the new source has no usable primary HEAD
-- **THEN** no registered origin is published and only owned partial clone files are cleaned
+Origin removal SHALL delete the database row only when no repo-worktrees or
+pool memberships reference it. All retained references SHALL count, including
+historical ones. Source files SHALL remain untouched. Checks SHALL be repeated
+within a transaction before deletion. Force SHALL NOT bypass reference guards.
+A deleted ID SHALL be unknown; subsequent registration SHALL allocate a new ID.
 
-#### Scenario: Preserve a Committed Origin
+#### Scenario: Reject a Referenced Origin
 
-- **WHEN** clone publication succeeded but a later step or acknowledgment fails
-- **THEN** its source files and origin record remain available for retry
+- **WHEN** remove targets an origin with any worktree or pool reference
+- **THEN** it reports the references and changes neither the origin nor source files
 
-#### Scenario: Recover After Interruption
+#### Scenario: Remove an Origin Without References
 
-- **WHEN** create encounters an abandoned reservation for its URL
-- **THEN** it acquires exclusive recovery ownership before cleaning proven partial files and retrying
-- **AND** it never takes over a live operation or deletes unrelated paths
-
-### Requirement: Remove Registration for an Origin Without Deleting Source Data
-
-`trees remove <REPO_ID>` SHALL remove registration for either origin mode while preserving
-source files, ownership metadata, origin ID, pool membership, worktrees, claims,
-and history. Existing workspace references SHALL NOT block registration removal.
-An already unregistered origin SHALL be a successful no-op. Subsequent create
-by its valid source path or exact provisioning URL SHALL re-register the same
-identity. Directory-name lookup SHALL exclude unregistered origins.
-
-#### Scenario: Remove a Referenced Automatic Origin
-
-- **WHEN** remove targets an automatic origin referenced by existing workspaces
-- **THEN** it removes registration for metadata without deleting the clone or changing those workspaces
-- **AND** existing release and workspace removal remain available under their usual guards
-
-#### Scenario: Re-Register a Retained Origin
-
-- **WHEN** create explicitly uses an unregistered origin's valid path or known URL
-- **THEN** it reuses the same ID, mode, and ownership metadata
+- **WHEN** confirmed removal targets an origin with no references
+- **THEN** its row is deleted and its source files remain intact

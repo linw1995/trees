@@ -9,13 +9,13 @@ schemes and `SCP`-style host paths SHALL be URLs. Other inputs SHALL be paths;
 a nonexistent single-component relative path SHALL resolve by registered
 primary directory base name only when exactly one origin matches. Existing local
 directories SHALL take precedence. NAME SHALL match the exact stored primary
-directory base name across registered manual and automatic origins and reuse
+directory base name across existing origins and reuse
 that origin without cloning a new source. Unknown or ambiguous names SHALL fail.
 Create SHALL retain at least one required repo input and SHALL NOT introduce
 an origin selector option or separate repository command group.
 
 Local inputs SHALL register or reuse origins; URLs SHALL provision or reuse
-automatic origins. Both workspace modes SHALL use existing layout, pool,
+origins through Git remote configuration. Both workspace modes SHALL use existing layout, pool,
 revision, source-preservation, open, and JSON rules after input resolution.
 All inputs SHALL be parsed and predictable local errors rejected before cloning.
 Duplicate identities SHALL fail before workspace creation. Successfully
@@ -30,7 +30,7 @@ SHALL follow existing rollback behavior.
 #### Scenario: Mix a Local Checkout and a Remote
 
 - **WHEN** create receives a local checkout and a distinct remote URL
-- **THEN** both sources participate in one workspace and retain their own management modes
+- **THEN** both sources participate in one workspace and use the same origin record model
 
 #### Scenario: Resolve a Directory Name
 
@@ -70,5 +70,5 @@ SHALL follow existing rollback behavior.
 
 #### Scenario: Look up Either Management Mode by Name
 
-- **WHEN** NAME uniquely matches a registered manual or automatic source
-- **THEN** create reuses its stored identity and retains its management mode
+- **WHEN** NAME uniquely matches an existing source
+- **THEN** create reuses its stored identity and does not add repository mode metadata
