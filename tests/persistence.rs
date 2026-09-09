@@ -57,6 +57,9 @@ fn combined_feature_migration_preserves_legacy_workspace() {
     let mut connection = database::connect(&path).expect("database should open");
     connection
         .revert_last_migration(database::MIGRATIONS)
+        .expect("origin migration should revert");
+    connection
+        .revert_last_migration(database::MIGRATIONS)
         .expect("feature migration should revert");
 
     let workspace_id = WorkspaceId::new();
@@ -120,6 +123,9 @@ fn combined_feature_migration_preserves_legacy_workspace() {
 fn combined_feature_migration_preserves_legacy_operation_lease() {
     let path = database_path();
     let mut connection = database::connect(&path).expect("database should open");
+    connection
+        .revert_last_migration(database::MIGRATIONS)
+        .expect("origin migration should revert");
     connection
         .revert_last_migration(database::MIGRATIONS)
         .expect("feature migration should revert");
@@ -307,7 +313,7 @@ fn embedded_migrations_are_consolidated() {
     let mut connection = database::connect(&path).expect("database should open");
     let migrations = MigrationSource::<diesel::sqlite::Sqlite>::migrations(&database::MIGRATIONS)
         .expect("embedded migrations should load");
-    assert_eq!(migrations.len(), 2);
+    assert_eq!(migrations.len(), 3);
     assert!(trees::storage::find_workspace_claim_by_id(
         &mut connection,
         &trees::domain::ClaimId::new(),

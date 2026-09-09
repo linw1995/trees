@@ -57,3 +57,33 @@ mod origin_migration_tests {
         assert_eq!(retained, id);
     }
 }
+
+#[test]
+fn rollback_requires_pending_clone_recovery() {
+    use diesel_migrations::MigrationHarness;
+    use trees::domain::{CanonicalPath, OriginRepositoryId};
+    let mut db = trees::database::connect(std::path::Path::new(":memory:")).unwrap();
+    let id = OriginRepositoryId::new();
+    trees::storage::origin::insert_pending(
+        &mut db,
+        &trees::storage::models::PendingOriginClone {
+            id,
+            remote_url: "https://example.com/api.git".to_owned(),
+            managed_root: CanonicalPath::from_absolute("/tmp/origins").unwrap(),
+            source_path: CanonicalPath::from_absolute(format!("/tmp/origins/{id}/api")).unwrap(),
+            ownership_token: OriginRepositoryId::new().to_string(),
+        },
+    )
+    .unwrap();
+    assert!(db
+        .revert_last_migration(trees::database::MIGRATIONS)
+        .is_err());
+    assert!(
+        trees::storage::origin::pending_by_url(&mut db, "https://example.com/api.git")
+            .unwrap()
+            .is_some()
+    );
+    trees::storage::origin::delete_pending(&mut db, id).unwrap();
+    db.revert_last_migration(trees::database::MIGRATIONS)
+        .unwrap();
+}

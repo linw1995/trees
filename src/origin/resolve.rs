@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use snafu::{ensure, ResultExt, Snafu};
 
@@ -9,16 +9,13 @@ use crate::{database, git, storage, validation};
 pub fn resolve(
     inputs: &[PathBuf],
     offline: bool,
+    workspace_path: Option<&Path>,
 ) -> Result<Vec<git::RepositoryInfo>, ResolveError> {
     let parsed = inputs
         .iter()
         .map(|value| RepositoryInput::parse(value))
         .collect::<Result<Vec<_>, _>>()?;
-    let mut database = match database::open_read_only() {
-        Ok(connection) => Some(connection),
-        Err(database::DatabaseError::ReadOnlyDatabaseMissing { .. }) => None,
-        Err(source) => return Err(source.into()),
-    };
+    let catalog = load_catalog(&parsed)?;
     let mut resolved = Vec::new();
     let mut urls = HashSet::new();
     let mut pending = Vec::new();
@@ -27,27 +24,21 @@ pub fn resolve(
         let info = match input {
             RepositoryInput::Path(path) => {
                 let paths = validation::validate_repositories(&[path])?;
-                Some(git::inspect_upstream_repository(&paths[0])?)
+                Some(inspect_primary(&paths[0])?)
             }
             RepositoryInput::Name(name) => {
-                let connection = database
-                    .as_mut()
-                    .ok_or_else(|| ResolveError::UnknownName { name: name.clone() })?;
-                let row = storage::origin::resolve_name(connection, &name)?;
+                let row = storage::origin::resolve_name_in(&catalog, &name)?;
                 provision::validate_existing(&row)?;
-                Some(git::inspect_upstream_repository(&row.source_path)?)
+                Some(inspect_primary(&row.source_path)?)
             }
             RepositoryInput::Url(url) => {
                 ensure!(urls.insert(url.clone()), DuplicateSnafu);
-                let row = match database.as_mut() {
-                    Some(connection) => {
-                        storage::origin::find_by_url(connection, &url).context(StorageSnafu)?
-                    }
-                    None => None,
-                };
+                let row = catalog
+                    .iter()
+                    .find(|row| row.remote_url.as_deref() == Some(url.as_str()));
                 if let Some(row) = row {
-                    provision::validate_existing(&row)?;
-                    Some(git::inspect_upstream_repository(&row.source_path)?)
+                    provision::validate_existing(row)?;
+                    Some(inspect_primary(&row.source_path)?)
                 } else {
                     ensure!(!offline, OfflineSnafu);
                     ensure!(names.insert(reservation::directory_name(&url)), LayoutSnafu);
@@ -72,7 +63,17 @@ pub fn resolve(
         }
     }
     check_identities(&resolved)?;
-    drop(database);
+    if let Some(target) = workspace_path {
+        let target = validation::resolve_workspace_path(target)?;
+        for info in &resolved {
+            ensure!(
+                !target.as_path().starts_with(info.root.as_path()),
+                NestedWorkspaceSnafu {
+                    path: target.as_path()
+                }
+            );
+        }
+    }
     if !pending.is_empty() {
         let root = crate::config::origins_directory()?;
         let locks = crate::paths::state_directory()?.join("origin-locks");
@@ -83,11 +84,34 @@ pub fn resolve(
                 "Origin available for reuse: {} ({})",
                 row.id, row.source_path
             );
-            resolved.push(git::inspect_upstream_repository(&row.source_path)?);
+            resolved.push(inspect_primary(&row.source_path)?);
         }
     }
     check_identities(&resolved)?;
     Ok(resolved)
+}
+
+fn inspect_primary(
+    path: &crate::domain::CanonicalPath,
+) -> Result<git::RepositoryInfo, git::GitError> {
+    let primary = git::inspect_upstream_repository(path)?;
+    git::inspect_repository(&primary.root)
+}
+
+fn load_catalog(
+    inputs: &[RepositoryInput],
+) -> Result<Vec<storage::OriginRepositoryRow>, ResolveError> {
+    if inputs
+        .iter()
+        .all(|input| matches!(input, RepositoryInput::Path(_)))
+    {
+        return Ok(Vec::new());
+    }
+    match database::open_read_only() {
+        Ok(mut connection) => storage::origin::list(&mut connection, true).context(StorageSnafu),
+        Err(database::DatabaseError::ReadOnlyDatabaseMissing { .. }) => Ok(Vec::new()),
+        Err(source) => Err(source.into()),
+    }
 }
 
 fn check_identities(repositories: &[git::RepositoryInfo]) -> Result<(), ResolveError> {
@@ -118,8 +142,8 @@ pub enum ResolveError {
     Path { source: crate::paths::PathError },
     #[snafu(display("failed to resolve repository inputs: {source}"))]
     Storage { source: diesel::result::Error },
-    #[snafu(display("no registered repository named {name:?}"))]
-    UnknownName { name: String },
+    #[snafu(display("workspace target is inside a source repository: {}", path.display()))]
+    NestedWorkspace { path: PathBuf },
     #[snafu(display("duplicate repository input"))]
     Duplicate,
     #[snafu(display("repository directory names collide; use distinct source directories"))]

@@ -16,7 +16,16 @@ pub enum Reservation {
 pub struct CloneReservation {
     pub pending: PendingOriginClone,
     pub abandoned: bool,
-    _lock: File,
+    _lock: UrlLock,
+}
+
+struct UrlLock(File);
+
+impl Drop for UrlLock {
+    fn drop(&mut self) {
+        // Explicit unlock also releases descriptors inherited before another thread executes Git.
+        let _ = FileExt::unlock(&self.0);
+    }
 }
 
 pub fn reserve(
@@ -46,6 +55,7 @@ pub fn reserve(
             })
         }
     }
+    let lock = UrlLock(lock);
     if let Some(row) = origin::find_by_url(connection, url).context(StorageSnafu)? {
         return Ok(Reservation::Existing(row));
     }
@@ -144,6 +154,7 @@ mod tests {
         );
         assert!(!first.pending.source_path.as_path().exists());
         let id = first.pending.id;
+        let inherited = first._lock.0.try_clone().unwrap();
         drop(first);
         let Reservation::Pending(second) =
             reserve(&mut db, "https://host/api.git", &base.join("other"), &locks).unwrap()
@@ -153,6 +164,7 @@ mod tests {
         assert!(second.abandoned);
         assert_eq!(second.pending.id, id);
         drop(second);
+        drop(inherited);
         fs::remove_dir_all(base).unwrap();
     }
 }

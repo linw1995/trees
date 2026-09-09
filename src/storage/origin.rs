@@ -43,28 +43,34 @@ pub fn resolve_name(
     connection: &mut SqliteConnection,
     name: &str,
 ) -> Result<OriginRepositoryRow, NameError> {
-    let mut matches = list(connection, false)
-        .context(StorageSnafu)?
-        .into_iter()
-        .filter(|row| {
-            row.source_path
+    resolve_name_in(&list(connection, false).context(StorageSnafu)?, name)
+}
+
+pub fn resolve_name_in(
+    rows: &[OriginRepositoryRow],
+    name: &str,
+) -> Result<OriginRepositoryRow, NameError> {
+    let mut matches = rows.iter().filter(|row| {
+        row.registered
+            && row
+                .source_path
                 .as_path()
                 .file_name()
                 .is_some_and(|part| part == name)
-        });
+    });
     let Some(first) = matches.next() else {
         return UnknownSnafu { name }.fail();
     };
     let others: Vec<_> = matches.collect();
     if !others.is_empty() {
-        let paths = std::iter::once(&first)
-            .chain(others.iter())
+        let paths = std::iter::once(first)
+            .chain(others)
             .map(|row| row.source_path.to_string())
             .collect::<Vec<_>>()
             .join(", ");
         return AmbiguousSnafu { name, paths }.fail();
     }
-    Ok(first)
+    Ok(first.clone())
 }
 
 pub fn set_registered(

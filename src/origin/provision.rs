@@ -18,6 +18,11 @@ pub fn provision(
     root: &Path,
     locks: &Path,
 ) -> Result<OriginRepositoryRow, ProvisionError> {
+    let input = super::input::RepositoryInput::parse(Path::new(url))?;
+    ensure!(
+        matches!(input, super::input::RepositoryInput::Url(_)),
+        RemoteInputSnafu
+    );
     match reservation::reserve(connection, url, root, locks)? {
         Reservation::Existing(row) => {
             validate_existing(&row)?;
@@ -61,7 +66,7 @@ pub fn provision(
 }
 
 pub fn validate_existing(row: &OriginRepositoryRow) -> Result<(), ProvisionError> {
-    let info = crate::git::inspect_upstream_repository(&row.source_path).context(InspectSnafu {
+    let info = crate::git::inspect_repository(&row.source_path).context(InspectSnafu {
         id: row.id,
         path: row.source_path.as_path(),
     })?;
@@ -81,6 +86,14 @@ pub(crate) fn clone_reserved(
 ) -> Result<OriginRepositoryRow, ProvisionError> {
     let pending = &reservation.pending;
     let container = pending.managed_root.as_path().join(pending.id.to_string());
+    ensure!(
+        CanonicalPath::resolve(pending.managed_root.as_path())? == pending.managed_root
+            && pending.source_path.as_path().parent() == Some(container.as_path()),
+        IdentitySnafu {
+            id: pending.id,
+            path: &container
+        }
+    );
     fs::create_dir(&container).context(IoSnafu { path: &container })?;
     let marker = container.join(OWNER_FILE);
     let mut owner = OpenOptions::new()
@@ -109,7 +122,7 @@ pub(crate) fn clone_reserved(
         }
     );
     let source = CanonicalPath::resolve(pending.source_path.as_path())?;
-    let info = crate::git::inspect_upstream_repository(&source).context(InspectSnafu {
+    let info = crate::git::inspect_repository(&source).context(InspectSnafu {
         id: pending.id,
         path: source.as_path(),
     })?;
@@ -125,6 +138,10 @@ pub(crate) fn clone_reserved(
 
 #[derive(Debug, Snafu)]
 pub enum ProvisionError {
+    #[snafu(transparent)]
+    Input { source: super::input::InputError },
+    #[snafu(display("automatic repository provisioning requires a remote URL"))]
+    RemoteInput,
     #[snafu(transparent)]
     Reservation {
         source: reservation::ReservationError,

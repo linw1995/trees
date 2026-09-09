@@ -41,7 +41,8 @@ fn run_create(arguments: trees::cli::CreateArgs) -> Result<ExitCode, CliError> {
     if let Some(path) = &workspace_path {
         trees::validation::validate_new_workspace_target(path)?;
     }
-    let expected = trees::origin::resolve::resolve(&repositories, offline)?;
+    let expected =
+        trees::origin::resolve::resolve(&repositories, offline, workspace_path.as_deref())?;
     let repositories = expected
         .iter()
         .map(|info| info.root.as_path().to_owned())
@@ -684,7 +685,7 @@ enum CliError {
     ReadConfirmation { source: io::Error },
     #[snafu(display("--all requires --view workspaces or --view repos"))]
     InvalidStatusArguments,
-    #[snafu(display("failed to load repository status; if the database schema is outdated, run create to upgrade it: {source}"))]
+    #[snafu(display("failed to load repository status; if the database schema is outdated, run create with a local repository path to upgrade it: {source}"))]
     RepoStatus { source: diesel::result::Error },
     #[snafu(display("failed to load workspace pool status: {source}"))]
     PoolStatus { source: diesel::result::Error },
