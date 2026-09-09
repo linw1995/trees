@@ -38,6 +38,9 @@ fn run_create(arguments: trees::cli::CreateArgs) -> Result<ExitCode, CliError> {
         open,
     } = arguments;
     let open = resolve_open_program(open)?;
+    if let Some(path) = &workspace_path {
+        trees::validation::validate_new_workspace_target(path)?;
+    }
     let expected = trees::origin::resolve::resolve(&repositories, offline)?;
     let repositories = expected
         .iter()

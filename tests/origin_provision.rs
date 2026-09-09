@@ -308,3 +308,62 @@ fn mixed_manual_and_automatic_origins_support_both_workspace_modes() {
         assert!(root.join("remote/.git").is_file());
     }
 }
+
+#[test]
+fn preflight_prevents_clone_and_later_failures_preserve_published_sources() {
+    let fixture = Fixture::new();
+    let root = fixture.0.join("sources");
+    let configured = trees(&fixture)
+        .args(["config", "set", "origins-dir", root.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(configured.status.success());
+    let invalid = trees(&fixture)
+        .args([
+            "create",
+            "one",
+            "--repo",
+            &fixture.url(),
+            "--repo",
+            "./missing-local",
+        ])
+        .output()
+        .unwrap();
+    assert!(!invalid.status.success());
+    assert!(!root.exists());
+    let existing = trees(&fixture)
+        .args(["create", "remote", "--repo", &fixture.url()])
+        .output()
+        .unwrap();
+    assert!(!existing.status.success());
+    assert!(!root.exists());
+    let missing_url = format!("file://{}", fixture.0.join("missing-remote").display());
+    let partial = trees(&fixture)
+        .args([
+            "create",
+            "one",
+            "--repo",
+            &fixture.url(),
+            "--repo",
+            &missing_url,
+        ])
+        .output()
+        .unwrap();
+    assert!(!partial.status.success());
+    assert!(String::from_utf8_lossy(&partial.stderr).contains("Origin available for reuse:"));
+    assert!(!fixture.0.join("one").exists());
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+    success(
+        trees(&fixture)
+            .args([
+                "create",
+                "one",
+                "--repo",
+                &fixture.url(),
+                "--offline",
+                "--json",
+            ])
+            .output()
+            .unwrap(),
+    );
+}

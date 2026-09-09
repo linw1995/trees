@@ -124,6 +124,17 @@ pub fn validate_create(
     })
 }
 
+pub fn validate_new_workspace_target(path: &Path) -> Result<CanonicalPath, ValidationError> {
+    let path = resolve_workspace_path(path)?;
+    snafu::ensure!(
+        !path.as_path().exists(),
+        WorkspaceExistsSnafu {
+            path: path.as_path()
+        }
+    );
+    Ok(path)
+}
+
 pub fn resolve_workspace_path(path: &Path) -> Result<CanonicalPath, ValidationError> {
     if path.exists() {
         return CanonicalPath::resolve(path).context(CanonicalizeSnafu);

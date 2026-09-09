@@ -15,7 +15,7 @@
 
 - [x] 3.1 Integrate path, URL, and directory-name resolution ahead of both existing create modes without new repo or origin options; verify mixed inputs, duplicate identity detection, directory collisions, and existing `--open` and `--json` validation.
 - [x] 3.2 Preserve revision selection and pool lookup after resolution; verify repeated URLs reuse origin IDs and pools, known URLs work offline, unknown URLs fail offline before cloning, and both repo modes support both workspace modes.
-- [ ] 3.3 Define and exercise failure boundaries across multi-input provisioning and workspace creation; verify invalid local inputs fail before clone, successful sources survive later failures with reported IDs, and partial worktrees follow existing rollback.
+- [x] 3.3 Define and exercise failure boundaries across multi-input provisioning and workspace creation; verify invalid local inputs fail before clone, successful sources survive later failures with reported IDs, and partial worktrees follow existing rollback.
 
 ## 4. Repos Status and Id-Based Removal
 
