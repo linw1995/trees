@@ -7,7 +7,7 @@
 ## 2. Automatic Source Provisioning
 
 - [x] 2.1 Add `origins-dir` configuration and platform defaults; verify relative paths follow existing configuration rules, unrelated keys survive, and changes neither move existing clones nor create a root for manual registration.
-- [ ] 2.2 Add durable per-URL reservations and exclusive contained clone targets with process locks; verify concurrent requests cannot publish duplicate automatic origins or overwrite existing paths.
+- [x] 2.2 Add durable per-URL reservations and exclusive contained clone targets with process locks; verify concurrent requests cannot publish duplicate automatic origins or overwrite existing paths.
 - [ ] 2.3 Execute Git clone with inherited authentication and validate before atomic origin publication; verify successful fixtures, clone/HEAD failures, standard error-only progress, URL reuse across root changes, and rejection of missing or replaced retained clones.
 - [ ] 2.4 Implement partial-clone cleanup and abandoned-reservation recovery; inject interruption and commit-acknowledgment failures and verify only proven partial files are removed, published origins survive, and uncertain ownership retains actionable evidence.
 

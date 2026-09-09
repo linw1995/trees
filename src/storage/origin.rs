@@ -89,6 +89,36 @@ pub enum NameError {
     Storage { source: diesel::result::Error },
 }
 
+pub fn pending_by_url(
+    connection: &mut SqliteConnection,
+    url: &str,
+) -> QueryResult<Option<super::models::PendingOriginClone>> {
+    use crate::schema::pending_origin_clones as pending;
+    pending::table
+        .filter(pending::remote_url.eq(url))
+        .select(super::models::PendingOriginClone::as_select())
+        .first(connection)
+        .optional()
+}
+
+pub fn insert_pending(
+    connection: &mut SqliteConnection,
+    value: &super::models::PendingOriginClone,
+) -> QueryResult<()> {
+    diesel::insert_into(crate::schema::pending_origin_clones::table)
+        .values(value)
+        .execute(connection)?;
+    Ok(())
+}
+
+pub fn delete_pending(
+    connection: &mut SqliteConnection,
+    id: OriginRepositoryId,
+) -> QueryResult<()> {
+    diesel::delete(crate::schema::pending_origin_clones::table.find(id)).execute(connection)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
