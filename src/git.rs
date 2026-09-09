@@ -184,6 +184,29 @@ pub fn inspect_fetched_upstream_repository(
     Ok(info)
 }
 
+pub fn origin_remote_urls(repository: &CanonicalPath) -> Result<Vec<String>, GitError> {
+    match run_git(
+        repository.as_path(),
+        &[
+            arg("config"),
+            arg("--local"),
+            arg("--null"),
+            arg("--get-all"),
+            arg("remote.origin.url"),
+        ],
+    ) {
+        Ok(output) => Ok(output
+            .split('\0')
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .collect()),
+        Err(GitError::CommandFailed {
+            status: Some(1), ..
+        }) => Ok(Vec::new()),
+        Err(error) => Err(error),
+    }
+}
+
 pub fn inspect_repository_identity(repository: &CanonicalPath) -> Result<CanonicalPath, GitError> {
     inspect_common_directory(repository.as_path())
 }

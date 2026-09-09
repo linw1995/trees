@@ -352,3 +352,14 @@ pub struct NewEvent {
     pub details_json: Option<JsonDocument>,
     pub error_json: Option<JsonDocument>,
 }
+
+#[derive(Debug, Clone, Queryable, Selectable, Insertable, Identifiable)]
+#[diesel(table_name = crate::schema::pending_origin_clones)]
+#[diesel(check_for_backend(Sqlite))]
+pub struct PendingOriginClone {
+    pub id: OriginRepositoryId,
+    pub remote_url: String,
+    pub managed_root: CanonicalPath,
+    pub source_path: CanonicalPath,
+    pub ownership_token: String,
+}

@@ -19,28 +19,29 @@ pub fn set_workspaces_directory(path: &Path) -> Result<PathBuf, ConfigError> {
     set_workspaces_directory_at(&configuration_path, path)
 }
 
+pub fn origins_directory() -> Result<PathBuf, ConfigError> {
+    let path = paths::configuration_path().context(PathSnafu)?;
+    let table = load_table(&path)?;
+    let default = paths::default_managed_origin_directory().context(PathSnafu)?;
+    configured_directory(&path, &table, default, "repository", "origins_dir")
+}
+
+pub fn set_origins_directory(path: &Path) -> Result<PathBuf, ConfigError> {
+    let config = paths::configuration_path().context(PathSnafu)?;
+    set_directory_at(&config, path, "repository", "origins_dir")
+}
+
 fn configured_workspaces_directory(
     configuration_path: &Path,
     table: &toml::Table,
     default: PathBuf,
 ) -> Result<PathBuf, ConfigError> {
-    let Some(workspace) = table.get("workspace") else {
-        return Ok(default);
-    };
-    let workspace = workspace.as_table().ok_or_else(|| ConfigError::Invalid {
-        path: configuration_path.to_owned(),
-        reason: "workspace must be a TOML table".to_owned(),
-    })?;
-    let Some(value) = workspace.get(WORKSPACES_DIR_KEY) else {
-        return Ok(default);
-    };
-    let value = value.as_str().ok_or_else(|| ConfigError::Invalid {
-        path: configuration_path.to_owned(),
-        reason: "workspace.workspaces_dir must be a string".to_owned(),
-    })?;
-    normalize_existing_path(
+    configured_directory(
         configuration_path,
-        resolve_configured_path(configuration_path, Path::new(value)),
+        table,
+        default,
+        "workspace",
+        WORKSPACES_DIR_KEY,
     )
 }
 
@@ -48,25 +49,61 @@ fn set_workspaces_directory_at(
     configuration_path: &Path,
     path: &Path,
 ) -> Result<PathBuf, ConfigError> {
+    set_directory_at(configuration_path, path, "workspace", WORKSPACES_DIR_KEY)
+}
+
+fn configured_directory(
+    configuration_path: &Path,
+    table: &toml::Table,
+    default: PathBuf,
+    section: &str,
+    key: &str,
+) -> Result<PathBuf, ConfigError> {
+    let Some(workspace) = table.get(section) else {
+        return Ok(default);
+    };
+    let workspace = workspace.as_table().ok_or_else(|| ConfigError::Invalid {
+        path: configuration_path.to_owned(),
+        reason: format!("{section} must be a TOML table"),
+    })?;
+    let Some(value) = workspace.get(key) else {
+        return Ok(default);
+    };
+    let value = value.as_str().ok_or_else(|| ConfigError::Invalid {
+        path: configuration_path.to_owned(),
+        reason: format!("{section}.{key} must be a string"),
+    })?;
+    normalize_existing_path(
+        configuration_path,
+        resolve_configured_path(configuration_path, Path::new(value)),
+    )
+}
+
+fn set_directory_at(
+    configuration_path: &Path,
+    path: &Path,
+    section: &str,
+    key: &str,
+) -> Result<PathBuf, ConfigError> {
     if path.as_os_str().is_empty() {
         return Err(ConfigError::Invalid {
             path: configuration_path.to_owned(),
-            reason: "workspace directory must not be empty".to_owned(),
+            reason: format!("{section} directory must not be empty"),
         });
     }
     let mut table = load_table(configuration_path)?;
     let resolved = resolve_configured_path(configuration_path, path);
     let workspace = table
-        .entry("workspace".to_owned())
+        .entry(section.to_owned())
         .or_insert_with(|| toml::Value::Table(toml::Table::new()));
     let workspace = workspace
         .as_table_mut()
         .ok_or_else(|| ConfigError::Invalid {
             path: configuration_path.to_owned(),
-            reason: "workspace must be a TOML table".to_owned(),
+            reason: format!("{section} must be a TOML table"),
         })?;
     workspace.insert(
-        WORKSPACES_DIR_KEY.to_owned(),
+        key.to_owned(),
         toml::Value::String(resolved.to_string_lossy().into_owned()),
     );
     let parent = configuration_path
@@ -260,5 +297,33 @@ mod tests {
             assert!(!error.to_string().is_empty());
             let _ = std::error::Error::source(&error);
         }
+    }
+    #[test]
+    fn origins_setting_preserves_other_sections_without_creating_storage() {
+        let root = test_root();
+        fs::create_dir_all(&root).unwrap();
+        let config = root.join("config.toml");
+        fs::write(&config, "[workspace]\nworkspaces_dir = 'workspaces'\n").unwrap();
+        let origin =
+            set_directory_at(&config, Path::new("sources"), "repository", "origins_dir").unwrap();
+        assert_eq!(origin, root.join("sources"));
+        assert!(!origin.exists());
+        let table = load_table(&config).unwrap();
+        assert_eq!(
+            table["workspace"]["workspaces_dir"].as_str(),
+            Some("workspaces")
+        );
+        assert_eq!(
+            configured_directory(
+                &config,
+                &table,
+                root.join("default"),
+                "repository",
+                "origins_dir"
+            )
+            .unwrap(),
+            origin
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 }

@@ -1,3 +1,5 @@
+pub mod repos;
+
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -36,6 +38,7 @@ pub struct StatusSnapshot {
 pub enum StatusView {
     Pools,
     Workspaces,
+    Repos,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]

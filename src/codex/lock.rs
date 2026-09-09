@@ -13,6 +13,13 @@ pub struct WorkspaceLock {
     _file: File,
 }
 
+impl Drop for WorkspaceLock {
+    fn drop(&mut self) {
+        // Closing alone can leave the lock held by a descriptor inherited during process creation.
+        let _ = FileExt::unlock(&self._file);
+    }
+}
+
 impl WorkspaceLock {
     pub fn acquire(workspace_path: &Path) -> Result<Self, WorkspaceLockError> {
         let workspace_path = validation::resolve_workspace_path(workspace_path)?;
@@ -88,9 +95,11 @@ mod tests {
             .expect_err("second lock holder should fail");
         assert!(matches!(error, WorkspaceLockError::Busy { .. }));
 
+        let inherited = first._file.try_clone().unwrap();
         drop(first);
         let second = WorkspaceLock::acquire_at(lock_path.clone()).expect("lock should release");
         drop(second);
+        drop(inherited);
         fs::remove_dir_all(root).expect("lock test directory should be removable");
     }
 

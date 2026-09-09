@@ -336,7 +336,7 @@ fn status_renders_ordered_persisted_state_and_preserves_storage() {
 }
 
 #[test]
-fn all_requires_the_workspace_view_without_opening_storage() {
+fn all_requires_a_supported_view_without_opening_storage() {
     let root = test_root();
 
     for arguments in [

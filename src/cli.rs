@@ -20,7 +20,9 @@ pub enum Command {
     Release(ReleaseArgs),
     Config(ConfigArgs),
     Gc(GcArgs),
+    #[command(about = "Remove a workspace or an unused source repository record by ID")]
     Remove(RemoveArgs),
+    #[command(about = "Inspect persisted pools, workspaces, or source repositories")]
     Status(StatusArgs),
     Open(OpenArgs),
     Codex(CodexArgs),
@@ -31,7 +33,12 @@ pub struct CreateArgs {
     #[arg(value_name = "WORKSPACE_PATH")]
     pub workspace_path: Option<PathBuf>,
 
-    #[arg(long = "repo", required = true, value_name = "REPOSITORY_PATH")]
+    #[arg(
+        long = "repo",
+        required = true,
+        value_name = "PATH|URL|NAME",
+        help = "Use a local path, remote URL, or registered source directory name"
+    )]
     pub repositories: Vec<PathBuf>,
 
     #[arg(long, help = "Print the create result as JSON")]
@@ -87,6 +94,7 @@ pub struct ConfigSetArgs {
 #[derive(Debug, Clone, ValueEnum)]
 pub enum ConfigSetting {
     WorkspacesDir,
+    OriginsDir,
 }
 
 #[derive(Debug, Args)]
@@ -106,7 +114,7 @@ pub struct GcArgs {
 
 #[derive(Debug, Args)]
 pub struct RemoveArgs {
-    #[arg(value_name = "WORKSPACE_ID")]
+    #[arg(value_name = "WORKSPACE_OR_REPO_ID")]
     pub workspace_id: crate::domain::WorkspaceId,
 
     #[arg(long)]
@@ -135,6 +143,7 @@ pub struct StatusArgs {
 pub enum StatusView {
     Pools,
     Workspaces,
+    Repos,
 }
 
 #[derive(Debug, Args)]

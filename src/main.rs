@@ -38,13 +38,25 @@ fn run_create(arguments: trees::cli::CreateArgs) -> Result<ExitCode, CliError> {
         open,
     } = arguments;
     let open = resolve_open_program(open)?;
+    if let Some(path) = &workspace_path {
+        trees::validation::validate_new_workspace_target(path)?;
+    }
+    let expected =
+        trees::origin::resolve::resolve(&repositories, offline, workspace_path.as_deref())?;
+    let repositories = expected
+        .iter()
+        .map(|info| info.root.as_path().to_owned())
+        .collect();
     match workspace_path {
         Some(workspace_path) => {
-            let result = trees::workspace::create(trees::workspace::CreateRequest {
-                workspace_path,
-                repositories,
-                offline,
-            })?;
+            let result = trees::workspace::create_resolved(
+                trees::workspace::CreateRequest {
+                    workspace_path,
+                    repositories,
+                    offline,
+                },
+                &expected,
+            )?;
             if let Some(program) = open.as_deref() {
                 return open_workspace(program, result.workspace_path.as_path());
             }
@@ -57,7 +69,7 @@ fn run_create(arguments: trees::cli::CreateArgs) -> Result<ExitCode, CliError> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        None => run_automatic_create(repositories, json, offline, open.as_deref()),
+        None => run_automatic_create(repositories, json, offline, open.as_deref(), &expected),
     }
 }
 
@@ -86,11 +98,15 @@ fn run_automatic_create(
     json: bool,
     offline: bool,
     open: Option<&OsStr>,
+    expected: &[trees::git::RepositoryInfo],
 ) -> Result<ExitCode, CliError> {
-    let plan = trees::workspace::prepare_automatic(&trees::workspace::AutomaticCreateRequest {
-        repositories,
-        offline,
-    })?;
+    let plan = trees::workspace::prepare_automatic_resolved(
+        &trees::workspace::AutomaticCreateRequest {
+            repositories,
+            offline,
+        },
+        expected,
+    )?;
     let mut connection = trees::database::open_default()?;
     run_automatic_allocation(&mut connection, &plan, json, open)
 }
@@ -212,6 +228,11 @@ fn claim_release_target(claim_id: &str) -> Result<trees::workspace::ReleaseTarge
 fn run_config(arguments: trees::cli::ConfigArgs) -> Result<ExitCode, CliError> {
     match arguments.command {
         trees::cli::ConfigCommand::Set(arguments) => match arguments.setting {
+            trees::cli::ConfigSetting::OriginsDir => {
+                let path = trees::config::set_origins_directory(&arguments.value)?;
+                println!("origins_dir={}", path.display());
+                Ok(ExitCode::SUCCESS)
+            }
             trees::cli::ConfigSetting::WorkspacesDir => {
                 let path = trees::config::set_workspaces_directory(&arguments.value)?;
                 println!("workspaces_dir={}", path.display());
@@ -335,7 +356,48 @@ fn execute_gc_report(
 }
 
 fn run_remove(arguments: trees::cli::RemoveArgs) -> Result<ExitCode, CliError> {
-    run_remove_command(&arguments)
+    let target = {
+        let mut connection = trees::database::open_read_only()?;
+        trees::storage::removal::resolve(&mut connection, arguments.workspace_id)?
+    };
+    match target {
+        trees::storage::removal::RemovalTarget::Workspace(_) => run_remove_command(&arguments),
+        trees::storage::removal::RemovalTarget::Origin(row) => run_origin_removal(&arguments, &row),
+    }
+}
+
+fn run_origin_removal(
+    arguments: &trees::cli::RemoveArgs,
+    row: &trees::storage::OriginRepositoryRow,
+) -> Result<ExitCode, CliError> {
+    println!("repo_id={}", row.id);
+    println!("repo_path={}", row.source_path.to_string().escape_debug());
+    println!("action=remove_repository_record");
+    let references = {
+        let mut connection = trees::database::open_read_only()?;
+        trees::storage::removal::references(&mut connection, row.id).context(RepoStatusSnafu)?
+    };
+    println!("worktree_references={}", references.worktrees);
+    println!("pool_references={}", references.pools);
+    if arguments.dry_run {
+        return Ok(ExitCode::SUCCESS);
+    }
+    if references.any() {
+        eprintln!(
+            "Repository is still referenced; retained history and pool membership also count."
+        );
+        return Ok(ExitCode::FAILURE);
+    }
+    if matches!(
+        confirm_entity_removal(arguments.force, arguments.yes, true)?,
+        GcConfirmation::Cancelled
+    ) {
+        return Ok(ExitCode::SUCCESS);
+    }
+    let mut connection = trees::database::open_default()?;
+    trees::storage::removal::remove_origin(&mut connection, row)?;
+    println!("removed=true");
+    Ok(ExitCode::SUCCESS)
 }
 
 fn run_remove_command(arguments: &trees::cli::RemoveArgs) -> Result<ExitCode, CliError> {
@@ -367,6 +429,17 @@ fn load_removal_preflight(
 }
 
 fn confirm_removal(force: bool, yes: bool) -> Result<GcConfirmation, CliError> {
+    confirm_entity_removal(force, yes, false)
+}
+
+fn confirm_entity_removal(
+    force: bool,
+    yes: bool,
+    repository: bool,
+) -> Result<GcConfirmation, CliError> {
+    if force && repository {
+        return Ok(GcConfirmation::Proceed);
+    }
     if force {
         eprintln!("Warning: --force may remove dirty worktrees and unexpected workspace content.");
         return Ok(GcConfirmation::Proceed);
@@ -377,7 +450,14 @@ fn confirm_removal(force: bool, yes: bool) -> Result<GcConfirmation, CliError> {
     if !io::stdin().is_terminal() {
         return InteractiveConfirmationUnavailableSnafu.fail();
     }
-    print!("Remove this workspace? [y/N] ");
+    print!(
+        "{} [y/N] ",
+        if repository {
+            "Remove this repository record (keep source files)?"
+        } else {
+            "Remove this workspace?"
+        }
+    );
     io::stdout().flush().context(FlushConfirmationSnafu)?;
     let mut answer = String::new();
     io::stdin()
@@ -415,7 +495,26 @@ fn run_status(arguments: trees::cli::StatusArgs) -> Result<ExitCode, CliError> {
     }
     match arguments.view {
         trees::cli::StatusView::Pools => run_pool_status(arguments.json),
+        trees::cli::StatusView::Repos => run_repo_status(arguments.json),
         trees::cli::StatusView::Workspaces => run_workspace_status(arguments.all, arguments.json),
+    }
+}
+
+fn run_repo_status(json: bool) -> Result<ExitCode, CliError> {
+    let snapshot = match trees::database::open_read_only() {
+        Ok(mut connection) => {
+            trees::status::repos::load(&mut connection).context(RepoStatusSnafu)?
+        }
+        Err(trees::database::DatabaseError::ReadOnlyDatabaseMissing { .. }) => {
+            trees::status::repos::RepoSnapshot::empty()
+        }
+        Err(source) => return Err(source.into()),
+    };
+    if json {
+        print_json(&snapshot)
+    } else {
+        println!("{}", trees::status::repos::render(&snapshot));
+        Ok(ExitCode::SUCCESS)
     }
 }
 
@@ -540,6 +639,14 @@ fn exit_code(status: ExitStatus) -> ExitCode {
 
 #[derive(Debug, Snafu)]
 enum CliError {
+    #[snafu(transparent)]
+    RemovalTarget {
+        source: trees::storage::removal::TargetError,
+    },
+    #[snafu(transparent)]
+    OriginInput {
+        source: trees::origin::resolve::ResolveError,
+    },
     #[snafu(display("{option_name} program must not be empty"))]
     EmptyProgram { option_name: &'static str },
     #[snafu(display("$SHELL is unset or empty; use {option_name}=<PROGRAM>"))]
@@ -590,6 +697,8 @@ enum CliError {
     ReadConfirmation { source: io::Error },
     #[snafu(display("--all requires --view workspaces"))]
     InvalidStatusArguments,
+    #[snafu(display("failed to load repository status: {source}"))]
+    RepoStatus { source: diesel::result::Error },
     #[snafu(display("failed to load workspace pool status: {source}"))]
     PoolStatus { source: diesel::result::Error },
     #[snafu(display("failed to load workspace status: {source}"))]
