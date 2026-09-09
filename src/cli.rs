@@ -107,7 +107,7 @@ pub struct GcArgs {
 
 #[derive(Debug, Args)]
 pub struct RemoveArgs {
-    #[arg(value_name = "WORKSPACE_ID")]
+    #[arg(value_name = "WORKSPACE_OR_REPO_ID")]
     pub workspace_id: crate::domain::WorkspaceId,
 
     #[arg(long)]

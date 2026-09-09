@@ -1,5 +1,6 @@
 pub mod models;
 pub mod origin;
+pub mod removal;
 pub mod repository;
 pub mod transaction;
 

@@ -21,7 +21,7 @@
 
 - [x] 4.1 Add status repos view and all-view parsing using existing read-only snapshots; verify missing databases, old schemas, unregistered rows, base name collisions, terminal escaping, and unchanged existing views.
 - [x] 4.2 Add the version-1 repos JSON envelope with ownership fields; verify deterministic ordering, full paths, a single snapshot timestamp, and no Git probes or operation recovery.
-- [ ] 4.3 Look up target IDs across workspace and origin records; verify unknown and cross-table ambiguous IDs fail while existing workspace guards, options, and exit behavior remain intact.
+- [x] 4.3 Look up target IDs across workspace and origin records; verify unknown and cross-table ambiguous IDs fail while existing workspace guards, options, and exit behavior remain intact.
 - [ ] 4.4 Implement repo registration removal with existing confirmation and read-only preflight; verify both modes preserve files and references, force never deletes source data, repeated removal is a no-op, and explicit path/URL create re-registers the same identity.
 
 ## 5. Documentation and Integration Validation
