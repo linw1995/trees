@@ -125,7 +125,7 @@ pub struct StatusArgs {
     #[arg(long, value_enum, default_value_t = StatusView::Pools)]
     pub view: StatusView,
 
-    #[arg(long, help = "Include reclaimed records in the workspace view")]
+    #[arg(long, help = "Include removed records in workspace or repos views")]
     pub all: bool,
 
     #[arg(long, help = "Print the workspace status snapshot as JSON")]
@@ -136,6 +136,7 @@ pub struct StatusArgs {
 pub enum StatusView {
     Pools,
     Workspaces,
+    Repos,
 }
 
 #[derive(Debug, Args)]

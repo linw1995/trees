@@ -430,12 +430,31 @@ fn execute_removal(arguments: &trees::cli::RemoveArgs) -> Result<ExitCode, CliEr
 }
 
 fn run_status(arguments: trees::cli::StatusArgs) -> Result<ExitCode, CliError> {
-    if arguments.all && arguments.view != trees::cli::StatusView::Workspaces {
+    if arguments.all && arguments.view == trees::cli::StatusView::Pools {
         return InvalidStatusArgumentsSnafu.fail();
     }
     match arguments.view {
         trees::cli::StatusView::Pools => run_pool_status(arguments.json),
+        trees::cli::StatusView::Repos => run_repo_status(arguments.all, arguments.json),
         trees::cli::StatusView::Workspaces => run_workspace_status(arguments.all, arguments.json),
+    }
+}
+
+fn run_repo_status(all: bool, json: bool) -> Result<ExitCode, CliError> {
+    let snapshot = match trees::database::open_read_only() {
+        Ok(mut connection) => {
+            trees::status::repos::load(&mut connection, all).context(RepoStatusSnafu)?
+        }
+        Err(trees::database::DatabaseError::ReadOnlyDatabaseMissing { .. }) => {
+            trees::status::repos::RepoSnapshot::empty()
+        }
+        Err(source) => return Err(source.into()),
+    };
+    if json {
+        print_json(&snapshot)
+    } else {
+        println!("{}", trees::status::repos::render(&snapshot));
+        Ok(ExitCode::SUCCESS)
     }
 }
 
@@ -612,8 +631,10 @@ enum CliError {
     FlushConfirmation { source: io::Error },
     #[snafu(display("failed to read confirmation: {source}"))]
     ReadConfirmation { source: io::Error },
-    #[snafu(display("--all requires --view workspaces"))]
+    #[snafu(display("--all requires --view workspaces or --view repos"))]
     InvalidStatusArguments,
+    #[snafu(display("failed to load repository status; if the database schema is outdated, run create to upgrade it: {source}"))]
+    RepoStatus { source: diesel::result::Error },
     #[snafu(display("failed to load workspace pool status: {source}"))]
     PoolStatus { source: diesel::result::Error },
     #[snafu(display("failed to load workspace status: {source}"))]
