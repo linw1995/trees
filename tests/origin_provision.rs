@@ -367,3 +367,52 @@ fn preflight_prevents_clone_and_later_failures_preserve_published_sources() {
             .unwrap(),
     );
 }
+
+#[test]
+fn repos_json_is_versioned_and_reports_missing_sources_without_mutation() {
+    let fixture = Fixture::new();
+    let empty = success(
+        trees(&fixture)
+            .args(["status", "--view", "repos", "--json"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(empty["schema_version"], 1);
+    assert_eq!(empty["view"], "repos");
+    assert_eq!(empty["repos"], serde_json::json!([]));
+    assert!(!fixture.0.join("state").exists());
+    success(
+        trees(&fixture)
+            .args(["create", "one", "--repo", &fixture.url(), "--json"])
+            .output()
+            .unwrap(),
+    );
+    let before = success(
+        trees(&fixture)
+            .args(["status", "--view", "repos", "--json"])
+            .output()
+            .unwrap(),
+    );
+    let repo = &before["repos"][0];
+    assert_eq!(repo["management_mode"], "automatic");
+    assert_eq!(repo["remote_url"], fixture.url());
+    assert_eq!(repo["label"], "remote");
+    assert_eq!(repo["registered"], true);
+    assert!(repo["origin_repository_id"]
+        .as_str()
+        .unwrap()
+        .parse::<OriginRepositoryId>()
+        .is_ok());
+    assert!(before["snapshot_at"].is_string());
+    let source = Path::new(repo["source_path"].as_str().unwrap());
+    assert!(source.starts_with(repo["managed_root"].as_str().unwrap()));
+    fs::rename(source, fixture.0.join("moved-source")).unwrap();
+    let after = success(
+        trees(&fixture)
+            .args(["status", "--view", "repos", "--all", "--json"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(before["repos"], after["repos"]);
+    assert!(!source.exists());
+}
