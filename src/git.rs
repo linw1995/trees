@@ -147,6 +147,43 @@ pub fn inspect_upstream_repository(repository: &CanonicalPath) -> Result<Reposit
     })
 }
 
+pub fn inspect_fetched_upstream_repository(
+    repository: &CanonicalPath,
+) -> Result<RepositoryInfo, GitError> {
+    let mut info = inspect_upstream_repository(repository)?;
+    run_git(info.root.as_path(), &[arg("fetch"), arg("--quiet")])?;
+
+    let primary = list_worktrees(&info.root)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| GitError::InvalidOutput {
+            operation: "worktree list --porcelain".to_owned(),
+            output: "repository has no worktrees".to_owned(),
+        })?;
+    if let Some(branch) = primary.branch {
+        let upstream = run_git(
+            info.root.as_path(),
+            &[
+                arg("for-each-ref"),
+                arg("--format=%(upstream)"),
+                OsString::from(branch),
+            ],
+        )?;
+        let upstream = upstream.trim();
+        if !upstream.is_empty() {
+            info.head = single_line(
+                "rev-parse tracking upstream",
+                run_git(
+                    info.root.as_path(),
+                    &[arg("rev-parse"), arg(&format!("{upstream}^{{commit}}"))],
+                )?,
+            )?;
+        }
+    }
+
+    Ok(info)
+}
+
 pub fn inspect_repository_identity(repository: &CanonicalPath) -> Result<CanonicalPath, GitError> {
     inspect_common_directory(repository.as_path())
 }
@@ -686,7 +723,7 @@ mod tests {
         std::env::temp_dir().join(format!("trees-git-{}", uuid::Uuid::now_v7()))
     }
 
-    fn run_git_in(path: &Path, args: &[&str]) {
+    fn run_git_in(path: &Path, args: &[&str]) -> String {
         let output = Command::new("git")
             .arg("-C")
             .arg(path)
@@ -698,6 +735,7 @@ mod tests {
             "git command failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+        String::from_utf8(output.stdout).expect("git output should be UTF-8")
     }
 
     fn repository() -> (PathBuf, CanonicalPath) {
@@ -773,6 +811,88 @@ mod tests {
         assert_eq!(from_linked.common_dir, from_upstream.common_dir);
 
         remove_worktree(&repository, &linked_path).expect("worktree should be removed");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn fetches_the_primary_branch_tracking_revision_without_moving_local_head() {
+        let (root, repository) = repository();
+        let local_head = inspect_repository(&repository)
+            .expect("repository should be inspectable")
+            .head;
+        let branch = run_git_in(&root, &["branch", "--show-current"])
+            .trim()
+            .to_owned();
+        let remote = root.with_extension("remote.git");
+        let publisher = root.with_extension("publisher");
+        let clone_remote = Command::new("git")
+            .args([
+                "clone",
+                "--bare",
+                root.to_str().unwrap(),
+                remote.to_str().unwrap(),
+            ])
+            .output()
+            .expect("bare clone should run");
+        assert!(
+            clone_remote.status.success(),
+            "bare clone failed: {}",
+            String::from_utf8_lossy(&clone_remote.stderr)
+        );
+        run_git_in(
+            &root,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        run_git_in(&root, &["fetch", "--quiet", "origin"]);
+        run_git_in(
+            &root,
+            &[
+                "branch",
+                "--set-upstream-to",
+                &format!("origin/{branch}"),
+                &branch,
+            ],
+        );
+
+        let clone_publisher = Command::new("git")
+            .args([
+                "clone",
+                remote.to_str().unwrap(),
+                publisher.to_str().unwrap(),
+            ])
+            .output()
+            .expect("publisher clone should run");
+        assert!(
+            clone_publisher.status.success(),
+            "publisher clone failed: {}",
+            String::from_utf8_lossy(&clone_publisher.stderr)
+        );
+        run_git_in(
+            &publisher,
+            &["config", "user.email", "trees@example.invalid"],
+        );
+        run_git_in(&publisher, &["config", "user.name", "trees tests"]);
+        fs::write(publisher.join("README"), "remote update\n")
+            .expect("publisher file should be updated");
+        run_git_in(&publisher, &["commit", "-qam", "remote update"]);
+        run_git_in(&publisher, &["push", "--quiet"]);
+        let remote_head = run_git_in(&publisher, &["rev-parse", "HEAD"])
+            .trim()
+            .to_owned();
+
+        let fetched = inspect_fetched_upstream_repository(&repository)
+            .expect("fetched upstream should be inspectable");
+
+        assert_eq!(fetched.head, remote_head);
+        assert_eq!(
+            inspect_repository(&repository)
+                .expect("local repository should remain inspectable")
+                .head,
+            local_head
+        );
+
+        fs::remove_dir_all(publisher).expect("publisher should be removable");
+        fs::remove_dir_all(remote).expect("remote should be removable");
         fs::remove_dir_all(root).expect("test root should be removable");
     }
 

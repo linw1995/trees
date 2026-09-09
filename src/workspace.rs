@@ -33,11 +33,13 @@ use crate::validation::{self, ValidationError};
 pub struct CreateRequest {
     pub workspace_path: PathBuf,
     pub repositories: Vec<PathBuf>,
+    pub offline: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct AutomaticCreateRequest {
     pub repositories: Vec<PathBuf>,
+    pub offline: bool,
 }
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
@@ -111,7 +113,7 @@ pub fn prepare_automatic(
     let repositories = validation::validate_repositories(&request.repositories)?;
     let mut plans = Vec::with_capacity(repositories.len());
     for source_path in repositories {
-        let info = git::inspect_upstream_repository(&source_path)?;
+        let info = inspect_create_repository(&source_path, request.offline)?;
         plans.push(AutomaticRepositoryPlan {
             source_path: info.root,
             repository_identity: info.common_dir,
@@ -1009,7 +1011,7 @@ pub fn prepare_create(request: &CreateRequest) -> Result<CreationPlan, Workspace
     let worktrees = naming::plan_worktrees(&input)?;
     let repositories = worktrees
         .into_iter()
-        .map(repository_plan)
+        .map(|plan| repository_plan(plan, request.offline))
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(CreationPlan {
@@ -1018,14 +1020,25 @@ pub fn prepare_create(request: &CreateRequest) -> Result<CreationPlan, Workspace
     })
 }
 
-fn repository_plan(plan: WorktreePlan) -> Result<RepositoryPlan, WorkspaceError> {
-    let info = git::inspect_upstream_repository(&plan.repository)?;
+fn repository_plan(plan: WorktreePlan, offline: bool) -> Result<RepositoryPlan, WorkspaceError> {
+    let info = inspect_create_repository(&plan.repository, offline)?;
     Ok(RepositoryPlan {
         source_path: info.root,
         repository_identity: info.common_dir,
         worktree_path: plan.worktree_path,
         head: info.head,
     })
+}
+
+fn inspect_create_repository(
+    repository: &CanonicalPath,
+    offline: bool,
+) -> Result<git::RepositoryInfo, GitError> {
+    if offline {
+        git::inspect_upstream_repository(repository)
+    } else {
+        git::inspect_fetched_upstream_repository(repository)
+    }
 }
 
 pub fn initialize_creation(
@@ -1643,6 +1656,7 @@ mod tests {
         let plan = prepare_create(&CreateRequest {
             workspace_path: root.join("workspace"),
             repositories: vec![first, second],
+            offline: false,
         })
         .expect("creation plan should be prepared");
 
@@ -1720,6 +1734,7 @@ mod tests {
 
         let plan = prepare_automatic(&AutomaticCreateRequest {
             repositories: vec![second.clone(), first.clone()],
+            offline: false,
         })
         .expect("automatic allocation plan should be prepared");
         let expected_root = CanonicalPath::from_absolute(
@@ -1743,6 +1758,7 @@ mod tests {
         repository(&source);
         let plan = prepare_automatic(&AutomaticCreateRequest {
             repositories: vec![source.clone()],
+            offline: false,
         })
         .expect("automatic allocation plan should be prepared");
         let database_path = root.join("state.sqlite");
@@ -1873,6 +1889,7 @@ mod tests {
             prepare_create(&CreateRequest {
                 workspace_path: root.join("workspace"),
                 repositories: sources.clone(),
+                offline: false,
             })
             .expect("manual creation plan should be prepared"),
         )
@@ -1883,6 +1900,7 @@ mod tests {
                 .expect("workspace should exist");
         let mut plan = prepare_automatic(&AutomaticCreateRequest {
             repositories: sources,
+            offline: false,
         })
         .expect("automatic allocation plan should be prepared");
         plan.workspace_root =
@@ -2410,6 +2428,7 @@ mod tests {
         let workspace_root = root.join("managed");
         let mut plan = prepare_automatic(&AutomaticCreateRequest {
             repositories: vec![source.clone()],
+            offline: false,
         })
         .expect("automatic allocation plan should be prepared");
         plan.workspace_root = CanonicalPath::from_absolute(workspace_root.clone())
@@ -2498,6 +2517,7 @@ mod tests {
         let workspace_root = root.join("managed");
         let mut plan = prepare_automatic(&AutomaticCreateRequest {
             repositories: vec![first.clone(), second.clone()],
+            offline: false,
         })
         .expect("automatic allocation plan should be prepared");
         plan.workspace_root =
@@ -2578,6 +2598,7 @@ mod tests {
         let plan = prepare_create(&CreateRequest {
             workspace_path: root.join("workspace"),
             repositories: vec![first, second],
+            offline: false,
         })
         .expect("creation plan should be prepared");
         let database_path = root.join("state.sqlite");
@@ -2625,6 +2646,7 @@ mod tests {
         let plan = prepare_create(&CreateRequest {
             workspace_path: root.join("workspace"),
             repositories: vec![source],
+            offline: false,
         })
         .expect("creation plan should be prepared");
         let database_path = root.join("state.sqlite");
@@ -2658,6 +2680,7 @@ mod tests {
         let plan = prepare_create(&CreateRequest {
             workspace_path: root.join("workspace"),
             repositories: vec![source],
+            offline: false,
         })
         .expect("creation plan should be prepared");
         let database_path = root.join("state.sqlite");

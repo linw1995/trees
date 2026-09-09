@@ -34,6 +34,7 @@ fn run_create(arguments: trees::cli::CreateArgs) -> Result<ExitCode, CliError> {
         workspace_path,
         repositories,
         json,
+        offline,
         open,
     } = arguments;
     let open = resolve_open_program(open)?;
@@ -42,6 +43,7 @@ fn run_create(arguments: trees::cli::CreateArgs) -> Result<ExitCode, CliError> {
             let result = trees::workspace::create(trees::workspace::CreateRequest {
                 workspace_path,
                 repositories,
+                offline,
             })?;
             if let Some(program) = open.as_deref() {
                 return open_workspace(program, result.workspace_path.as_path());
@@ -55,7 +57,7 @@ fn run_create(arguments: trees::cli::CreateArgs) -> Result<ExitCode, CliError> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        None => run_automatic_create(repositories, json, open.as_deref()),
+        None => run_automatic_create(repositories, json, offline, open.as_deref()),
     }
 }
 
@@ -82,10 +84,12 @@ fn resolve_required_program(
 fn run_automatic_create(
     repositories: Vec<std::path::PathBuf>,
     json: bool,
+    offline: bool,
     open: Option<&OsStr>,
 ) -> Result<ExitCode, CliError> {
     let plan = trees::workspace::prepare_automatic(&trees::workspace::AutomaticCreateRequest {
         repositories,
+        offline,
     })?;
     let mut connection = trees::database::open_default()?;
     run_automatic_allocation(&mut connection, &plan, json, open)

@@ -42,23 +42,38 @@ For a workspace containing multiple repositories, the CLI SHALL use each source 
 ### Requirement: Create Detached Worktrees at the Upstream Revision
 
 The initial create operation SHALL resolve every repository argument to its
-upstream primary worktree and create the new worktree from that upstream
-repository's current local `HEAD` in detached mode. It SHALL NOT check out or
-reset the input repository. This rule SHALL apply whether the argument names
-the upstream repository itself or one of its linked workspace worktrees.
-Branch and ref selection SHALL remain outside the initial command contract.
+upstream primary worktree and fetch before selecting the target revision. When
+the current branch of the primary worktree has a tracking upstream, create
+SHALL use the fetched tracking revision. Otherwise, it SHALL use the current
+local `HEAD` of the primary worktree. It SHALL create the new worktree at that
+revision in detached mode and SHALL NOT check out or reset the input repository. This rule
+SHALL apply whether the argument names the upstream repository itself or one of
+its linked workspace worktrees. Explicit branch and ref selection SHALL remain
+outside the initial command contract. When `--offline` is present, create SHALL
+skip fetching and SHALL select the current local `HEAD` of the primary worktree.
 
 #### Scenario: Create a Detached Worktree
 
 - **WHEN** the user creates a workspace from an upstream repository or one of its linked workspace worktrees without branch or ref options
-- **THEN** the created worktree points to the upstream repository's current local `HEAD` and has no checked-out local branch
+- **THEN** create fetches using the configured fetch remote of the primary worktree
+- **AND** the created worktree points to the fetched tracking revision when the current primary branch has a tracking upstream
+- **AND** the created worktree otherwise points to the current local `HEAD` of the primary worktree
+- **AND** the created worktree has no checked-out local branch
+
+#### Scenario: Create Offline
+
+- **WHEN** the user creates a workspace with `--offline`
+- **THEN** create does not fetch any repository
+- **AND** every created worktree points to the current local `HEAD` of its
+  primary worktree
+- **AND** manual and automatic create use the same offline revision selection
 
 #### Scenario: Create from a Divergent Workspace Repo
 
 - **WHEN** a linked workspace repo input has a different `HEAD` from its
   upstream primary worktree
 - **THEN** create leaves the input repo unchanged and creates the target at the
-  upstream `HEAD`
+  selected upstream revision
 
 ### Requirement: Reject Unsafe Workspace Targets
 

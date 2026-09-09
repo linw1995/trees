@@ -1464,6 +1464,7 @@ mod tests {
         let mut connection = database::connect(&database_path).expect("database should open");
         let mut plan = prepare_automatic(&AutomaticCreateRequest {
             repositories: vec![source_path],
+            offline: false,
         })
         .expect("automatic allocation plan should be prepared");
         plan.workspace_root = CanonicalPath::from_absolute(root.join("managed"))
@@ -1878,6 +1879,7 @@ mod tests {
             &mut connection,
             &prepare_automatic(&AutomaticCreateRequest {
                 repositories: vec![source.as_path().to_owned()],
+                offline: false,
             })
             .expect("automatic allocation plan should be prepared"),
         )

@@ -99,9 +99,9 @@ workspace path and claim identifier.
 - **WHEN** automatic create receives repositories matching an idle automatic
   workspace whose worktrees are clean, detached, present, non-prunable,
   identity-matched, and at their recorded revisions
-- **THEN** the command aligns that existing workspace to every repository's
-  upstream `HEAD`, claims it, returns its path and a claim identifier, and does
-  not create another workspace or worktree
+- **THEN** the command fetches and aligns that existing workspace to every
+  selected repository revision, claims it, returns its path and a claim
+  identifier, and does not create another workspace or worktree
 
 #### Scenario: Select the Oldest Idle Slot
 
@@ -116,16 +116,24 @@ workspace path and claim identifier.
 - **WHEN** no idle automatic workspace matches the exact repository set
 - **THEN** Trees generates a path below its managed workspace root
 - **AND** it creates detached worktrees using the repository-count-based layout
-  at each upstream repository's current local `HEAD`
+  at each repository's fetched tracking revision, falling back to the local
+  `HEAD` of the primary worktree when no tracking upstream is configured
 - **AND** upstream repositories and linked workspace repo inputs use the same
   revision resolution
 - **AND** Trees records the pool UUID and returns the new workspace already
   claimed
 
+#### Scenario: Allocate Offline
+
+- **WHEN** automatic create receives `--offline`
+- **THEN** Trees does not fetch any repository
+- **AND** it provisions or aligns the selected slot to the current local `HEAD`
+  of each primary worktree
+
 #### Scenario: Fail When Reusable Slot Alignment Is Unsafe
 
-- **WHEN** an otherwise reusable slot does not match the current upstream
-  `HEAD` and checking out that revision cannot preserve existing files
+- **WHEN** an otherwise reusable slot does not match the selected upstream
+  revision and checking out that revision cannot preserve existing files
 - **THEN** automatic create fails without granting a claim or modifying the
   upstream repository
 

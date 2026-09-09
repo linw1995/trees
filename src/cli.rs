@@ -37,6 +37,9 @@ pub struct CreateArgs {
     #[arg(long, help = "Print the create result as JSON")]
     pub json: bool,
 
+    #[arg(long, help = "Use local HEAD without fetching remotes")]
+    pub offline: bool,
+
     #[arg(
         long,
         value_name = "PROGRAM",
@@ -210,6 +213,7 @@ mod tests {
             [PathBuf::from("/tmp/one"), PathBuf::from("/tmp/two")]
         );
         assert!(!arguments.json);
+        assert!(!arguments.offline);
         assert!(arguments.open.is_none());
     }
 
@@ -229,6 +233,7 @@ mod tests {
             [PathBuf::from("/tmp/one"), PathBuf::from("/tmp/two")]
         );
         assert!(!arguments.json);
+        assert!(!arguments.offline);
         assert!(arguments.open.is_none());
     }
 
@@ -242,6 +247,17 @@ mod tests {
         };
         assert!(arguments.json);
         assert!(arguments.open.is_none());
+    }
+
+    #[test]
+    fn parses_create_offline_flag() {
+        let cli = Cli::try_parse_from(["trees", "create", "--repo", "/tmp/one", "--offline"])
+            .expect("offline create command should parse");
+
+        let Command::Create(arguments) = cli.command else {
+            panic!("expected create command");
+        };
+        assert!(arguments.offline);
     }
 
     #[test]
