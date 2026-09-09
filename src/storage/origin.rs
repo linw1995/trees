@@ -119,6 +119,27 @@ pub fn delete_pending(
     Ok(())
 }
 
+pub fn publish_clone(
+    connection: &mut SqliteConnection,
+    pending: &super::models::PendingOriginClone,
+    identity: &crate::domain::CanonicalPath,
+) -> QueryResult<OriginRepositoryRow> {
+    crate::storage::with_short_transaction(connection, |connection| {
+        diesel::insert_into(origins::table)
+            .values((
+                origins::id.eq(pending.id),
+                origins::source_path.eq(&pending.source_path),
+                origins::repository_identity.eq(identity),
+                origins::management_mode.eq(crate::domain::RepositoryManagementMode::Automatic),
+                origins::managed_root.eq(Some(&pending.managed_root)),
+                origins::remote_url.eq(Some(&pending.remote_url)),
+            ))
+            .execute(connection)?;
+        delete_pending(connection, pending.id)?;
+        find(connection, pending.id)?.ok_or(diesel::result::Error::NotFound)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
