@@ -351,7 +351,7 @@ fn all_requires_a_supported_view_without_opening_storage() {
         assert!(output.stdout.is_empty());
         assert_eq!(
             String::from_utf8(output.stderr).unwrap(),
-            "Error: --all requires --view workspaces or --view repos\n"
+            "Error: --all requires --view workspaces\n"
         );
         assert!(!database_path(&root).exists());
     }

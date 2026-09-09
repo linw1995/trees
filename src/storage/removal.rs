@@ -33,7 +33,37 @@ pub fn resolve(
     })
 }
 
-pub fn unregister(
+pub struct OriginReferences {
+    pub worktrees: i64,
+    pub pools: i64,
+}
+
+impl OriginReferences {
+    pub fn any(&self) -> bool {
+        self.worktrees != 0 || self.pools != 0
+    }
+}
+
+pub fn references(
+    connection: &mut SqliteConnection,
+    id: crate::domain::OriginRepositoryId,
+) -> QueryResult<OriginReferences> {
+    use crate::schema::{repo_worktrees, workspace_pool_repositories};
+    connection.transaction(|connection| {
+        Ok(OriginReferences {
+            worktrees: repo_worktrees::table
+                .filter(repo_worktrees::origin_repository_id.eq(id))
+                .count()
+                .get_result(connection)?,
+            pools: workspace_pool_repositories::table
+                .filter(workspace_pool_repositories::repository_id.eq(id))
+                .count()
+                .get_result(connection)?,
+        })
+    })
+}
+
+pub fn remove_origin(
     connection: &mut SqliteConnection,
     expected: &OriginRepositoryRow,
 ) -> Result<(), TargetError> {
@@ -48,13 +78,32 @@ pub fn unregister(
                 && current.source_path == expected.source_path,
             ChangedSnafu { id }
         );
-        super::origin::set_registered(connection, current.id, false).context(StorageSnafu)?;
+        let references = references(connection, current.id).context(StorageSnafu)?;
+        snafu::ensure!(
+            !references.any(),
+            ReferencedSnafu {
+                id,
+                worktrees: references.worktrees,
+                pools: references.pools
+            }
+        );
+        diesel::delete(crate::schema::origin_repositories::table.find(current.id))
+            .execute(connection)
+            .context(StorageSnafu)?;
         Ok(())
     })
 }
 
 #[derive(Debug, Snafu)]
 pub enum TargetError {
+    #[snafu(display(
+        "repository {id} is referenced by {worktrees} worktrees and {pools} pool memberships"
+    ))]
+    Referenced {
+        id: WorkspaceId,
+        worktrees: i64,
+        pools: i64,
+    },
     #[snafu(transparent)]
     Identifier {
         source: crate::domain::IdentifierError,
@@ -113,5 +162,33 @@ mod tests {
             resolve(&mut db, id),
             Err(TargetError::Ambiguous { .. })
         ));
+    }
+    #[test]
+    fn rejects_references_added_after_preflight() {
+        let mut db = crate::database::connect(std::path::Path::new(":memory:")).unwrap();
+        let path = CanonicalPath::from_absolute("/tmp/source").unwrap();
+        let origin = super::super::ensure_origin_repository(&mut db, &path, &path).unwrap();
+        assert!(!references(&mut db, origin.id).unwrap().any());
+        let key = crate::pool::RepositorySetKey::from_repository_ids(&[origin.id]);
+        let pool = super::super::ensure_workspace_pool(&mut db, &key).unwrap();
+        super::super::insert_workspace_pool_repositories(
+            &mut db,
+            &[super::super::NewWorkspacePoolRepository {
+                pool_id: pool.id,
+                repository_id: origin.id,
+            }],
+        )
+        .unwrap();
+        assert!(matches!(
+            remove_origin(&mut db, &origin),
+            Err(TargetError::Referenced {
+                worktrees: 0,
+                pools: 1,
+                ..
+            })
+        ));
+        assert!(super::super::origin::find(&mut db, origin.id)
+            .unwrap()
+            .is_some());
     }
 }

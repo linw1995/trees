@@ -56,7 +56,9 @@ pub fn reserve(
         }
     }
     let lock = UrlLock(lock);
-    if let Some(row) = origin::find_by_url(connection, url).context(StorageSnafu)? {
+    if let Some(row) =
+        super::lookup::find_url(&origin::list(connection).context(StorageSnafu)?, url)?
+    {
         return Ok(Reservation::Existing(row));
     }
     if let Some(pending) = origin::pending_by_url(connection, url).context(StorageSnafu)? {
@@ -114,6 +116,8 @@ pub fn directory_name(url: &str) -> String {
 
 #[derive(Debug, Snafu)]
 pub enum ReservationError {
+    #[snafu(transparent)]
+    Lookup { source: super::lookup::LookupError },
     #[snafu(display("repository provisioning is already in progress; retry after it finishes"))]
     InProgress,
     #[snafu(display("origin filesystem operation failed for {}: {source}", path.display()))]

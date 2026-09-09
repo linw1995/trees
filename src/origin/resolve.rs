@@ -33,11 +33,9 @@ pub fn resolve(
             }
             RepositoryInput::Url(url) => {
                 ensure!(urls.insert(url.clone()), DuplicateSnafu);
-                let row = catalog
-                    .iter()
-                    .find(|row| row.remote_url.as_deref() == Some(url.as_str()));
+                let row = super::lookup::find_url(&catalog, &url)?;
                 if let Some(row) = row {
-                    provision::validate_existing(row)?;
+                    provision::validate_existing(&row)?;
                     Some(inspect_primary(&row.source_path)?)
                 } else {
                     ensure!(!offline, OfflineSnafu);
@@ -108,7 +106,7 @@ fn load_catalog(
         return Ok(Vec::new());
     }
     match database::open_read_only() {
-        Ok(mut connection) => storage::origin::list(&mut connection, true).context(StorageSnafu),
+        Ok(mut connection) => storage::origin::list(&mut connection).context(StorageSnafu),
         Err(database::DatabaseError::ReadOnlyDatabaseMissing { .. }) => Ok(Vec::new()),
         Err(source) => Err(source.into()),
     }
@@ -124,6 +122,8 @@ fn check_identities(repositories: &[git::RepositoryInfo]) -> Result<(), ResolveE
 
 #[derive(Debug, Snafu)]
 pub enum ResolveError {
+    #[snafu(transparent)]
+    Lookup { source: super::lookup::LookupError },
     #[snafu(transparent)]
     Input { source: super::input::InputError },
     #[snafu(transparent)]

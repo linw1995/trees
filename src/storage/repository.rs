@@ -206,12 +206,9 @@ pub fn ensure_origin_repository(
     source_path: &CanonicalPath,
 ) -> QueryResult<OriginRepositoryRow> {
     if let Some(repository) = find_origin_repository_by_identity(connection, repository_identity)? {
-        if repository.source_path != *source_path || !repository.registered {
+        if repository.source_path != *source_path {
             diesel::update(origin_repositories::table.find(repository.id))
-                .set((
-                    origin_repositories::source_path.eq(source_path),
-                    origin_repositories::registered.eq(true),
-                ))
+                .set(origin_repositories::source_path.eq(source_path))
                 .execute(connection)?;
             return origin_repositories::table
                 .find(repository.id)

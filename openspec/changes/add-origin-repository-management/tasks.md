@@ -4,7 +4,7 @@
 
 ## 2. Implementation Correction
 
-- [ ] 2.1 Remove the four origin columns, mode type, soft deletion, and cached URL lookup; use Git remote inspection, minimal repos snapshots, and transactional reference guards, with regression tests for existing schemas, changed and ambiguous URLs, and referenced origins.
+- [x] 2.1 Remove the four origin columns, mode type, soft deletion, and cached URL lookup; use Git remote inspection, minimal repos snapshots, and transactional reference guards, with regression tests for existing schemas, changed and ambiguous URLs, and referenced origins.
 
 ## 3. Documentation and Validation
 

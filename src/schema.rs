@@ -44,10 +44,6 @@ diesel::table! {
         id -> Text,
         repository_identity -> Text,
         source_path -> Text,
-        registered -> Bool,
-        management_mode -> Text,
-        managed_root -> Nullable<Text>,
-        remote_url -> Nullable<Text>,
     }
 }
 

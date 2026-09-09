@@ -8,8 +8,8 @@ use diesel::sqlite::Sqlite;
 use crate::claim::WorkspaceClaim;
 use crate::domain::{
     CanonicalPath, ClaimId, EventId, JsonDocument, LeaseId, OperationId, OperationState,
-    OriginRepositoryId, PoolId, RepoWorktreeId, RepoWorktreeState, RepositoryManagementMode,
-    Timestamp, WorkspaceId, WorkspaceManagementMode, WorkspaceState,
+    OriginRepositoryId, PoolId, RepoWorktreeId, RepoWorktreeState, Timestamp, WorkspaceId,
+    WorkspaceManagementMode, WorkspaceState,
 };
 use crate::schema::{
     lifecycle_events, operation_leases, operations, origin_repositories, repo_worktrees,
@@ -46,7 +46,6 @@ impl_text_codec!(EventId);
 impl_text_codec!(ClaimId);
 impl_text_codec!(WorkspaceState);
 impl_text_codec!(WorkspaceManagementMode);
-impl_text_codec!(RepositoryManagementMode);
 impl_text_codec!(RepoWorktreeState);
 impl_text_codec!(OperationState);
 impl_text_codec!(CanonicalPath);
@@ -145,10 +144,6 @@ pub struct OriginRepositoryRow {
     pub id: OriginRepositoryId,
     pub repository_identity: CanonicalPath,
     pub source_path: CanonicalPath,
-    pub registered: bool,
-    pub management_mode: RepositoryManagementMode,
-    pub managed_root: Option<CanonicalPath>,
-    pub remote_url: Option<String>,
 }
 
 #[derive(Debug, Insertable)]

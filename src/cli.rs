@@ -20,7 +20,7 @@ pub enum Command {
     Release(ReleaseArgs),
     Config(ConfigArgs),
     Gc(GcArgs),
-    #[command(about = "Remove a workspace or unregister a source repository by ID")]
+    #[command(about = "Remove a workspace or an unused source repository record by ID")]
     Remove(RemoveArgs),
     #[command(about = "Inspect persisted pools, workspaces, or source repositories")]
     Status(StatusArgs),
@@ -132,7 +132,7 @@ pub struct StatusArgs {
     #[arg(long, value_enum, default_value_t = StatusView::Pools)]
     pub view: StatusView,
 
-    #[arg(long, help = "Include removed records in workspace or repos views")]
+    #[arg(long, help = "Include reclaimed records in the workspace view")]
     pub all: bool,
 
     #[arg(long, help = "Print the workspace status snapshot as JSON")]

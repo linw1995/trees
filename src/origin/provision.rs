@@ -26,11 +26,7 @@ pub fn provision(
     match reservation::reserve(connection, url, root, locks)? {
         Reservation::Existing(row) => {
             validate_existing(&row)?;
-            origin::set_registered(connection, row.id, true).context(StorageSnafu)?;
-            Ok(OriginRepositoryRow {
-                registered: true,
-                ..row
-            })
+            Ok(row)
         }
         Reservation::Pending(reservation) => {
             if reservation.abandoned {

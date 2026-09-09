@@ -122,43 +122,6 @@ impl FromStr for WorkspaceManagementMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, AsExpression, FromSqlRow)]
-#[diesel(sql_type = diesel::sql_types::Text)]
-#[serde(rename_all = "snake_case")]
-pub enum RepositoryManagementMode {
-    Automatic,
-    Manual,
-}
-
-impl RepositoryManagementMode {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Automatic => "automatic",
-            Self::Manual => "manual",
-        }
-    }
-
-    const ALL: &'static [&'static str] = &["automatic", "manual"];
-}
-
-impl fmt::Display for RepositoryManagementMode {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-impl FromStr for RepositoryManagementMode {
-    type Err = StateParseError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "automatic" => Ok(Self::Automatic),
-            "manual" => Ok(Self::Manual),
-            _ => Err(StateParseError::new(value, Self::ALL)),
-        }
-    }
-}
-
 #[derive(Debug, Snafu)]
 pub enum IdentifierError {
     #[snafu(display("invalid UUID: {source}"))]

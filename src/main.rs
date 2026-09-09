@@ -372,9 +372,21 @@ fn run_origin_removal(
 ) -> Result<ExitCode, CliError> {
     println!("repo_id={}", row.id);
     println!("repo_path={}", row.source_path.to_string().escape_debug());
-    println!("action=unregister_repository");
-    if arguments.dry_run || !row.registered {
+    println!("action=remove_repository_record");
+    let references = {
+        let mut connection = trees::database::open_read_only()?;
+        trees::storage::removal::references(&mut connection, row.id).context(RepoStatusSnafu)?
+    };
+    println!("worktree_references={}", references.worktrees);
+    println!("pool_references={}", references.pools);
+    if arguments.dry_run {
         return Ok(ExitCode::SUCCESS);
+    }
+    if references.any() {
+        eprintln!(
+            "Repository is still referenced; retained history and pool membership also count."
+        );
+        return Ok(ExitCode::FAILURE);
     }
     if matches!(
         confirm_entity_removal(arguments.force, arguments.yes, true)?,
@@ -383,8 +395,8 @@ fn run_origin_removal(
         return Ok(ExitCode::SUCCESS);
     }
     let mut connection = trees::database::open_default()?;
-    trees::storage::removal::unregister(&mut connection, row)?;
-    println!("unregistered=true");
+    trees::storage::removal::remove_origin(&mut connection, row)?;
+    println!("removed=true");
     Ok(ExitCode::SUCCESS)
 }
 
@@ -441,7 +453,7 @@ fn confirm_entity_removal(
     print!(
         "{} [y/N] ",
         if repository {
-            "Unregister this repository (keep source files)?"
+            "Remove this repository record (keep source files)?"
         } else {
             "Remove this workspace?"
         }
@@ -478,20 +490,20 @@ fn execute_removal(arguments: &trees::cli::RemoveArgs) -> Result<ExitCode, CliEr
 }
 
 fn run_status(arguments: trees::cli::StatusArgs) -> Result<ExitCode, CliError> {
-    if arguments.all && arguments.view == trees::cli::StatusView::Pools {
+    if arguments.all && arguments.view != trees::cli::StatusView::Workspaces {
         return InvalidStatusArgumentsSnafu.fail();
     }
     match arguments.view {
         trees::cli::StatusView::Pools => run_pool_status(arguments.json),
-        trees::cli::StatusView::Repos => run_repo_status(arguments.all, arguments.json),
+        trees::cli::StatusView::Repos => run_repo_status(arguments.json),
         trees::cli::StatusView::Workspaces => run_workspace_status(arguments.all, arguments.json),
     }
 }
 
-fn run_repo_status(all: bool, json: bool) -> Result<ExitCode, CliError> {
+fn run_repo_status(json: bool) -> Result<ExitCode, CliError> {
     let snapshot = match trees::database::open_read_only() {
         Ok(mut connection) => {
-            trees::status::repos::load(&mut connection, all).context(RepoStatusSnafu)?
+            trees::status::repos::load(&mut connection).context(RepoStatusSnafu)?
         }
         Err(trees::database::DatabaseError::ReadOnlyDatabaseMissing { .. }) => {
             trees::status::repos::RepoSnapshot::empty()
@@ -683,9 +695,9 @@ enum CliError {
     FlushConfirmation { source: io::Error },
     #[snafu(display("failed to read confirmation: {source}"))]
     ReadConfirmation { source: io::Error },
-    #[snafu(display("--all requires --view workspaces or --view repos"))]
+    #[snafu(display("--all requires --view workspaces"))]
     InvalidStatusArguments,
-    #[snafu(display("failed to load repository status; if the database schema is outdated, run create with a local repository path to upgrade it: {source}"))]
+    #[snafu(display("failed to load repository status: {source}"))]
     RepoStatus { source: diesel::result::Error },
     #[snafu(display("failed to load workspace pool status: {source}"))]
     PoolStatus { source: diesel::result::Error },

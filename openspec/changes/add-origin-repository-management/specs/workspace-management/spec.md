@@ -25,7 +25,7 @@ SHALL follow existing rollback behavior.
 #### Scenario: Create Directly from a Remote URL
 
 - **WHEN** either create mode receives an unknown remote URL through `--repo`
-- **THEN** Trees provisions an automatic source and creates or allocates the workspace from it
+- **THEN** Trees clones a source and creates or allocates the workspace from it
 
 #### Scenario: Mix a Local Checkout and a Remote
 
@@ -56,7 +56,7 @@ SHALL follow existing rollback behavior.
 
 - **WHEN** `--offline` receives an unknown URL requiring a clone
 - **THEN** create fails before any cloning or workspace mutation
-- **AND** a known valid automatic origin remains usable offline at its primary local HEAD
+- **AND** a known valid origin remains usable offline at its primary local HEAD
 
 #### Scenario: Preserve Existing Path-Based Behavior
 
@@ -68,7 +68,7 @@ SHALL follow existing rollback behavior.
 - **WHEN** a bare NAME is neither an existing local path nor a registered source base name
 - **THEN** create reports no matching repository without attempting a clone
 
-#### Scenario: Look up Either Management Mode by Name
+#### Scenario: Look up an Existing Source by Name
 
 - **WHEN** NAME uniquely matches an existing source
 - **THEN** create reuses its stored identity and does not add repository mode metadata

@@ -38,13 +38,21 @@ mod origin_migration_tests {
             .first(&mut connection)
             .unwrap();
         assert_eq!(row.id, id);
-        assert!(row.registered);
+        #[derive(diesel::QueryableByName)]
+        struct Column {
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            name: String,
+        }
+        let columns = diesel::sql_query("PRAGMA table_info(origin_repositories)")
+            .load::<Column>(&mut connection)
+            .unwrap();
         assert_eq!(
-            row.management_mode,
-            trees::domain::RepositoryManagementMode::Manual
+            columns
+                .into_iter()
+                .map(|column| column.name)
+                .collect::<Vec<_>>(),
+            ["id", "repository_identity", "source_path"]
         );
-        assert!(row.managed_root.is_none());
-        assert!(row.remote_url.is_none());
         connection
             .batch_execute(include_str!(
                 "../migrations/00000000000003_origin_management/down.sql"
