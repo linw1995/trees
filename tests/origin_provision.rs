@@ -96,4 +96,78 @@ fn failed_clone_does_not_publish_an_origin() {
     assert!(trees::storage::origin::find_by_url(&mut connection, &url)
         .unwrap()
         .is_none());
+    assert!(
+        trees::storage::origin::pending_by_url(&mut connection, &url)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(fs::read_dir(fixture.0.join("origins")).unwrap().count(), 0);
+}
+
+#[test]
+fn recovers_interrupted_owned_clone_and_preserves_unproven_content() {
+    use trees::origin::reservation::{reserve, Reservation};
+    let fixture = Fixture::new();
+    let mut connection = trees::database::connect(Path::new(":memory:")).unwrap();
+    let root = fixture.0.join("origins");
+    let locks = fixture.0.join("locks");
+    let Reservation::Pending(reservation) =
+        reserve(&mut connection, &fixture.url(), &root, &locks).unwrap()
+    else {
+        panic!("expected pending")
+    };
+    let container = reservation
+        .pending
+        .source_path
+        .as_path()
+        .parent()
+        .unwrap()
+        .to_owned();
+    fs::create_dir(&container).unwrap();
+    fs::write(
+        container.join(trees::origin::provision::OWNER_FILE),
+        &reservation.pending.ownership_token,
+    )
+    .unwrap();
+    fs::write(container.join("partial"), "partial").unwrap();
+    let id = reservation.pending.id;
+    drop(reservation);
+    let row = trees::origin::provision::provision(&mut connection, &fixture.url(), &root, &locks)
+        .unwrap();
+    assert_eq!(row.id, id);
+    assert!(!container.join("partial").exists());
+    assert!(
+        trees::storage::origin::pending_by_url(&mut connection, &fixture.url())
+            .unwrap()
+            .is_none()
+    );
+
+    let other_url = format!("file://{}/other", fixture.0.display());
+    let Reservation::Pending(reservation) =
+        reserve(&mut connection, &other_url, &root, &locks).unwrap()
+    else {
+        panic!("expected pending")
+    };
+    let container = reservation
+        .pending
+        .source_path
+        .as_path()
+        .parent()
+        .unwrap()
+        .to_owned();
+    fs::create_dir(&container).unwrap();
+    fs::write(container.join("valuable"), "keep").unwrap();
+    drop(reservation);
+    assert!(
+        trees::origin::provision::provision(&mut connection, &other_url, &root, &locks).is_err()
+    );
+    assert_eq!(
+        fs::read_to_string(container.join("valuable")).unwrap(),
+        "keep"
+    );
+    assert!(
+        trees::storage::origin::pending_by_url(&mut connection, &other_url)
+            .unwrap()
+            .is_some()
+    );
 }

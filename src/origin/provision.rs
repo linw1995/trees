@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
 use diesel::SqliteConnection;
-use snafu::{ensure, ResultExt, Snafu};
+use snafu::{ensure, IntoError, ResultExt, Snafu};
 
 use super::reservation::{self, CloneReservation, Reservation};
 use crate::domain::{CanonicalPath, OriginRepositoryId};
@@ -28,13 +28,34 @@ pub fn provision(
             })
         }
         Reservation::Pending(reservation) => {
-            ensure!(
-                !reservation.abandoned,
-                RecoveryRequiredSnafu {
-                    id: reservation.pending.id
+            if reservation.abandoned {
+                super::recovery::clean_partial(connection, &reservation).context(
+                    RecoverySnafu {
+                        id: reservation.pending.id,
+                    },
+                )?;
+            }
+            match clone_reserved(connection, &reservation) {
+                Ok(row) => Ok(row),
+                Err(source) => {
+                    // A commit can succeed even when its acknowledgement fails.
+                    if let Some(row) =
+                        origin::find(connection, reservation.pending.id).context(StorageSnafu)?
+                    {
+                        return Ok(row);
+                    }
+                    if let Err(cleanup) = super::recovery::clean_partial(connection, &reservation) {
+                        return Err(CleanupSnafu {
+                            id: reservation.pending.id,
+                            cleanup: Box::new(cleanup),
+                        }
+                        .into_error(Box::new(source)));
+                    }
+                    origin::delete_pending(connection, reservation.pending.id)
+                        .context(StorageSnafu)?;
+                    Err(source)
                 }
-            );
-            clone_reserved(connection, &reservation)
+            }
         }
     }
 }
@@ -137,6 +158,15 @@ pub enum ProvisionError {
         id: OriginRepositoryId,
         path: PathBuf,
     },
-    #[snafu(display("origin operation {id} requires recovery"))]
-    RecoveryRequired { id: OriginRepositoryId },
+    #[snafu(display("origin operation {id} recovery failed: {source}"))]
+    Recovery {
+        id: OriginRepositoryId,
+        source: super::recovery::RecoveryError,
+    },
+    #[snafu(display("origin operation {id} failed: {source}; cleanup failed: {cleanup}"))]
+    Cleanup {
+        id: OriginRepositoryId,
+        source: Box<ProvisionError>,
+        cleanup: Box<super::recovery::RecoveryError>,
+    },
 }
