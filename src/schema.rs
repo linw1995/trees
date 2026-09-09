@@ -44,6 +44,10 @@ diesel::table! {
         id -> Text,
         repository_identity -> Text,
         source_path -> Text,
+        registered -> Bool,
+        management_mode -> Text,
+        managed_root -> Nullable<Text>,
+        remote_url -> Nullable<Text>,
     }
 }
 
@@ -115,3 +119,13 @@ diesel::allow_tables_to_appear_in_same_query!(
     workspace_pools,
     workspaces,
 );
+
+diesel::table! {
+    pending_origin_clones (id) {
+        id -> Text,
+        remote_url -> Text,
+        managed_root -> Text,
+        source_path -> Text,
+        ownership_token -> Text,
+    }
+}

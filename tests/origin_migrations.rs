@@ -1,0 +1,59 @@
+#[cfg(test)]
+mod origin_migration_tests {
+    use diesel::connection::SimpleConnection;
+    use diesel::prelude::*;
+
+    #[test]
+    fn origin_upgrade_and_rollback_preserve_identity() {
+        let mut connection = SqliteConnection::establish(":memory:").unwrap();
+        connection
+            .batch_execute(include_str!(
+                "../migrations/00000000000001_create_lifecycle_tables/up.sql"
+            ))
+            .unwrap();
+        connection
+            .batch_execute(include_str!(
+                "../migrations/00000000000002_workspace_reuse/up.sql"
+            ))
+            .unwrap();
+        let id = trees::domain::OriginRepositoryId::new();
+        diesel::insert_into(trees::schema::origin_repositories::table)
+            .values(trees::storage::NewOriginRepository {
+                id,
+                repository_identity: trees::domain::CanonicalPath::from_absolute(
+                    "/tmp/origin/.git",
+                )
+                .unwrap(),
+                source_path: trees::domain::CanonicalPath::from_absolute("/tmp/origin").unwrap(),
+            })
+            .execute(&mut connection)
+            .unwrap();
+        connection
+            .batch_execute(include_str!(
+                "../migrations/00000000000003_origin_management/up.sql"
+            ))
+            .unwrap();
+        let row = trees::schema::origin_repositories::table
+            .select(trees::storage::OriginRepositoryRow::as_select())
+            .first(&mut connection)
+            .unwrap();
+        assert_eq!(row.id, id);
+        assert!(row.registered);
+        assert_eq!(
+            row.management_mode,
+            trees::domain::RepositoryManagementMode::Manual
+        );
+        assert!(row.managed_root.is_none());
+        assert!(row.remote_url.is_none());
+        connection
+            .batch_execute(include_str!(
+                "../migrations/00000000000003_origin_management/down.sql"
+            ))
+            .unwrap();
+        let retained: trees::domain::OriginRepositoryId = trees::schema::origin_repositories::table
+            .select(trees::schema::origin_repositories::id)
+            .first(&mut connection)
+            .unwrap();
+        assert_eq!(retained, id);
+    }
+}
