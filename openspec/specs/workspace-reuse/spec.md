@@ -230,6 +230,8 @@ local `HEAD` in detached mode, update the recorded worktree head, and perform a
 final reconciliation. Release SHALL remove the claim only after every aligned
 worktree satisfies the reusable snapshot requirement. Release SHALL NOT fetch
 remotes, delete branches or commits, or remove ignored files.
+On success, the CLI SHALL report the released workspace identifier, workspace
+path, claim identifier, and release timestamp.
 
 #### Scenario: Align a Clean Changed Worktree
 
@@ -245,6 +247,12 @@ remotes, delete branches or commits, or remove ignored files.
 - **THEN** the selected active claim is removed atomically, a release operation
   and immutable release event are recorded, and the workspace can be acquired
   again
+
+#### Scenario: Report the Released Workspace Identity
+
+- **WHEN** release succeeds
+- **THEN** its output includes `workspace_id`, `workspace_path`, `claim_id`, and
+  `released_at`
 
 #### Scenario: Reject Dirty Release Before Alignment
 
