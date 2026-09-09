@@ -66,6 +66,7 @@ fn automatic_fixture() -> AutomaticFixture {
     let mut connection = trees::database::connect(&database_path).expect("database should open");
     let mut plan = prepare_automatic(&AutomaticCreateRequest {
         repositories: vec![source_path],
+        offline: false,
     })
     .expect("automatic plan should be prepared");
     plan.workspace_root = CanonicalPath::from_absolute(root.join("managed"))
@@ -163,6 +164,7 @@ fn aligns_a_reused_slot_to_upstream_head_for_a_workspace_repo_input() {
         .head;
     let mut plan = prepare_automatic(&AutomaticCreateRequest {
         repositories: vec![fixture.worktree_path.clone()],
+        offline: false,
     })
     .expect("workspace repo input should resolve upstream");
     plan.workspace_root = fixture.plan.workspace_root.clone();
@@ -213,6 +215,7 @@ fn fails_acquire_when_upstream_alignment_would_overwrite_an_ignored_file() {
         .head;
     let mut plan = prepare_automatic(&AutomaticCreateRequest {
         repositories: vec![fixture.source.as_path().to_owned()],
+        offline: false,
     })
     .expect("upstream input should be prepared");
     plan.workspace_root = fixture.plan.workspace_root.clone();
@@ -317,6 +320,7 @@ fn selects_the_oldest_released_slot_for_an_exact_repository_set() {
     let mut connection = trees::database::connect(&database_path).expect("database should open");
     let mut plan = prepare_automatic(&AutomaticCreateRequest {
         repositories: vec![first_source.clone(), second_source.clone()],
+        offline: false,
     })
     .expect("automatic plan should be prepared");
     plan.workspace_root = CanonicalPath::from_absolute(root.join("managed"))
@@ -438,6 +442,7 @@ fn keeps_manual_workspaces_out_of_automatic_allocation() {
         prepare_create(&CreateRequest {
             workspace_path: root.join("manual"),
             repositories: vec![source_path.clone()],
+            offline: false,
         })
         .expect("manual plan should be prepared"),
     )
@@ -452,6 +457,7 @@ fn keeps_manual_workspaces_out_of_automatic_allocation() {
 
     let mut plan = prepare_automatic(&AutomaticCreateRequest {
         repositories: vec![source_path.clone()],
+        offline: false,
     })
     .expect("automatic plan should be prepared");
     plan.workspace_root = CanonicalPath::from_absolute(root.join("managed"))
@@ -498,6 +504,7 @@ fn explicitly_removes_a_manual_workspace_and_preserves_its_tombstone() {
         prepare_create(&CreateRequest {
             workspace_path: root.join("manual"),
             repositories: vec![source_path],
+            offline: false,
         })
         .expect("manual plan should be prepared"),
     )

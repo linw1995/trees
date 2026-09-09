@@ -47,6 +47,7 @@ fn managed_workspace(root: &Path) -> (PathBuf, PathBuf, SqliteConnection) {
     let plan = prepare_create(&CreateRequest {
         workspace_path: workspace_path.clone(),
         repositories: vec![first, second],
+        offline: false,
     })
     .expect("creation plan should be prepared");
     let database_path = root.join("state.sqlite");

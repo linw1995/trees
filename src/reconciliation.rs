@@ -795,6 +795,7 @@ mod tests {
         let plan = prepare_create(&CreateRequest {
             workspace_path: root.join("workspace"),
             repositories: vec![source],
+            offline: false,
         })
         .expect("creation plan should be prepared");
         let database_path = root.join("state.sqlite");
@@ -833,6 +834,7 @@ mod tests {
         let plan = prepare_create(&CreateRequest {
             workspace_path: root.join("workspace"),
             repositories: vec![source],
+            offline: false,
         })
         .expect("creation plan should be prepared");
         let database_path = root.join("state.sqlite");

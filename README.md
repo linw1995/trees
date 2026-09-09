@@ -42,17 +42,29 @@ trees create ./workspace --repo /path/to/api --repo /path/to/web
 With one repository, `./workspace` is the worktree root. With multiple repositories, each repository becomes a direct child worktree under `./workspace`. The source repositories remain at their original paths.
 Repository arguments may name either an upstream repository or one of its
 linked workspace repos. In both cases, create resolves the upstream primary
-worktree and creates the target at its current local `HEAD` in detached mode.
-It never resets or checks out the input repo.
+worktree and fetches before selecting the target revision. When its current
+branch tracks an upstream branch, Trees uses the fetched tracking revision;
+otherwise, it falls back to the local `HEAD` of the primary worktree. The
+target is created in detached mode without resetting or checking out the input
+repo.
+
+Pass `--offline` to skip fetching and select the local `HEAD` of each primary
+worktree instead. The option applies to both manual and automatic create:
+
+```sh
+trees create ./workspace --offline --repo /path/to/api
+trees create --offline --repo /path/to/api --repo /path/to/web
+```
 
 An automatic workspace is allocated from the reusable pool for a repository
 set. It does not take a workspace path; Trees reuses an idle slot or creates a
 generated path below its managed workspace directory. Before granting a claim,
-Trees aligns a clean reusable slot to the same upstream `HEAD`. If checkout
+Trees aligns a clean reusable slot to the same selected revision. If checkout
 cannot preserve existing files, create fails and does not grant the claim:
 
 ```sh
 trees create --repo /path/to/api --repo /path/to/web
+trees create --offline --repo /path/to/api --repo /path/to/web
 trees create --open --repo /path/to/api --repo /path/to/web
 trees create --open=codex --repo /path/to/api --repo /path/to/web
 trees release /absolute/path/to/workspace

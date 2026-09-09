@@ -55,6 +55,7 @@ fn creates_direct_child_worktrees_and_tracks_events() {
     let plan = prepare_create(&CreateRequest {
         workspace_path: workspace_path.clone(),
         repositories: vec![first.clone(), second.clone()],
+        offline: false,
     })
     .expect("creation plan should be prepared");
     let database_path = root.join("state.sqlite");
@@ -142,6 +143,7 @@ fn creates_a_single_repository_at_the_workspace_root() {
     let plan = prepare_create(&CreateRequest {
         workspace_path: workspace_path.clone(),
         repositories: vec![source.clone()],
+        offline: false,
     })
     .expect("creation plan should be prepared");
     let database_path = root.join("state.sqlite");
@@ -195,6 +197,7 @@ fn creates_from_the_upstream_head_when_given_a_workspace_repo() {
     let plan = prepare_create(&CreateRequest {
         workspace_path: target.clone(),
         repositories: vec![existing_workspace.clone()],
+        offline: false,
     })
     .expect("creation plan should be prepared");
     assert_eq!(plan.repositories[0].source_path, upstream);
@@ -220,6 +223,45 @@ fn creates_from_the_upstream_head_when_given_a_workspace_repo() {
 }
 
 #[test]
+fn offline_create_uses_local_head_without_fetching() {
+    let root = test_root();
+    let source = repository(&root, "alpha");
+    let missing_remote = root.join("missing-remote");
+    run_git(
+        &source,
+        &[
+            "remote",
+            "add",
+            "origin",
+            missing_remote
+                .to_str()
+                .expect("remote path should be UTF-8"),
+        ],
+    );
+    let source = CanonicalPath::resolve(&source).expect("source should resolve");
+    let local_head = git::inspect_repository(&source)
+        .expect("source should be inspectable")
+        .head;
+
+    let offline = prepare_create(&CreateRequest {
+        workspace_path: root.join("offline-workspace"),
+        repositories: vec![source.as_path().to_owned()],
+        offline: true,
+    })
+    .expect("offline plan should not fetch");
+
+    assert_eq!(offline.repositories[0].head, local_head);
+    assert!(prepare_create(&CreateRequest {
+        workspace_path: root.join("online-workspace"),
+        repositories: vec![source.as_path().to_owned()],
+        offline: false,
+    })
+    .is_err());
+
+    fs::remove_dir_all(root).expect("test root should be removable");
+}
+
+#[test]
 fn failed_creation_leaves_no_partial_workspace() {
     let root = test_root();
     let first = repository(&root, "alpha");
@@ -229,6 +271,7 @@ fn failed_creation_leaves_no_partial_workspace() {
     let plan = prepare_create(&CreateRequest {
         workspace_path: workspace_path.clone(),
         repositories: vec![first.clone(), second.clone()],
+        offline: false,
     })
     .expect("creation plan should be prepared");
     let database_path = root.join("state.sqlite");
@@ -262,6 +305,7 @@ fn detects_an_external_worktree_branch_change() {
     let plan = prepare_create(&CreateRequest {
         workspace_path,
         repositories: vec![source.clone()],
+        offline: false,
     })
     .expect("creation plan should be prepared");
     let database_path = root.join("state.sqlite");
@@ -381,6 +425,49 @@ fn automatic_create_opens_the_shell_program_in_the_workspace() {
         CanonicalPath::resolve(&workspace_path).expect("workspace should resolve");
     assert_eq!(workspace_path, canonical_workspace.as_path());
 
+    git::remove_worktree(&CanonicalPath::resolve(&source).unwrap(), &workspace_path)
+        .expect("created worktree should be removable");
+    fs::remove_dir_all(root).expect("test root should be removable");
+}
+
+#[cfg(unix)]
+#[test]
+fn automatic_offline_create_skips_an_unavailable_remote() {
+    let root = test_root();
+    let source = repository(&root, "source");
+    run_git(
+        &source,
+        &[
+            "remote",
+            "add",
+            "origin",
+            root.join("missing-remote")
+                .to_str()
+                .expect("remote path should be UTF-8"),
+        ],
+    );
+
+    let output = trees_command(&root)
+        .args([
+            "create",
+            "--offline",
+            "--repo",
+            source.to_str().expect("repository path should be UTF-8"),
+            "--open=pwd",
+        ])
+        .output()
+        .expect("offline create should run");
+
+    assert!(
+        output.status.success(),
+        "offline create failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let workspace_path = PathBuf::from(
+        String::from_utf8(output.stdout)
+            .expect("program output should be UTF-8")
+            .trim(),
+    );
     git::remove_worktree(&CanonicalPath::resolve(&source).unwrap(), &workspace_path)
         .expect("created worktree should be removable");
     fs::remove_dir_all(root).expect("test root should be removable");
