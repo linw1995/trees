@@ -149,10 +149,15 @@ fn open_workspace(program: &OsStr, workspace_path: &Path) -> Result<ExitCode, Cl
 
 fn run_release(arguments: trees::cli::ReleaseArgs) -> Result<ExitCode, CliError> {
     let result = release_automatic(&arguments)?;
-    println!("workspace_path={}", result.workspace_path);
-    println!("claim_id={}", result.claim_id);
-    println!("released_at={}", result.released_at);
+    println!("{}", release_output(&result));
     Ok(ExitCode::SUCCESS)
+}
+
+fn release_output(result: &trees::workspace::ReleaseResult) -> String {
+    format!(
+        "workspace_id={}\nworkspace_path={}\nclaim_id={}\nreleased_at={}",
+        result.workspace_id, result.workspace_path, result.claim_id, result.released_at,
+    )
 }
 
 fn release_automatic(
@@ -758,5 +763,26 @@ mod tests {
                 .expect("claim ID should exist")
         )
         .is_err());
+    }
+
+    #[test]
+    fn formats_release_output_with_workspace_id() {
+        let workspace_id = trees::domain::WorkspaceId::new();
+        let claim_id = trees::domain::ClaimId::new();
+        let result = trees::workspace::ReleaseResult {
+            workspace_id,
+            workspace_path: trees::domain::CanonicalPath::from_absolute("/tmp/workspace")
+                .expect("workspace path should be absolute"),
+            claim_id,
+            released_at: trees::domain::Timestamp::parse("2026-09-09T00:00:00Z")
+                .expect("release timestamp should parse"),
+        };
+
+        assert_eq!(
+            release_output(&result),
+            format!(
+                "workspace_id={workspace_id}\nworkspace_path=/tmp/workspace\nclaim_id={claim_id}\nreleased_at=2026-09-09T00:00:00Z"
+            )
+        );
     }
 }

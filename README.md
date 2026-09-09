@@ -69,7 +69,9 @@ managed workspace. With neither input, release selects the nearest managed
 workspace containing the current directory. Keep the claim ID when automation
 must release the exact claim returned by automatic create. Workspace-directory
 and current-directory targets release the claim active when the command
-resolves the workspace.
+resolves the workspace. A successful release prints `workspace_id`,
+`workspace_path`, `claim_id`, and `released_at` as line-oriented key-value
+pairs.
 
 Pass `--open` to replace the Trees process with `$SHELL` in the created or
 allocated workspace. Exiting that shell returns to the original shell in its

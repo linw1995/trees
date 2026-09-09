@@ -62,6 +62,7 @@ pub struct AutomaticClaimResult {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ReleaseResult {
+    pub workspace_id: WorkspaceId,
     pub workspace_path: CanonicalPath,
     pub claim_id: ClaimId,
     pub released_at: Timestamp,
@@ -643,6 +644,7 @@ pub fn release_automatic_workspace(
                 source: diesel::result::Error::NotFound,
             })?;
     Ok(ReleaseResult {
+        workspace_id: released_workspace.id,
         workspace_path: released_workspace.canonical_path,
         claim_id,
         released_at,
@@ -2041,6 +2043,7 @@ mod tests {
             acquire.claim_id,
         )
         .expect("automatic release should succeed");
+        assert_eq!(result.workspace_id, candidate.id);
         assert_eq!(result.workspace_path, candidate.canonical_path);
         assert_eq!(result.claim_id, acquire.claim_id);
         assert!(
