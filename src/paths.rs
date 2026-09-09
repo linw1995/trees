@@ -41,6 +41,12 @@ pub fn default_managed_workspace_directory() -> Result<PathBuf, PathError> {
         .join(WORKSPACES_DIRECTORY_NAME))
 }
 
+pub fn default_managed_origin_directory() -> Result<PathBuf, PathError> {
+    Ok(platform_data_base_impl()?
+        .join(APPLICATION_NAME)
+        .join("origins"))
+}
+
 pub fn configuration_path() -> Result<PathBuf, PathError> {
     Ok(platform_config_base_impl()?
         .join(APPLICATION_NAME)

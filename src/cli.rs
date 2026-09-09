@@ -87,6 +87,7 @@ pub struct ConfigSetArgs {
 #[derive(Debug, Clone, ValueEnum)]
 pub enum ConfigSetting {
     WorkspacesDir,
+    OriginsDir,
 }
 
 #[derive(Debug, Args)]

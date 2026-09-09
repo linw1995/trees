@@ -212,6 +212,11 @@ fn claim_release_target(claim_id: &str) -> Result<trees::workspace::ReleaseTarge
 fn run_config(arguments: trees::cli::ConfigArgs) -> Result<ExitCode, CliError> {
     match arguments.command {
         trees::cli::ConfigCommand::Set(arguments) => match arguments.setting {
+            trees::cli::ConfigSetting::OriginsDir => {
+                let path = trees::config::set_origins_directory(&arguments.value)?;
+                println!("origins_dir={}", path.display());
+                Ok(ExitCode::SUCCESS)
+            }
             trees::cli::ConfigSetting::WorkspacesDir => {
                 let path = trees::config::set_workspaces_directory(&arguments.value)?;
                 println!("workspaces_dir={}", path.display());
