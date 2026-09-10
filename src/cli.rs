@@ -7,6 +7,12 @@ use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 #[command(
     name = "trees",
     version,
+    long_version = concat!(
+        env!("CARGO_PKG_VERSION"),
+        "\ncommit: ", env!("GIT_COMMIT_SHA"),
+        "\ndirty: ", env!("GIT_DIRTY"),
+        "\nbuild time (UTC): ", env!("BUILT_TIME_UTC")
+    ),
     about = "Manage coding workspaces composed of Git worktrees."
 )]
 pub struct Cli {

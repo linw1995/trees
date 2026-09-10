@@ -30,7 +30,10 @@ Verify the installation:
 
 ```sh
 trees --help
+trees --version
 ```
+
+See [release installation](docs/builds.md#release-archives) for prebuilt binaries.
 
 ## Quick Start
 

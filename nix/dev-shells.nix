@@ -17,6 +17,9 @@
   };
 in {
   default = pkgs.mkShell {
+    shellHook = ''
+      unset SOURCE_DATE_EPOCH
+    '';
     nativeBuildInputs = [
       (rustDevToolchainFor pkgs)
     ];
