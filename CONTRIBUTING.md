@@ -27,6 +27,8 @@ nix flake check --no-build
 
 The hook suite includes formatting, clippy, cargo check, rust-analyzer diagnostics, Markdown linting, dependency notice generation, the runtime SQL boundary check, and Harper.
 
+See [builds and releases](docs/builds.md) for version metadata and the release workflow.
+
 ## OpenSpec Changes
 
 Behavioral changes should be planned through OpenSpec. Keep the behavior contract, technical design, implementation tasks, and verification evidence aligned with the code.
