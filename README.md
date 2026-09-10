@@ -6,9 +6,10 @@
 
 Trees is a Rust CLI for managing coding workspaces composed of Git worktrees.
 
-A single-repository workspace is itself the repository worktree. A multi-repository workspace contains one direct child worktree for every source repository. Trees records workspace lifecycle state and immutable events in a shared SQLite database.
-
-The development environment is provided by Nix Flake.
+Create an isolated workspace from repository names or remote URLs, reuse
+automatic workspaces between tasks, and launch Codex with the managed worktrees
+as project roots. Trees tracks workspace state and immutable events
+in a shared SQLite database.
 
 ## Install
 
@@ -31,296 +32,50 @@ Verify the installation:
 trees --help
 ```
 
-## Usage
+## Quick Start
 
-Create a workspace from one or more Git repositories:
-
-```sh
-trees create ./workspace --repo /path/to/api --repo /path/to/web
-```
-
-Each `--repo` accepts a local path, a remote URL, or the directory name of a
-registered source repository:
+Create a workspace from remote URLs, replacing these example URLs with your own:
 
 ```sh
-trees create --repo https://github.com/example/api.git
-trees create --repo api
-trees create ./workspace --repo api --repo /path/to/web
-trees config set origins-dir /path/to/origins
-```
-
-A local path registers an existing source. For a remote URL, Trees reads
-`remote.origin.url` from existing, locally readable sources with matching Git
-identities. One exact match is reused; multiple matches require an explicit
-path. No match triggers a clone below the configured origin directory. Git
-remote changes take effect immediately, without updating repository records.
-Different URL spellings are not assumed equivalent.
-
-An existing local directory takes precedence over a registered directory name.
-Otherwise, a bare name must match exactly one source; use the full path when
-multiple sources have the same name. Prefix local paths containing a colon with
-`./` to avoid interpreting them as remote addresses.
-
-Local registration and automatic cloning are creation strategies. Both produce
-origin records containing only the existing ID, Git identity, and source path.
-There is no persistent repository mode, even for local sources inside the clone
-root. Either strategy supports manual and automatic workspace creation.
-
-The default origin directory is `trees/origins` below the platform data
-directory. `repository.origins_dir` in the configuration file overrides it;
-relative values resolve against that file's directory. Each new clone occupies
-`<origins-dir>/<origin-id>/<directory-name>`. Changing the setting affects only
-new allocations and does not move existing sources. URL lookup can reuse a
-matching source anywhere. Missing or identity-mismatched sources are excluded
-from URL matching while their records remain visible; an unknown URL can
-produce a new clone without changing those retained records.
-
-`--offline` can reuse a known source but cannot clone an unknown URL. If a later
-input or workspace step fails, successfully registered clones remain available
-for retry and their IDs are printed to standard error. Failed partial clones
-are cleaned only when their ownership is proven. Retry the same URL to recover
-an interrupted clone; concurrent provisioning for that URL reports that the
-operation is in progress. Recovery intent is stored only in the pending-clone
-operation table and cleared after successful publication. No new origin columns
-are required. Recover pending clones before reverting that operation migration.
-
-With one repository, `./workspace` is the worktree root. With multiple repositories, each repository becomes a direct child worktree under `./workspace`. The source repositories remain at their original paths.
-Repository arguments may name either an upstream repository or one of its
-linked workspace repos. In both cases, create resolves the upstream primary
-worktree and fetches before selecting the target revision. When its current
-branch tracks an upstream branch, Trees uses the fetched tracking revision;
-otherwise, it falls back to the local `HEAD` of the primary worktree. The
-target is created in detached mode without resetting or checking out the input
-repo.
-
-Pass `--offline` to skip fetching and select the local `HEAD` of each primary
-worktree instead. The option applies to both manual and automatic create:
-
-```sh
-trees create ./workspace --offline --repo /path/to/api
-trees create --offline --repo /path/to/api --repo /path/to/web
-```
-
-An automatic workspace is allocated from the reusable pool for a repository
-set. It does not take a workspace path; Trees reuses an idle slot or creates a
-generated path below its managed workspace directory. Before granting a claim,
-Trees aligns a clean reusable slot to the same selected revision. If checkout
-cannot preserve existing files, create fails and does not grant the claim:
-
-```sh
-trees create --repo /path/to/api --repo /path/to/web
-trees create --offline --repo /path/to/api --repo /path/to/web
-trees create --open --repo /path/to/api --repo /path/to/web
-trees create --open=codex --repo /path/to/api --repo /path/to/web
-trees release /absolute/path/to/workspace
-trees release relative/path/to/workspace
-trees release
-trees release --claim-id CLAIM_ID
-```
-
-The automatic command prints Bash assignments that can be captured by a shell:
-`WORKSPACE_PATH`, `POOL_ID`, and `CLAIM_ID`. Use `--json` for a single JSON
-object instead. Release accepts an optional workspace directory or
-`--claim-id`. An absolute or relative workspace directory selects that exact
-managed workspace. With neither input, release selects the nearest managed
-workspace containing the current directory. Keep the claim ID when automation
-must release the exact claim returned by automatic create. Workspace-directory
-and current-directory targets release the claim active when the command
-resolves the workspace. A successful release prints `workspace_id`,
-`workspace_path`, `claim_id`, and `released_at` as line-oriented key-value
-pairs.
-
-Pass `--open` to replace the Trees process with `$SHELL` in the created or
-allocated workspace. Exiting that shell returns to the original shell in its
-original directory. Use `--open=<PROGRAM>` to select another executable, such
-as `--open=codex`. The program inherits the terminal and environment and starts
-with the workspace as its current directory. `--open` and `--json` are mutually
-exclusive. If `$SHELL` is unset or empty, provide an explicit program.
-
-Concurrent release attempts use try-or-exit admission: at most one release
-starts for a workspace, and another attempt exits busy without waiting or
-retrying. Release first rejects the entire operation when any managed worktree
-has staged, unstaged, or untracked changes. Otherwise, it aligns every clean
-worktree to its source repository's current local `HEAD` in detached mode and
-releases the claim only after final reconciliation. Missing, prunable,
-identity-mismatched, or failed worktrees also retain the claim for repair.
-`POOL_ID` is the stable UUID of the repository-set pool; its BLAKE3 hash and
-canonical sorted origin repository ID set are stored internally for indexed
-lookup and exact matching.
-
-The command shape selects the management mode. An explicit workspace path is
-manual and remains outside automatic allocation and GC; omitting the path is
-automatic. No `--mode` option is needed. Manual workspaces keep detached
-worktrees using the repository-count-based layout and are never removed by
-automatic GC.
-
-Inspect the persisted workspace inventory without changing lifecycle or Git
-state:
-
-```sh
-trees status
-trees status --json
-trees status --view workspaces
-trees status --view workspaces --all
-trees status --view repos
-trees status --view repos --json
-trees open WORKSPACE_ID
-trees open WORKSPACE_ID --program=codex
-```
-
-The default `pools` view reports one row per automatic repository set. Its
-`CAPACITY` value is `<available>/<total>/<abnormal>`. Available counts persisted
-ready, unclaimed, operation-free slots; total counts current non-reclaimed
-slots; abnormal counts degraded and failed slots. Interactive terminals render
-these numbers in green, blue, and red respectively. Pipelines and `NO_COLOR`
-receive the same plain value without ANSI escapes. Availability is a scheduling
-hint; automatic allocation still reconciles a slot before use. Repository
-labels start with source-path base names and expand conflicting labels with
-parent components until unique within the pool.
-
-Use `--view workspaces` for individual manual and automatic workspaces.
-`STATUS` shows workspace health and appends `🔒` when an active claim exists;
-absence of the lock means unclaimed. Automatic mode is shown as `🤖`, while
-manual mode is shown as `👤`. Reclaimed workspace records are hidden by default;
-`--all` includes them in this detail view. `--json` emits a versioned
-snapshot for the selected view. Workspace JSON retains separate state and claim
-fields plus complete current operation, path, and repo-worktree details.
-
-Use `--view repos` for source repositories, with `REPO`, `PATH`, and `ID`
-columns. Conflicting labels expand to unique path suffixes. JSON uses the
-version-1 envelope with `view: "repos"` and a `repos` array containing
-`origin_repository_id`, `source_path`, `repository_identity`, and `label`.
-This view reads stored metadata without probing Git, migrating storage, or
-recovering clone operations. A missing source remains visible. `--all` applies
-only to the workspace view; repos has no hidden registration state.
-
-The human workspace view identifies each record by stable workspace ID rather
-than path. `trees open` resolves that ID and starts `$SHELL` in the persisted
-canonical workspace directory; `--program=<PROGRAM>` selects another executable
-without shell parsing. Automatic workspaces must already have an active claim,
-while manual workspaces do not require one. Open rejects reclaimed workspaces
-and retained operation leases, closes its read-only database connection before
-handoff, and does not reconcile or mutate lifecycle state.
-
-Workspace `REPOS` uses `<ready>/<total>` followed by repository labels. Ready
-is the user-facing name for repo worktrees stored in the `attached` state. On
-interactive terminals, ready and total are green and blue; pipelines and
-`NO_COLOR` receive the same uncolored value. Ready repository labels are green,
-pending labels are yellow, and problem labels are red. Non-ready repositories
-also retain explicit suffixes such as `(dirty)`, `(missing)`, `(mismatch)`, and
-`(error)` in plain output. Removed labels are gray and use `(removed)`.
-Path-derived labels escape control characters and table delimiters before color
-is applied, preventing repository names from injecting terminal output.
-
-Status reads one consistent SQLite snapshot. It does not reconcile, recover an
-expired operation, run Git, inspect workspace files, or assert that an
-available workspace is currently reusable. Use `gc --dry-run` when the
-question is which workspaces currently satisfy reclamation checks.
-
-Configure the automatic workspace content directory independently from the
-lifecycle database:
-
-```sh
-trees config set workspaces-dir /absolute/path/to/workspaces
-```
-
-The configured value is persisted as an absolute path. If unset, Trees uses
-the platform data-directory default. Reclaim old automatic workspaces with an
-explicit threshold:
-
-```sh
-trees gc --older-than 30d --dry-run
-trees gc --older-than 30d --yes
-trees gc --older-than 30d --force
-```
-
-Normal GC reports automatic, unclaimed, claimed, age-eligible, and
-candidate counts before asking for confirmation. `--yes` skips confirmation
-while keeping normal safety checks. `--force` also skips confirmation and may
-remove dirty worktrees or unexpected content, but never bypasses manual,
-claim, operation, root-containment, or repository-identity guards.
-
-Remove one known workspace by the stable ID shown in
-`trees status --view workspaces`:
-
-```sh
-trees remove <workspace-id> --dry-run
-trees remove <workspace-id> --yes
-trees remove <workspace-id> --force
-```
-
-Explicit removal accepts automatic and manual workspaces and does not apply an
-age threshold. Normal mode requires a safe clean workspace. `--force` may
-remove dirty worktrees or unexpected content, but it does not break an active
-claim or operation and does not bypass path or repository identity guards.
-Successful removal keeps the workspace and worktree records as reclaimed
-tombstones.
-
-The same remove command accepts a source repository ID from the repos view:
-
-```sh
-trees remove <repo-id> --dry-run
-trees remove <repo-id> --yes
-```
-
-For repository targets, removal deletes only an origin record with no worktree
-or pool references. Source files remain intact. The preflight reports reference
-counts; retained history also counts, even after workspace removal. `--force`
-skips confirmation but cannot bypass these guards or delete source files.
-Removed IDs become unknown. Registering the surviving source again assigns a
-new ID. Referenced records and their workspace history are preserved.
-
-Launch an interactive Codex session for a managed workspace:
-
-```sh
+trees create ./workspace --repo https://github.com/example/api.git --repo https://github.com/example/web.git
 trees codex -C ./workspace
 ```
 
-Trees reads the workspace from the forwarded Codex `-C` or `--cd` argument. If neither is present, it uses the current directory. Trees reconciles the workspace with Git before launching Codex. The Codex project roots are the workspace's managed worktree directories, in deterministic order; the original repository paths are not used as roots. Repeated launches reuse the workspace's Codex project, synchronize its complete root list, and create a new durable thread for each session.
-
-By default, Trees resolves `codex` from `PATH`. Use `--codex-bin` when Codex is installed at a custom path or when selecting a controlled executable:
-
-```sh
-trees codex --codex-bin /path/to/codex -C ./workspace
-```
-
-Native Codex arguments are forwarded directly without an extra `--` separator:
+Trees reuses a matching registered source or clones and registers it when none
+matches. Once registered, use the source directory names for later workspaces:
 
 ```sh
-trees codex -C ./workspace --model gpt-5.5 --sandbox workspace-write
-trees codex --model gpt-5.5
+trees create --open --repo api --repo web
 ```
 
-Forwarded `--add-dir` values are merged with the workspace's managed worktree roots. Trees preserves the model, sandbox, approval, profile, prompt, and other native Codex arguments while adding the workspace context required for the multi-root handoff.
+Each name must identify exactly one registered source. Run
+`trees status --view repos` to inspect sources. An existing local directory takes
+precedence over a registered name; see [source selection](docs/workspaces.md#select-source-repositories)
+for matching rules.
 
-The final native argument vector is also used to derive the workspace: the last effective `-C` or `--cd` value wins, and the current directory is the fallback. Trees appends managed roots that are not already present and appends the merged workspace developer context.
+Omitting the workspace path allocates a reusable automatic workspace; `--open`
+starts a shell inside it. When finished, save your work on a branch or outside
+the workspace, leave the worktrees clean,
+then run `trees release` from that workspace to return it to the pool. Exiting
+the shell alone does not release the claim.
 
-The setup app-server is short-lived. After the project and thread are persisted, Trees hands the thread to `codex resume` and keeps the terminal attached to Codex. This command does not open or navigate the Codex Desktop UI. Codex authentication, model, approval, and sandbox settings are inherited from the user's normal configuration; Trees does not add bypass or unrestricted-access flags.
+With one repository, the workspace directory is the worktree root. With multiple
+repositories, it contains one direct child worktree per repository. Existing
+local repositories are also supported through `--repo /path/to/repo`; their
+source directories stay at their original paths.
 
-Resume an existing workspace session through the native Codex picker:
+## Documentation
 
-```sh
-trees codex resume -C ./workspace
-trees codex resume --cd ./workspace --all
-```
+| Guide | Topics |
+| --- | --- |
+| [Workspace lifecycle](docs/workspaces.md) | Manual and automatic allocation, source selection, starting revisions, and release. |
+| [Status and opening](docs/status.md) | Pool capacity, workspace health, source inventory, JSON output, and opening a workspace. |
+| [Storage configuration](docs/configuration.md) | Automatic workspace and source clone directories. |
+| [Cleanup](docs/cleanup.md) | Automatic GC, workspace removal, and source record removal. |
+| [Codex integration](docs/codex.md) | Starting and resuming sessions, argument forwarding, project verification, and limitations. |
 
-The `resume` wrapper does not require a thread ID. It prepares the workspace context and invokes `codex resume` without a session identifier, so the native picker remains responsible for selecting the session. Without `-C` or `--cd`, the current directory is used. Native resume options such as `--all` and `--last` can be passed directly.
-
-Verify the Project roots and optional thread assignment without issuing mutating Trees or Codex RPCs:
-
-```sh
-python3 scripts/check-codex-project.py ./workspace
-python3 scripts/check-codex-project.py ./workspace --thread-id THREAD_ID
-```
-
-The checker compares Trees' managed worktree paths with the Codex Project's persisted roots. It separately checks that an optional thread's `projectId` points to that Project; it does not use `runtimeWorkspaceRoots` as a substitute for Project roots.
-
-## Known Limitations
-
-- A direct native `codex resume <thread-id>` does not know the Trees workspace metadata and does not automatically restore managed runtime roots or the workspace manifest. Use `trees codex resume` for the managed handoff, or pass the required `--cd` and `--add-dir` values manually.
-- The native picker is scoped to the final working directory by default. Legacy sessions created with a different working directory may not appear; pass `--all` explicitly when a global picker is needed.
-- The app-server Project registry and the ChatGPT app's local UI Project registry are separate. Trees does not open, select, or synchronize a Project in the ChatGPT app.
-- Secondary worktree `AGENTS.md` files are not automatically discovered by Codex when another worktree is the primary instruction source. Trees injects a workspace manifest, but repository-specific secondary instructions still require explicit handling.
+Branch selection, repair, and user-facing history commands are not currently
+available.
 
 ## Development
 
@@ -339,10 +94,3 @@ nix flake check --no-build
 ```
 
 See the [contributing guide](CONTRIBUTING.md) for the development workflow and the [security policy](SECURITY.md) for vulnerability reporting. Trees is licensed under the [Apache License 2.0](LICENSE).
-
-## Current Scope
-
-The current CLI provides manual and automatic workspace creation, explicit
-acquire and release, read-only workspace status, configured automatic
-workspace roots, and time-bounded automatic GC. Branch selection, repair, and
-user-facing history commands are not part of the current command surface.
