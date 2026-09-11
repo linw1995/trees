@@ -21,16 +21,16 @@
 
 ## 3. Human Output
 
-- [ ] 3.1 Render the agreed field order, heading, status lock, mode emoji, optional
+- [x] 3.1 Render the agreed field order, heading, status lock, mode emoji, optional
   operation, and repo summary; verify claimed/unclaimed, automatic/manual, and
   active/expired/inconsistent operation cases with representative fixtures.
-- [ ] 3.2 Implement summary local-time formatting without timezone text and with
+- [x] 3.2 Implement summary local-time formatting without timezone text and with
   UTC fallback; verify a non-UTC date boundary, offset at the historical instant,
   unavailable local timezone, and `never` deterministically.
-- [ ] 3.3 Apply terminal escaping and display-width alignment to summary values;
+- [x] 3.3 Apply terminal escaping and display-width alignment to summary values;
   verify control characters cannot inject output and `NO_COLOR` and pipes emit
   no generated ANSI sequences.
-- [ ] 3.4 Compose summary and inventory with one separating blank line and the
+- [x] 3.4 Compose summary and inventory with one separating blank line and the
   appropriate inventory heading; verify every view, duplicate target rows,
   empty inventories, and byte-for-byte unchanged no-target human output.
 

@@ -1,5 +1,6 @@
 pub mod combined;
 pub mod repos;
+pub mod summary;
 pub mod target;
 
 use std::collections::{HashMap, HashSet};
@@ -1184,7 +1185,7 @@ mod tests {
         assert!(plain.contains("api\\,\\n\\(red\\)\\u{1b}(dirty)"));
     }
 
-    fn repository(source_path: &str, state: RepoWorktreeState) -> RepoWorktreeStatus {
+    pub(super) fn repository(source_path: &str, state: RepoWorktreeState) -> RepoWorktreeStatus {
         RepoWorktreeStatus {
             repo_worktree_id: RepoWorktreeId::new(),
             origin_repository_id: OriginRepositoryId::new(),
