@@ -9,13 +9,13 @@
 
 ## 2. Combined Snapshot
 
-- [ ] 2.1 Refactor target and inventory loading under one read-only transaction
+- [x] 2.1 Refactor target and inventory loading under one read-only transaction
   with one timestamp, reusing workspace snapshot assembly; verify a controlled
   concurrent writer cannot produce mismatched claim and pool results.
-- [ ] 2.2 Load target relationships independently of `--all` without requiring
+- [x] 2.2 Load target relationships independently of `--all` without requiring
   target path existence; verify removed and missing-directory targets retain
   complete claim, operation, repository, and timestamp data.
-- [ ] 2.3 Add nullable `target_workspace` to every version-2 JSON envelope; verify
+- [x] 2.3 Add nullable `target_workspace` to every version-2 JSON envelope; verify
   all three views preserve their existing fields, null targets, removed targets,
   and original JSON path and timestamp values.
 
