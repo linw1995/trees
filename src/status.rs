@@ -1,4 +1,7 @@
+pub mod combined;
 pub mod repos;
+pub mod summary;
+pub mod target;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -30,6 +33,7 @@ pub struct StatusSnapshot {
     pub schema_version: u8,
     pub view: StatusView,
     pub snapshot_at: Timestamp,
+    pub target_workspace: Option<WorkspaceStatus>,
     pub workspaces: Vec<WorkspaceStatus>,
 }
 
@@ -46,6 +50,7 @@ pub struct PoolStatusSnapshot {
     pub schema_version: u8,
     pub view: StatusView,
     pub snapshot_at: Timestamp,
+    pub target_workspace: Option<WorkspaceStatus>,
     pub pools: Vec<PoolStatus>,
 }
 
@@ -124,6 +129,7 @@ impl StatusSnapshot {
             schema_version: STATUS_SCHEMA_VERSION,
             view: StatusView::Workspaces,
             snapshot_at: Timestamp::now(),
+            target_workspace: None,
             workspaces: Vec::new(),
         }
     }
@@ -135,26 +141,31 @@ impl PoolStatusSnapshot {
             schema_version: STATUS_SCHEMA_VERSION,
             view: StatusView::Pools,
             snapshot_at: Timestamp::now(),
+            target_workspace: None,
             pools: Vec::new(),
         }
     }
 }
 
 pub fn load_pool_snapshot(connection: &mut SqliteConnection) -> QueryResult<PoolStatusSnapshot> {
-    connection.transaction(|connection| {
-        let snapshot_at = Timestamp::now();
-        let workspaces = list_current_automatic_workspaces(connection)?;
-        let claims = list_current_automatic_workspace_claims(connection)?;
-        let leases = list_current_automatic_operation_leases(connection)?;
-        let repositories = list_current_automatic_pool_repositories(connection)?;
-        Ok(assemble_pool_snapshot(
-            snapshot_at,
-            workspaces,
-            claims,
-            leases,
-            repositories,
-        ))
-    })
+    connection.transaction(|connection| load_pools_in_transaction(connection, Timestamp::now()))
+}
+
+fn load_pools_in_transaction(
+    connection: &mut SqliteConnection,
+    snapshot_at: Timestamp,
+) -> QueryResult<PoolStatusSnapshot> {
+    let workspaces = list_current_automatic_workspaces(connection)?;
+    let claims = list_current_automatic_workspace_claims(connection)?;
+    let leases = list_current_automatic_operation_leases(connection)?;
+    let repositories = list_current_automatic_pool_repositories(connection)?;
+    Ok(assemble_pool_snapshot(
+        snapshot_at,
+        workspaces,
+        claims,
+        leases,
+        repositories,
+    ))
 }
 
 pub fn render_pools_human(snapshot: &PoolStatusSnapshot, color: bool) -> String {
@@ -201,22 +212,28 @@ pub fn load_snapshot(
     include_removed: bool,
 ) -> QueryResult<StatusSnapshot> {
     connection.transaction(|connection| {
-        let snapshot_at = Timestamp::now();
-        let workspaces = list_workspaces(connection, include_removed)?;
-        let claims = list_status_workspace_claims(connection, include_removed)?;
-        let operations = list_status_leased_operations(connection, include_removed)?;
-        let operation_events = list_status_operation_events(connection, include_removed)?;
-        let repositories = list_status_repo_worktrees(connection, include_removed)?;
-
-        assemble_snapshot(
-            snapshot_at.clone(),
-            workspaces,
-            claims,
-            operations,
-            operation_events,
-            repositories,
-        )
+        load_workspaces_in_transaction(connection, include_removed, Timestamp::now())
     })
+}
+
+fn load_workspaces_in_transaction(
+    connection: &mut SqliteConnection,
+    include_removed: bool,
+    snapshot_at: Timestamp,
+) -> QueryResult<StatusSnapshot> {
+    let workspaces = list_workspaces(connection, include_removed)?;
+    let claims = list_status_workspace_claims(connection, include_removed)?;
+    let operations = list_status_leased_operations(connection, include_removed)?;
+    let operation_events = list_status_operation_events(connection, include_removed)?;
+    let repositories = list_status_repo_worktrees(connection, include_removed)?;
+    assemble_snapshot(
+        snapshot_at,
+        workspaces,
+        claims,
+        operations,
+        operation_events,
+        repositories,
+    )
 }
 
 pub fn render_workspaces_human(snapshot: &StatusSnapshot, color: bool) -> String {
@@ -567,6 +584,7 @@ fn assemble_pool_snapshot(
         schema_version: STATUS_SCHEMA_VERSION,
         view: StatusView::Pools,
         snapshot_at,
+        target_workspace: None,
         pools,
     }
 }
@@ -631,6 +649,7 @@ fn assemble_snapshot(
         schema_version: STATUS_SCHEMA_VERSION,
         view: StatusView::Workspaces,
         snapshot_at,
+        target_workspace: None,
         workspaces,
     })
 }
@@ -727,7 +746,7 @@ mod tests {
         CanonicalPath::from_absolute(value).expect("test path should be absolute")
     }
 
-    fn insert_workspace(
+    pub(super) fn insert_workspace(
         connection: &mut SqliteConnection,
         value: &str,
         state: WorkspaceState,
@@ -753,7 +772,7 @@ mod tests {
         id
     }
 
-    fn insert_automatic_workspace(
+    pub(super) fn insert_automatic_workspace(
         connection: &mut SqliteConnection,
         value: &str,
         state: WorkspaceState,
@@ -1030,6 +1049,7 @@ mod tests {
             schema_version: STATUS_SCHEMA_VERSION,
             view: StatusView::Workspaces,
             snapshot_at: Timestamp::parse("2026-09-08T12:00:00Z").unwrap(),
+            target_workspace: None,
             workspaces: vec![WorkspaceStatus {
                 workspace_id,
                 path: path("/status/example"),
@@ -1165,7 +1185,7 @@ mod tests {
         assert!(plain.contains("api\\,\\n\\(red\\)\\u{1b}(dirty)"));
     }
 
-    fn repository(source_path: &str, state: RepoWorktreeState) -> RepoWorktreeStatus {
+    pub(super) fn repository(source_path: &str, state: RepoWorktreeState) -> RepoWorktreeStatus {
         RepoWorktreeStatus {
             repo_worktree_id: RepoWorktreeId::new(),
             origin_repository_id: OriginRepositoryId::new(),

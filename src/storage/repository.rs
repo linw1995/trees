@@ -406,11 +406,22 @@ pub fn list_status_workspace_claims(
     connection: &mut SqliteConnection,
     include_removed: bool,
 ) -> QueryResult<Vec<WorkspaceClaimRow>> {
+    list_status_workspace_claims_for_target(connection, include_removed, None)
+}
+
+pub(crate) fn list_status_workspace_claims_for_target(
+    connection: &mut SqliteConnection,
+    include_removed: bool,
+    target_id: Option<WorkspaceId>,
+) -> QueryResult<Vec<WorkspaceClaimRow>> {
     let mut query = workspace_claims::table
         .inner_join(workspaces::table)
         .into_boxed();
     if !include_removed {
         query = query.filter(workspaces::state.ne(WorkspaceState::Removed));
+    }
+    if let Some(target_id) = target_id {
+        query = query.filter(workspaces::id.eq(target_id));
     }
     query
         .order(workspace_claims::workspace_id.asc())
@@ -1000,12 +1011,23 @@ pub fn list_status_repo_worktrees(
     connection: &mut SqliteConnection,
     include_removed: bool,
 ) -> QueryResult<Vec<RepoWorktreeRow>> {
+    list_status_repo_worktrees_for_target(connection, include_removed, None)
+}
+
+pub(crate) fn list_status_repo_worktrees_for_target(
+    connection: &mut SqliteConnection,
+    include_removed: bool,
+    target_id: Option<WorkspaceId>,
+) -> QueryResult<Vec<RepoWorktreeRow>> {
     let mut query = repo_worktrees::table
         .inner_join(origin_repositories::table)
         .inner_join(workspaces::table.on(workspaces::id.eq(repo_worktrees::workspace_id)))
         .into_boxed();
     if !include_removed {
         query = query.filter(workspaces::state.ne(WorkspaceState::Removed));
+    }
+    if let Some(target_id) = target_id {
+        query = query.filter(workspaces::id.eq(target_id));
     }
     query
         .order((
@@ -1080,12 +1102,23 @@ pub fn list_status_leased_operations(
     connection: &mut SqliteConnection,
     include_removed: bool,
 ) -> QueryResult<Vec<LeasedOperation>> {
+    list_status_leased_operations_for_target(connection, include_removed, None)
+}
+
+pub(crate) fn list_status_leased_operations_for_target(
+    connection: &mut SqliteConnection,
+    include_removed: bool,
+    target_id: Option<WorkspaceId>,
+) -> QueryResult<Vec<LeasedOperation>> {
     let mut query = operation_leases::table
         .inner_join(operations::table)
         .inner_join(workspaces::table.on(workspaces::id.eq(operation_leases::workspace_id)))
         .into_boxed();
     if !include_removed {
         query = query.filter(workspaces::state.ne(WorkspaceState::Removed));
+    }
+    if let Some(target_id) = target_id {
+        query = query.filter(workspaces::id.eq(target_id));
     }
     query
         .order(operation_leases::workspace_id.asc())
@@ -1102,6 +1135,14 @@ pub fn list_status_operation_events(
     connection: &mut SqliteConnection,
     include_removed: bool,
 ) -> QueryResult<Vec<EventRow>> {
+    list_status_operation_events_for_target(connection, include_removed, None)
+}
+
+pub(crate) fn list_status_operation_events_for_target(
+    connection: &mut SqliteConnection,
+    include_removed: bool,
+    target_id: Option<WorkspaceId>,
+) -> QueryResult<Vec<EventRow>> {
     let mut query = lifecycle_events::table
         .inner_join(
             operation_leases::table
@@ -1111,6 +1152,9 @@ pub fn list_status_operation_events(
         .into_boxed();
     if !include_removed {
         query = query.filter(workspaces::state.ne(WorkspaceState::Removed));
+    }
+    if let Some(target_id) = target_id {
+        query = query.filter(workspaces::id.eq(target_id));
     }
     query
         .filter(lifecycle_events::entity_type.eq("operation"))

@@ -7,6 +7,7 @@ pub struct RepoSnapshot {
     pub schema_version: u8,
     pub view: super::StatusView,
     pub snapshot_at: Timestamp,
+    pub target_workspace: Option<super::WorkspaceStatus>,
     pub repos: Vec<RepoStatus>,
 }
 
@@ -24,32 +25,39 @@ impl RepoSnapshot {
             schema_version: super::STATUS_SCHEMA_VERSION,
             view: super::StatusView::Repos,
             snapshot_at: Timestamp::now(),
+            target_workspace: None,
             repos: Vec::new(),
         }
     }
 }
 
 pub fn load(connection: &mut SqliteConnection) -> QueryResult<RepoSnapshot> {
-    connection.transaction(|connection| {
-        let mut snapshot = RepoSnapshot::empty();
-        let rows = crate::storage::origin::list(connection)?;
-        let paths = rows
-            .iter()
-            .map(|row| row.source_path.clone())
-            .collect::<Vec<_>>();
-        let labels = super::shortest_unique_path_labels(&paths);
-        snapshot.repos = rows
-            .into_iter()
-            .zip(labels)
-            .map(|(row, label)| RepoStatus {
-                origin_repository_id: row.id,
-                source_path: row.source_path,
-                label,
-                repository_identity: row.repository_identity,
-            })
-            .collect();
-        Ok(snapshot)
-    })
+    connection.transaction(|connection| load_in_transaction(connection, Timestamp::now()))
+}
+
+pub(super) fn load_in_transaction(
+    connection: &mut SqliteConnection,
+    snapshot_at: Timestamp,
+) -> QueryResult<RepoSnapshot> {
+    let mut snapshot = RepoSnapshot::empty();
+    snapshot.snapshot_at = snapshot_at;
+    let rows = crate::storage::origin::list(connection)?;
+    let paths = rows
+        .iter()
+        .map(|row| row.source_path.clone())
+        .collect::<Vec<_>>();
+    let labels = super::shortest_unique_path_labels(&paths);
+    snapshot.repos = rows
+        .into_iter()
+        .zip(labels)
+        .map(|(row, label)| RepoStatus {
+            origin_repository_id: row.id,
+            source_path: row.source_path,
+            label,
+            repository_identity: row.repository_identity,
+        })
+        .collect();
+    Ok(snapshot)
 }
 
 pub fn render(snapshot: &RepoSnapshot) -> String {

@@ -1,12 +1,4 @@
-# Workspace Status Specification
-
-## Purpose
-
-This capability defines read-only pool capacity and workspace detail snapshots,
-including deterministic human output and versioned JSON without lifecycle or
-Git side effects.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Select Pool or Workspace Status
 
@@ -54,53 +46,6 @@ repository inventory. Target selection SHALL NOT filter any global inventory.
 
 - **WHEN** status is invoked with `--view repos --all`
 - **THEN** it fails before opening lifecycle storage
-
-### Requirement: Aggregate Automatic Pool Allocation
-
-Each pool row SHALL represent one exact persisted repository-set pool.
-Capacity SHALL count its automatic workspaces whose state is not `removed`.
-Available SHALL count capacity slots whose persisted state is `ready` and which
-have neither an active workspace claim nor a retained operation lease.
-Abnormal SHALL count capacity slots whose persisted state is `degraded` or
-`failed`; `creating` SHALL be treated as transient rather than abnormal. Status
-SHALL NOT describe persisted availability as live reusability.
-
-#### Scenario: Count Available, Total, and Abnormal Slots
-
-- **WHEN** a pool contains two claimed slots, three ready slots without claims
-  or operation leases, and one unclaimed degraded slot
-- **THEN** status reports available `3`, capacity `6`, and abnormal `1`
-
-#### Scenario: Exclude an Active Unclaimed Operation
-
-- **WHEN** a ready unclaimed slot has a retained operation lease
-- **THEN** it contributes to capacity but not available or abnormal
-
-#### Scenario: Exclude Removed and Manual Workspaces
-
-- **WHEN** lifecycle storage contains removed automatic workspaces and manual
-  workspaces with the same repositories as a pool
-- **THEN** neither contributes to that pool's current capacity
-
-### Requirement: Display Repository Sets Compactly
-
-The pool view SHALL load repositories through persisted pool-to-origin
-relations and order them by canonical source path. Each repository label SHALL
-use the shortest source-path suffix unique within that pool. Labels SHALL begin
-as source-path base names. Conflicting labels SHALL expand by one parent
-component at a time until unique. Pools SHALL use lexicographical order based
-on their canonical source-path lists and then pool ID.
-
-#### Scenario: Display Unique Repository Base Names
-
-- **WHEN** one pool contains source repositories `/origins/api` and
-  `/origins/web`
-- **THEN** its repository labels are `api,web`
-
-#### Scenario: Expand Conflicting Repository Labels
-
-- **WHEN** one pool contains `/teams/one/api` and `/teams/two/api`
-- **THEN** its repository labels are `one/api,two/api`
 
 ### Requirement: Render Pool and Workspace Human Views
 
@@ -285,26 +230,7 @@ resolve the invocation directory, load, or serialize a complete snapshot.
 - **THEN** status reports the unknown workspace on standard error, returns nonzero,
   emits no standard output, and does not create storage
 
-### Requirement: Render Existing Repository Metadata
-
-The repos human view SHALL render `REPO`, `PATH`, and `ID`, ordered by source
-path then ID. Labels SHALL use shortest unique path suffixes and existing
-terminal escaping. JSON SHALL retain the version-2 envelope with `view: repos`
-and a `repos` array containing `origin_repository_id`, `source_path`,
-`repository_identity`, and `label`. No mode, registration state, root, or remote
-URL SHALL be included. The view SHALL require no origin schema changes and
-SHALL NOT invoke Git, run migrations, or recover clone operations. `--all`
-SHALL remain unsupported for repos. Missing storage SHALL yield an empty view.
-
-#### Scenario: Require the Current Lifecycle Schema
-
-- **WHEN** repos status reads a database with pending lifecycle migrations
-- **THEN** it reports a required schema upgrade without changing that database
-
-#### Scenario: Inspect a Missing Source
-
-- **WHEN** a stored source path is missing
-- **THEN** repos status still lists its stored identity and path without probing Git
+## ADDED Requirements
 
 ### Requirement: Resolve the Target Workspace Independently of View
 

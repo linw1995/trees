@@ -342,6 +342,7 @@ fn all_requires_a_supported_view_without_opening_storage() {
     for arguments in [
         vec!["status", "--all"],
         vec!["status", "--view", "pools", "--all"],
+        vec!["status", "--view", "repos", "--all"],
     ] {
         let output = command(&root)
             .args(arguments)
@@ -376,4 +377,219 @@ fn corrupt_database_fails_without_partial_json() {
     assert!(String::from_utf8_lossy(&output.stderr).starts_with("Error: "));
 
     fs::remove_dir_all(root).expect("test root should be removable");
+}
+
+#[test]
+fn targets_work_from_nested_directories_and_ids_across_every_view() {
+    let root = test_root();
+    let workspace_dir = root.join("workspace");
+    fs::create_dir_all(workspace_dir.join("repo/src")).unwrap();
+    let workspace_path = CanonicalPath::resolve(&workspace_dir).unwrap();
+    let db_path = database_path(&root);
+    fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+    let mut db = database::connect(&db_path).unwrap();
+    let id = insert_workspace(
+        &mut db,
+        workspace_path.clone(),
+        WorkspaceState::Ready,
+        WorkspaceManagementMode::Manual,
+        None,
+    );
+    let removed = insert_workspace(
+        &mut db,
+        path(root.join("missing")),
+        WorkspaceState::Removed,
+        WorkspaceManagementMode::Manual,
+        None,
+    );
+    let claim_id = ClaimId::new();
+    insert_workspace_claim(
+        &mut db,
+        &NewWorkspaceClaim {
+            id: claim_id,
+            workspace_id: id,
+            claimed_at: Timestamp::now(),
+        },
+    )
+    .unwrap();
+    let operation = OperationIntent::new(
+        id,
+        "release",
+        Timestamp::parse("2000-01-01T00:00:00Z").unwrap(),
+        "test",
+        JsonDocument::parse("{}").unwrap(),
+    );
+    persist_operation_intent(&mut db, &operation).unwrap();
+    fs::write(workspace_dir.join("repo/sentinel"), "unchanged").unwrap();
+    fs::write(workspace_dir.join("repo/.git"), "gitdir: missing\n").unwrap();
+    drop(db);
+    let before = fs::read(&db_path).unwrap();
+    for (view, heading) in [
+        ("pools", "Pools"),
+        ("workspaces", "Workspaces"),
+        ("repos", "Repositories"),
+    ] {
+        for explicit in [false, true] {
+            for no_color in [false, true] {
+                let mut cmd = command(&root);
+                cmd.current_dir(workspace_dir.join("repo/src"))
+                    .env("PATH", "");
+                cmd.args(["status", "--view", view]);
+                if explicit {
+                    cmd.arg(id.to_string());
+                }
+                if no_color {
+                    cmd.env("NO_COLOR", "1");
+                } else {
+                    cmd.env_remove("NO_COLOR");
+                }
+                let output = cmd.output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                assert!(output.stderr.is_empty());
+                let output = String::from_utf8(output.stdout).unwrap();
+                let selection = if explicit {
+                    "selected by ID"
+                } else {
+                    "current directory"
+                };
+                assert!(output.starts_with(&format!("Workspace ({selection})\n")));
+                assert!(output.contains(&format!("\n\n{heading}\n")));
+                assert!(output.contains("Status      ready 🔒"));
+                assert!(output.contains("Mode        manual 👤"));
+                assert!(output.contains("Operation   release / running (lease expired)"));
+                assert!(!output.contains('\u{1b}'));
+                assert_eq!(
+                    output.matches(&id.to_string()).count(),
+                    if view == "workspaces" { 2 } else { 1 }
+                );
+            }
+            let mut cmd = command(&root);
+            cmd.current_dir(workspace_dir.join("repo/src"))
+                .env("PATH", "");
+            cmd.args(["status", "--view", view, "--json"]);
+            if explicit {
+                cmd.arg(id.to_string());
+            }
+            let output = cmd.output().unwrap();
+            assert!(output.status.success());
+            assert!(output.stderr.is_empty());
+            let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(json["schema_version"], 2);
+            assert_eq!(json["target_workspace"]["workspace_id"], id.to_string());
+            assert_eq!(json["target_workspace"]["path"], workspace_path.to_string());
+            assert_eq!(
+                json["target_workspace"]["claim"]["claim_id"],
+                claim_id.to_string()
+            );
+            assert_eq!(
+                json["target_workspace"]["current_operation"]["lease_status"],
+                "expired"
+            );
+            if view == "workspaces" {
+                assert_eq!(json["target_workspace"], json[view][0]);
+            }
+        }
+        let output = command(&root)
+            .current_dir(&workspace_dir)
+            .args(["status", &removed.to_string(), "--view", view, "--json"])
+            .env("PATH", "")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            json["target_workspace"]["workspace_id"],
+            removed.to_string()
+        );
+        assert_eq!(json["target_workspace"]["state"], "removed");
+        assert!(json["target_workspace"]["removed_at"].is_string());
+        if view == "workspaces" {
+            assert_eq!(json[view].as_array().unwrap().len(), 1);
+            assert_eq!(json[view][0]["workspace_id"], id.to_string());
+        }
+    }
+    assert_eq!(fs::read(&db_path).unwrap(), before);
+    assert_eq!(
+        fs::read(workspace_dir.join("repo/sentinel")).unwrap(),
+        b"unchanged"
+    );
+    assert_eq!(
+        fs::read(workspace_dir.join("repo/.git")).unwrap(),
+        b"gitdir: missing\n"
+    );
+    assert!(!root.join("missing").exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unknown_ids_and_pending_migrations_emit_no_partial_output() {
+    use diesel_migrations::MigrationHarness;
+    let root = test_root();
+    let db_path = database_path(&root);
+    let id = WorkspaceId::new().to_string();
+    for storage in ["missing", "current", "pending"] {
+        if storage == "current" {
+            fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+            drop(database::connect(&db_path).unwrap());
+        } else if storage == "pending" {
+            let mut db = database::connect(&db_path).unwrap();
+            db.revert_last_migration(database::MIGRATIONS).unwrap();
+        }
+        let before = fs::read(&db_path).ok();
+        for view in ["pools", "workspaces", "repos"] {
+            for json in [false, true] {
+                let mut cmd = command(&root);
+                cmd.args(["status", &id, "--view", view]);
+                if json {
+                    cmd.arg("--json");
+                }
+                let output = cmd.output().unwrap();
+                assert!(!output.status.success());
+                assert!(output.stdout.is_empty());
+                let error = String::from_utf8(output.stderr).unwrap();
+                if storage == "pending" {
+                    assert!(error.contains("schema upgrade required"));
+                } else {
+                    assert_eq!(error, format!("Error: unknown workspace: {id}\n"));
+                }
+            }
+        }
+        assert_eq!(fs::read(&db_path).ok(), before);
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn unresolvable_invocation_directory_is_an_error_without_output() {
+    let root = test_root();
+    let directory = root.join("vanished");
+    fs::create_dir_all(&directory).unwrap();
+    let template = command(&root);
+    let mut shell = Command::new("sh");
+    for (key, value) in template.get_envs() {
+        if let Some(value) = value {
+            shell.env(key, value);
+        }
+    }
+    let output = shell
+        .args([
+            "-c",
+            "cd \"$1\" && rmdir \"$1\" && exec \"$2\" status --json",
+            "status-test",
+        ])
+        .arg(&directory)
+        .arg(env!("CARGO_BIN_EXE_trees"))
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("failed to resolve status invocation directory"));
+    assert!(!database_path(&root).exists());
+    fs::remove_dir_all(root).unwrap();
 }
