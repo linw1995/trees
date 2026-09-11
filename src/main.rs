@@ -499,19 +499,23 @@ fn run_status(arguments: trees::cli::StatusArgs) -> Result<ExitCode, CliError> {
         trees::cli::StatusView::Workspaces => trees::status::StatusView::Workspaces,
         trees::cli::StatusView::Repos => trees::status::StatusView::Repos,
     };
-    let mut connection = match trees::database::open_read_only() {
+    let connection = match trees::database::open_read_only() {
         Ok(connection) => Some(connection),
         Err(trees::database::DatabaseError::ReadOnlyDatabaseMissing { .. }) => None,
         Err(source) => return Err(source.into()),
     };
-    let snapshot =
-        trees::status::combined::load(connection.as_mut(), &selector, view, arguments.all)?;
+    let report = trees::status::report::load(connection, &selector, view, arguments.all)?;
     if arguments.json {
-        print_json(&snapshot)
+        print_json(&report)
     } else {
         println!(
             "{}",
-            trees::status::summary::render(&snapshot, &selector, status_color_enabled())
+            trees::status::summary::render(
+                &report.snapshot,
+                &selector,
+                status_color_enabled(),
+                report.target_processes.as_ref()
+            )
         );
         Ok(ExitCode::SUCCESS)
     }
