@@ -593,3 +593,132 @@ fn unresolvable_invocation_directory_is_an_error_without_output() {
     assert!(!database_path(&root).exists());
     fs::remove_dir_all(root).unwrap();
 }
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn observes_only_target_children_across_all_views_and_selection_modes() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Child, Stdio};
+
+    struct RunningChild(Child);
+    impl Drop for RunningChild {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    fn child(cwd: &Path) -> RunningChild {
+        let mut child = RunningChild(
+            Command::new("sh")
+                .args(["-c", "printf 'ready\n'; read -r line"])
+                .current_dir(cwd)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        let mut ready = String::new();
+        BufReader::new(child.0.stdout.take().unwrap())
+            .read_line(&mut ready)
+            .unwrap();
+        assert_eq!(ready, "ready\n");
+        child
+    }
+
+    let root = test_root();
+    let workspace = root.join("workspace");
+    fs::create_dir_all(workspace.join("repo")).unwrap();
+    fs::create_dir_all(workspace.join("nested/repo")).unwrap();
+    fs::create_dir_all(root.join("workspace-extra")).unwrap();
+    let db_path = database_path(&root);
+    fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+    let mut db = database::connect(&db_path).unwrap();
+    let id = insert_workspace(
+        &mut db,
+        CanonicalPath::resolve(&workspace).unwrap(),
+        WorkspaceState::Ready,
+        WorkspaceManagementMode::Manual,
+        None,
+    );
+    insert_workspace(
+        &mut db,
+        CanonicalPath::resolve(workspace.join("nested")).unwrap(),
+        WorkspaceState::Removed,
+        WorkspaceManagementMode::Manual,
+        None,
+    );
+    drop(db);
+    let before = fs::read(&db_path).unwrap();
+    let mut matching = child(&workspace.join("repo"));
+    let nested = child(&workspace.join("nested/repo"));
+    let outside = child(&root.join("workspace-extra"));
+    for view in ["pools", "workspaces", "repos"] {
+        for explicit in [false, true] {
+            let mut cmd = command(&root);
+            cmd.current_dir(if explicit { &root } else { &workspace })
+                .env("PATH", "")
+                .args(["status", "--view", view, "--json"]);
+            if explicit {
+                cmd.arg(id.to_string());
+            }
+            let status = cmd
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let status_pid = status.id();
+            let output = status.wait_with_output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(output.stderr.is_empty());
+            let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            let observation = &json["target_processes"];
+            assert!(observation["observed_at"].is_string());
+            let processes = observation["processes"].as_array().unwrap();
+            assert_eq!(observation["count"], processes.len());
+            assert_eq!(processes.len(), 1, "{observation}");
+            assert_eq!(processes[0]["pid"], matching.0.id());
+            assert_eq!(
+                processes[0]["cwd"],
+                CanonicalPath::resolve(workspace.join("repo"))
+                    .unwrap()
+                    .to_string()
+            );
+            for excluded in [status_pid, nested.0.id(), outside.0.id()] {
+                assert!(!processes.iter().any(|process| process["pid"] == excluded));
+            }
+            if view == "workspaces" {
+                assert_eq!(json["target_workspace"], json[view][0]);
+            }
+        }
+    }
+    let human = command(&root)
+        .current_dir(&workspace)
+        .env("NO_COLOR", "1")
+        .env("PATH", "")
+        .arg("status")
+        .output()
+        .unwrap();
+    assert!(human.status.success());
+    let output = String::from_utf8(human.stdout).unwrap();
+    assert!(output.contains("Processes   1"));
+    assert!(output.contains(&matching.0.id().to_string()));
+    assert!(!output.contains('\u{1b}'));
+    matching.0.kill().unwrap();
+    matching.0.wait().unwrap();
+    let output = command(&root)
+        .current_dir(&workspace)
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["target_processes"]["count"], 0);
+    assert_eq!(fs::read(&db_path).unwrap(), before);
+    drop(matching);
+    drop(nested);
+    drop(outside);
+    fs::remove_dir_all(root).unwrap();
+}
