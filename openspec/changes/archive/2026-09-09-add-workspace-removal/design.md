@@ -28,7 +28,7 @@ does not use idle age.
 
 The interface is `trees remove <workspace-id> [--dry-run] [--yes]
 [--force]`. `remove` names the physical user action without implying that
-audit history is deleted; the persisted terminal state remains `reclaimed`.
+audit history is deleted; the persisted terminal state remains `removed`.
 Stable IDs avoid path ambiguity and compose with
 `trees status --view workspaces`.
 
@@ -73,12 +73,12 @@ policy.
 - [Preflight can become stale] → Rerun admission and physical validation under
   a persisted operation lease immediately before removal.
 - [Physical removal can partially fail] → Preserve the existing failed
-  operation and reconciliation behavior without writing a reclaimed tombstone.
+  operation and reconciliation behavior without writing a removed tombstone.
 
 ## Migration Plan
 
 No data migration is required. Rolling back removes the command while leaving
-valid lifecycle events and reclaimed tombstones readable by existing code.
+valid lifecycle events and removed tombstones readable by existing code.
 
 ## Open Questions
 

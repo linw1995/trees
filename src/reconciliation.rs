@@ -75,10 +75,10 @@ fn reconcile_workspace_inner(
     lease_id: Option<&LeaseId>,
 ) -> Result<ReconciliationSummary, ReconciliationError> {
     let workspace = find_workspace(connection, workspace_id).context(DatabaseSnafu)?;
-    if workspace.state == WorkspaceState::Reclaimed {
+    if workspace.state == WorkspaceState::Removed {
         return Ok(ReconciliationSummary {
             changed_worktrees: 0,
-            workspace_state: WorkspaceState::Reclaimed,
+            workspace_state: WorkspaceState::Removed,
         });
     }
     let repositories = list_repo_worktrees(connection, workspace_id).context(DatabaseSnafu)?;
@@ -119,7 +119,7 @@ fn reconcile_workspace_inner(
                 | RepoWorktreeState::Missing
                 | RepoWorktreeState::Diverged
                 | RepoWorktreeState::Failed
-                | RepoWorktreeState::Reclaimed
+                | RepoWorktreeState::Removed
         )
     }) {
         WorkspaceState::Degraded

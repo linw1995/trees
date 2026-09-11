@@ -66,7 +66,7 @@ pub struct WorkspaceRow {
     pub management_mode: WorkspaceManagementMode,
     pub pool_id: Option<PoolId>,
     pub last_released_at: Option<Timestamp>,
-    pub reclaimed_at: Option<Timestamp>,
+    pub removed_at: Option<Timestamp>,
 }
 
 #[derive(Debug, Insertable)]
@@ -92,7 +92,7 @@ pub struct NewManagedWorkspace {
     pub management_mode: WorkspaceManagementMode,
     pub pool_id: Option<PoolId>,
     pub last_released_at: Option<Timestamp>,
-    pub reclaimed_at: Option<Timestamp>,
+    pub removed_at: Option<Timestamp>,
 }
 
 /// A pool registry row for one logical repository set.

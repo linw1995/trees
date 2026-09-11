@@ -3,7 +3,7 @@
 ## Purpose
 
 This capability defines how automatically managed workspaces are borrowed,
-returned, and eventually reclaimed without allowing manual workspaces or
+returned, and eventually removed without allowing manual workspaces or
 unsafe Git state to be affected by automation.
 
 ## Requirements
@@ -147,7 +147,7 @@ workspace path and claim identifier.
 #### Scenario: Reject an Unsafe Pool
 
 - **WHEN** all matching workspaces are manual, claimed, active, degraded,
-  failed, reclaimed, dirty, missing, prunable, diverged, or otherwise not
+  failed, removed, dirty, missing, prunable, diverged, or otherwise not
   reusable
 - **THEN** automatic create provisions a new slot without mutating or cleaning
   any existing unsafe workspace
@@ -311,7 +311,7 @@ path, claim identifier, and release timestamp.
 - **THEN** release returns a busy failure without waiting, retrying, or changing
   Git or claim state
 
-### Requirement: Reclaim Idle Automatic Workspaces
+### Requirement: Remove Idle Automatic Workspaces
 
 The CLI SHALL provide `trees gc --older-than <duration> [--dry-run] [--yes]
 [--force]`. GC SHALL calculate a UTC cutoff from the current time minus the
@@ -323,7 +323,7 @@ unexpected-content checks; the current configuration root SHALL not filter
 reuse or GC candidates.
 GC SHALL report the total automatic workspaces, the number currently not
 claimed, the number currently claimed, the number older than the
-cutoff, and the number selected for reclamation. A normal non-dry-run SHALL
+cutoff, and the number selected for removal. A normal non-dry-run SHALL
 request confirmation before mutation unless `--yes` or `--force` is supplied.
 `--yes` SHALL skip only the confirmation and SHALL retain the normal safety
 filter. A dry run SHALL perform read-only inspection and SHALL NOT modify Git,
@@ -351,16 +351,16 @@ or not detached. Forced cleanup SHALL record that it was forced.
 #### Scenario: Confirm a Normal GC Run
 
 - **WHEN** a caller runs a non-dry-run GC without `--yes` or `--force` and the
-  scan finds reclaimable automatic workspaces
+  scan finds removable automatic workspaces
 - **THEN** the command displays how many workspaces are currently unclaimed
-  and how many will be reclaimed, and performs no mutation until the caller
+  and how many will be removed, and performs no mutation until the caller
   confirms
 
 #### Scenario: Skip Confirmation Without Forcing Cleanup
 
 - **WHEN** a caller runs `trees gc --older-than 30d --yes`
 - **THEN** the command displays the same counts, performs no interactive
-  prompt, and reclaims only the normal clean automatic candidates
+  prompt, and removes only the normal clean automatic candidates
 
 #### Scenario: Require Authorization Without Confirmation
 
@@ -376,7 +376,7 @@ or not detached. Forced cleanup SHALL record that it was forced.
 - **THEN** it reports the workspace as skipped and does not invoke any Git or
   filesystem removal for that workspace
 
-#### Scenario: Reclaim an Idle Workspace
+#### Scenario: Remove an Idle Workspace
 
 - **WHEN** an automatic workspace is older than the cutoff, has no active
   claim or operation, and final reconciliation confirms every worktree is
@@ -384,8 +384,8 @@ or not detached. Forced cleanup SHALL record that it was forced.
   recorded revision
 - **THEN** after confirmation GC removes each worktree without a force flag,
   removes the empty workspace directory, marks the workspace and
-  repo-worktree snapshots as `reclaimed`, and records a successful GC
-  operation and reclamation event
+  repo-worktree snapshots as `removed`, and records a successful GC
+  operation and removal event
 
 #### Scenario: Preserve an Unsafe GC Candidate
 
@@ -394,14 +394,14 @@ or not detached. Forced cleanup SHALL record that it was forced.
 - **THEN** normal GC skips or fails that candidate, reports the reason, and
   leaves every remaining file and worktree association in place
 
-#### Scenario: Force Reclaim an Unsafe Automatic Workspace
+#### Scenario: Force Remove an Unsafe Automatic Workspace
 
 - **WHEN** a caller runs `trees gc --older-than 30d --force` and an
   age-qualified automatic workspace has dirty or diverged worktrees, or
   unexpected content below its managed root
 - **THEN** GC may use forced worktree removal and remove that workspace's
   unexpected content, records `forced: true`, and marks the workspace
-  `reclaimed` only after all requested physical removal succeeds
+  `removed` only after all requested physical removal succeeds
 
 #### Scenario: Keep Force Within Ownership and Identity Boundaries
 
@@ -417,9 +417,9 @@ or not detached. Forced cleanup SHALL record that it was forced.
   root cannot be removed
 - **THEN** GC stops, records the partial removal and failure details, marks
   the workspace degraded or failed as appropriate, and does not report the
-  workspace as successfully reclaimed
+  workspace as successfully removed
 
-### Requirement: Record Workspace Access and Reclamation Lifecycle
+### Requirement: Record Workspace Access and Removal Lifecycle
 
 Every successful acquire, release, rejected release, and GC attempt that
 reaches a per-workspace operation SHALL be
@@ -430,10 +430,10 @@ and SHALL include management mode, claim identifiers, operation context,
 timestamps, age cutoff, unclaimed/claimed counts, and relevant
 reconciliation or failure details as canonical JSON. Forced GC events SHALL
 include `forced: true`. Claim or filesystem snapshot changes SHALL be committed
-atomically with their access or reclamation events. Terminal operation events
+atomically with their access or removal events. Terminal operation events
 and current lease cleanup SHALL be committed atomically in a short SQLite
 transaction after the final external-state check; physical GC removal SHALL be
-completed before a workspace is marked `reclaimed`. The operation fact itself
+completed before a workspace is marked `removed`. The operation fact itself
 SHALL remain append-only.
 
 #### Scenario: Audit a Release Rejection
@@ -450,9 +450,9 @@ SHALL remain append-only.
 - **THEN** no duplicate external-change event is appended, while the access
   operation still appends its own successful terminal event
 
-#### Scenario: Preserve Reclamation History
+#### Scenario: Preserve Removal History
 
 - **WHEN** GC successfully removes an automatic workspace
-- **THEN** the workspace and repo-worktree rows remain as `reclaimed`
+- **THEN** the workspace and repo-worktree rows remain as `removed`
   tombstones, prior lifecycle events remain readable, and a later acquire
-  cannot reuse the reclaimed record
+  cannot reuse the removed record

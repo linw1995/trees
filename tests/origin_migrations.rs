@@ -71,6 +71,8 @@ fn rollback_requires_pending_clone_recovery() {
     use diesel_migrations::MigrationHarness;
     use trees::domain::{CanonicalPath, OriginRepositoryId};
     let mut db = trees::database::connect(std::path::Path::new(":memory:")).unwrap();
+    db.revert_last_migration(trees::database::MIGRATIONS)
+        .expect("terminology migration should revert");
     let id = OriginRepositoryId::new();
     trees::storage::origin::insert_pending(
         &mut db,

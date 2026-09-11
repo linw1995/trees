@@ -5,7 +5,7 @@
 The workspace snapshot SHALL persist a management mode with the values
 `automatic` and `manual`, an absolute canonical workspace path, an optional
 UUID-backed repository-set pool ID, the last successful release time, and, when
-applicable, the reclamation time. A workspace slot root SHALL be derived from
+applicable, the removal time. A workspace slot root SHALL be derived from
 `canonical_path.parent()` and SHALL NOT be persisted. An automatic workspace SHALL
 reference a pool registry row whose non-unique indexed hash and exact sorted
 `repository_ids` identify the repository set; pool identity SHALL be
@@ -29,7 +29,7 @@ filled in as `manual` when this schema is introduced.
 
 - **WHEN** a workspace is recorded with `manual` management mode
 - **THEN** its mode remains in the current snapshot and no GC operation can
-  select it as a reclamation candidate
+  select it as a removal candidate
 
 #### Scenario: Preserve Legacy Workspace Mode
 
@@ -54,27 +54,27 @@ matching and collision verification.
 - **THEN** they reference one origin repository record and do not copy its
   source path into each relationship row
 
-### Requirement: Model Reclaimed Lifecycle State
+### Requirement: Model Removed Lifecycle State
 
-Workspace lifecycle state SHALL include `reclaimed` in addition to
+Workspace lifecycle state SHALL include `removed` in addition to
 `creating`, `ready`, `degraded`, and `failed`. Repo-worktree lifecycle state
-SHALL include `dirty` and `reclaimed` in addition to `pending`, `attached`,
-`missing`, `diverged`, and `failed`. A reclaimed workspace and its reclaimed
+SHALL include `dirty` and `removed` in addition to `pending`, `attached`,
+`missing`, `diverged`, and `failed`. A removed workspace and its removed
 repo-worktree associations SHALL remain as immutable-history tombstones and
 SHALL not be eligible for acquisition or ordinary workspace launch.
 
-#### Scenario: Persist Successful Reclamation
+#### Scenario: Persist Successful Removal
 
 - **WHEN** GC removes all managed worktrees and the empty workspace directory
-- **THEN** the workspace is `reclaimed`, each removed repo-worktree association
-  is `reclaimed`, the reclamation timestamp is stored, and prior lifecycle
+- **THEN** the workspace is `removed`, each removed repo-worktree association
+  is `removed`, the removal timestamp is stored, and prior lifecycle
   events remain readable
 
-#### Scenario: Preserve Partial Reclamation Failure
+#### Scenario: Preserve Partial Removal Failure
 
 - **WHEN** GC removes only some physical worktrees before a later removal
   fails
-- **THEN** the workspace is not marked `reclaimed`, the partial states and
+- **THEN** the workspace is not marked `removed`, the partial states and
   failure details are persisted, and the failed GC operation remains
   auditable
 

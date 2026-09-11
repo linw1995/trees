@@ -15,7 +15,7 @@ is a persistent ownership state for this workspace, not a long-lived SQLite
 transaction or database lock. Operation leases, rather than workspace claims,
 provide expiry metadata and renewal for automatic recovery when an operation
 owner disappears. A separate management mode distinguishes workspaces that
-Trees may automatically reclaim from workspaces whose retention remains a
+Trees may automatically remove from workspaces whose retention remains a
 manual responsibility.
 
 ## What Changes
@@ -33,7 +33,7 @@ manual responsibility.
 - Add `trees release <workspace-path> --claim-id <claim-id>` to release the
   claim after reconciliation.
 - Add `trees gc --older-than <duration> [--dry-run] [--yes] [--force]` to
-  reclaim idle automatic workspaces while never selecting manual workspaces;
+  remove idle automatic workspaces while never selecting manual workspaces;
   report the number currently unclaimed and confirm the normal
   destructive run. `--yes` skips only confirmation, while `--force` implies
   `--yes` and explicitly permits destructive cleanup of age-qualified unsafe
@@ -76,7 +76,7 @@ manual responsibility.
   repository-only versus explicit-path creation shape while preserving the
   direct-child worktree structure.
 - `workspace-lifecycle`: Extend lifecycle persistence and reconciliation with
-  management modes, active workspace claims, operation leases, dirty/reclaimed
+  management modes, active workspace claims, operation leases, dirty/removed
   states, and GC timestamps.
 
 ## Impact

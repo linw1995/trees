@@ -57,6 +57,9 @@ fn combined_feature_migration_preserves_legacy_workspace() {
     let mut connection = database::connect(&path).expect("database should open");
     connection
         .revert_last_migration(database::MIGRATIONS)
+        .expect("terminology migration should revert");
+    connection
+        .revert_last_migration(database::MIGRATIONS)
         .expect("origin migration should revert");
     connection
         .revert_last_migration(database::MIGRATIONS)
@@ -123,6 +126,9 @@ fn combined_feature_migration_preserves_legacy_workspace() {
 fn combined_feature_migration_preserves_legacy_operation_lease() {
     let path = database_path();
     let mut connection = database::connect(&path).expect("database should open");
+    connection
+        .revert_last_migration(database::MIGRATIONS)
+        .expect("terminology migration should revert");
     connection
         .revert_last_migration(database::MIGRATIONS)
         .expect("origin migration should revert");
@@ -313,7 +319,7 @@ fn embedded_migrations_are_consolidated() {
     let mut connection = database::connect(&path).expect("database should open");
     let migrations = MigrationSource::<diesel::sqlite::Sqlite>::migrations(&database::MIGRATIONS)
         .expect("embedded migrations should load");
-    assert_eq!(migrations.len(), 3);
+    assert_eq!(migrations.len(), 4);
     assert!(trees::storage::find_workspace_claim_by_id(
         &mut connection,
         &trees::domain::ClaimId::new(),
@@ -427,7 +433,7 @@ fn legacy_workspace_rows_default_to_manual_without_pool_metadata() {
     assert_eq!(stored.management_mode, WorkspaceManagementMode::Manual);
     assert_eq!(stored.pool_id, None);
     assert_eq!(stored.last_released_at, None);
-    assert_eq!(stored.reclaimed_at, None);
+    assert_eq!(stored.removed_at, None);
     assert!(workspace_path.as_path().exists());
 
     drop(connection);
@@ -460,7 +466,7 @@ fn automatic_workspace_metadata_and_timestamps_round_trip_as_absolute_values() {
             trees::schema::workspaces::management_mode.eq(WorkspaceManagementMode::Automatic),
             trees::schema::workspaces::pool_id.eq(Some(pool.id)),
             trees::schema::workspaces::last_released_at.eq(Some(now.clone())),
-            trees::schema::workspaces::reclaimed_at.eq::<Option<Timestamp>>(None),
+            trees::schema::workspaces::removed_at.eq::<Option<Timestamp>>(None),
         ))
         .execute(&mut connection)
         .expect("automatic metadata should update");

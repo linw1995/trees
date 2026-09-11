@@ -11,10 +11,10 @@ checks.
 - Allow explicit removal of either automatic or manual workspaces.
 - Reuse the GC physical validation and removal behavior without applying an age
   threshold or automatic-management filter.
-- Reject claimed, actively operated, unknown, or already reclaimed workspaces.
+- Reject claimed, actively operated, unknown, or already removed workspaces.
 - Keep `--force` bounded by claim, operation, path-containment, source identity,
   and branch-attachment guards.
-- Preserve reclaimed workspace and repo-worktree tombstones and lifecycle
+- Preserve removed workspace and repo-worktree tombstones and lifecycle
   events after physical removal.
 
 ## Capabilities

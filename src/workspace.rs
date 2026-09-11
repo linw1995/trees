@@ -1160,7 +1160,7 @@ fn initialize_creation_with_mode(
                 management_mode,
                 pool_id,
                 last_released_at: None,
-                reclaimed_at: None,
+                removed_at: None,
             },
         )?;
         for repository in &repositories {
@@ -2067,7 +2067,7 @@ mod tests {
     }
 
     #[test]
-    fn protects_a_claimed_workspace_from_reclamation() {
+    fn protects_a_claimed_workspace_from_removal() {
         let (root, database_path, mut connection, plan, candidate, worktree_path) =
             automatic_candidate_fixture();
         let acquire = acquire_automatic_candidate(&mut connection, &plan, &candidate)

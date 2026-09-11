@@ -87,7 +87,7 @@ fn insert_workspace(
             management_mode,
             pool_id,
             last_released_at: None,
-            reclaimed_at: (state == WorkspaceState::Reclaimed).then_some(now),
+            removed_at: (state == WorkspaceState::Removed).then_some(now),
         },
     )
     .expect("workspace should be inserted");
@@ -114,7 +114,7 @@ fn missing_database_is_a_successful_empty_result_without_side_effects() {
     assert!(json.status.success());
     let value: serde_json::Value =
         serde_json::from_slice(&json.stdout).expect("stdout should be valid JSON");
-    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["schema_version"], 2);
     assert_eq!(value["view"], "pools");
     assert!(value["snapshot_at"].is_string());
     assert_eq!(value["pools"], serde_json::json!([]));
@@ -211,11 +211,11 @@ fn status_renders_ordered_persisted_state_and_preserves_storage() {
     )
     .expect("repo worktree should be inserted");
 
-    let reclaimed_path = path(root.join("workspaces").join("reclaimed"));
-    let reclaimed_id = insert_workspace(
+    let removed_path = path(root.join("workspaces").join("removed"));
+    let removed_id = insert_workspace(
         &mut connection,
-        reclaimed_path.clone(),
-        WorkspaceState::Reclaimed,
+        removed_path.clone(),
+        WorkspaceState::Removed,
         WorkspaceManagementMode::Automatic,
         Some(pool_id),
     );
@@ -243,7 +243,7 @@ fn status_renders_ordered_persisted_state_and_preserves_storage() {
     assert!(!human.contains("degraded"));
     assert!(!human.contains(manual_path.as_path().to_str().unwrap()));
     assert!(!human.contains(automatic_path.as_path().to_str().unwrap()));
-    assert!(!human.contains(reclaimed_path.as_path().to_str().unwrap()));
+    assert!(!human.contains(removed_path.as_path().to_str().unwrap()));
 
     let details = command(&root)
         .args(["status", "--view", "workspaces"])
@@ -264,10 +264,10 @@ fn status_renders_ordered_persisted_state_and_preserves_storage() {
     assert!(details.contains("👤"));
     assert!(details.contains(&manual_id.to_string()));
     assert!(details.contains(&automatic_id.to_string()));
-    assert!(!details.contains(&reclaimed_id.to_string()));
+    assert!(!details.contains(&removed_id.to_string()));
     assert!(!details.contains(manual_path.as_path().to_str().unwrap()));
     assert!(!details.contains(automatic_path.as_path().to_str().unwrap()));
-    assert!(!details.contains(reclaimed_path.as_path().to_str().unwrap()));
+    assert!(!details.contains(removed_path.as_path().to_str().unwrap()));
     assert!(
         details.find(&manual_id.to_string()).unwrap()
             < details.find(&automatic_id.to_string()).unwrap()
@@ -305,8 +305,8 @@ fn status_renders_ordered_persisted_state_and_preserves_storage() {
     assert_eq!(workspaces[0]["workspace_id"], manual_id.to_string());
     assert_eq!(workspaces[0]["path"], manual_path.to_string());
     assert_eq!(workspaces[0]["repo_worktrees"][0]["state"], "dirty");
-    assert_eq!(workspaces[1]["workspace_id"], reclaimed_id.to_string());
-    assert_eq!(workspaces[1]["state"], "reclaimed");
+    assert_eq!(workspaces[1]["workspace_id"], removed_id.to_string());
+    assert_eq!(workspaces[1]["state"], "removed");
     assert_eq!(workspaces[2]["workspace_id"], automatic_id.to_string());
     assert_eq!(workspaces[2]["path"], automatic_path.to_string());
     assert_eq!(workspaces[2]["claim"]["claim_id"], claim_id.to_string());

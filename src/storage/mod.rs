@@ -30,11 +30,12 @@ pub use repository::{
     operation_state, persist_operation_intent, persist_operation_step_intent,
     record_operation_transition, record_repo_worktree_transition, record_workspace_acquire,
     record_workspace_acquire_failure, record_workspace_explicitly_removed,
-    record_workspace_gc_failure, record_workspace_gc_skipped, record_workspace_reclaimed,
-    record_workspace_release, record_workspace_release_rejection, record_workspace_remove_failure,
-    record_workspace_remove_skipped, record_workspace_transition, record_worktree_step_result,
-    release_workspace_claim, renew_operation_lease, try_begin_operation,
-    update_workspace_observation, EventDraft, OperationIntentError, TransitionMetadata,
+    record_workspace_gc_failure, record_workspace_gc_skipped, record_workspace_release,
+    record_workspace_release_rejection, record_workspace_remove_failure,
+    record_workspace_remove_skipped, record_workspace_removed, record_workspace_transition,
+    record_worktree_step_result, release_workspace_claim, renew_operation_lease,
+    try_begin_operation, update_workspace_observation, EventDraft, OperationIntentError,
+    TransitionMetadata,
 };
 pub use transaction::{
     with_immediate_transaction, with_retrying_short_transaction, with_short_transaction,

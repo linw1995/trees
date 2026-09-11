@@ -138,7 +138,7 @@ pub struct StatusArgs {
     #[arg(long, value_enum, default_value_t = StatusView::Pools)]
     pub view: StatusView,
 
-    #[arg(long, help = "Include reclaimed records in the workspace view")]
+    #[arg(long, help = "Include removed records in the workspace view")]
     pub all: bool,
 
     #[arg(long, help = "Print the workspace status snapshot as JSON")]
@@ -450,7 +450,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_status_output_and_reclaimed_filters() {
+    fn parses_status_output_and_removed_filters() {
         let cli =
             Cli::try_parse_from(["trees", "status", "--view", "workspaces", "--all", "--json"])
                 .expect("status command should parse");

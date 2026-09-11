@@ -380,7 +380,7 @@ fn repos_json_is_versioned_and_reports_missing_sources_without_mutation() {
             .output()
             .unwrap(),
     );
-    assert_eq!(empty["schema_version"], 1);
+    assert_eq!(empty["schema_version"], 2);
     assert_eq!(empty["view"], "repos");
     assert_eq!(empty["repos"], serde_json::json!([]));
     assert!(!fixture.0.join("state").exists());
@@ -712,7 +712,7 @@ fn local_sources_inside_clone_root_need_no_modes_and_names_can_be_ambiguous() {
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
-fn existing_schema_status_succeeds_without_migration() {
+fn legacy_schema_status_requires_upgrade_without_mutation() {
     use diesel_migrations::MigrationHarness;
     let fixture = Fixture::new();
     success(
@@ -737,7 +737,9 @@ fn existing_schema_status_succeeds_without_migration() {
         .args(["status", "--view", "repos", "--json"])
         .output()
         .unwrap();
-    assert_eq!(success(status)["repos"].as_array().unwrap().len(), 1);
+    assert!(!status.status.success());
+    assert!(status.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&status.stderr).contains("schema upgrade required"));
     assert_eq!(before, fs::read(path).unwrap());
 }
 

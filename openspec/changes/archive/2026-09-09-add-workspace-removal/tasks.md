@@ -14,6 +14,6 @@
 ## 3. Verification
 
 - [x] 3.1 Cover manual and automatic success, dry-run, force, claims,
-  operations, unknown IDs, reclaimed IDs, and physical safety failures
+  operations, unknown IDs, removed IDs, and physical safety failures
 - [x] 3.2 Run Rust checks, repository hooks, strict OpenSpec validation, and
   Nix flake evaluation

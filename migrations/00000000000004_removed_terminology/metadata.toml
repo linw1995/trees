@@ -1,0 +1,2 @@
+# Referenced tables are rebuilt inside an explicit transaction with foreign keys disabled.
+run_in_transaction = false

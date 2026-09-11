@@ -332,7 +332,7 @@ pub fn list_current_automatic_pool_repositories(
                 .on(workspaces::pool_id.eq(workspace_pool_repositories::pool_id.nullable())),
         )
         .filter(workspaces::management_mode.eq(WorkspaceManagementMode::Automatic))
-        .filter(workspaces::state.ne(WorkspaceState::Reclaimed))
+        .filter(workspaces::state.ne(WorkspaceState::Removed))
         .order((
             workspace_pool_repositories::pool_id.asc(),
             origin_repositories::source_path.asc(),
@@ -381,7 +381,7 @@ pub fn list_current_automatic_workspaces(
 ) -> QueryResult<Vec<WorkspaceRow>> {
     workspaces::table
         .filter(workspaces::management_mode.eq(WorkspaceManagementMode::Automatic))
-        .filter(workspaces::state.ne(WorkspaceState::Reclaimed))
+        .filter(workspaces::state.ne(WorkspaceState::Removed))
         .filter(workspaces::pool_id.is_not_null())
         .order((workspaces::pool_id.asc(), workspaces::id.asc()))
         .select(WorkspaceRow::as_select())
@@ -390,11 +390,11 @@ pub fn list_current_automatic_workspaces(
 
 pub fn list_workspaces(
     connection: &mut SqliteConnection,
-    include_reclaimed: bool,
+    include_removed: bool,
 ) -> QueryResult<Vec<WorkspaceRow>> {
     let mut query = workspaces::table.into_boxed();
-    if !include_reclaimed {
-        query = query.filter(workspaces::state.ne(WorkspaceState::Reclaimed));
+    if !include_removed {
+        query = query.filter(workspaces::state.ne(WorkspaceState::Removed));
     }
     query
         .order(workspaces::canonical_path.asc())
@@ -404,13 +404,13 @@ pub fn list_workspaces(
 
 pub fn list_status_workspace_claims(
     connection: &mut SqliteConnection,
-    include_reclaimed: bool,
+    include_removed: bool,
 ) -> QueryResult<Vec<WorkspaceClaimRow>> {
     let mut query = workspace_claims::table
         .inner_join(workspaces::table)
         .into_boxed();
-    if !include_reclaimed {
-        query = query.filter(workspaces::state.ne(WorkspaceState::Reclaimed));
+    if !include_removed {
+        query = query.filter(workspaces::state.ne(WorkspaceState::Removed));
     }
     query
         .order(workspace_claims::workspace_id.asc())
@@ -424,7 +424,7 @@ pub fn list_current_automatic_workspace_claims(
     workspace_claims::table
         .inner_join(workspaces::table)
         .filter(workspaces::management_mode.eq(WorkspaceManagementMode::Automatic))
-        .filter(workspaces::state.ne(WorkspaceState::Reclaimed))
+        .filter(workspaces::state.ne(WorkspaceState::Removed))
         .filter(workspaces::pool_id.is_not_null())
         .order(workspace_claims::workspace_id.asc())
         .select(WorkspaceClaimRow::as_select())
@@ -637,13 +637,13 @@ pub fn record_workspace_release_rejection(
     })
 }
 
-pub fn record_workspace_reclaimed(
+pub fn record_workspace_removed(
     connection: &mut SqliteConnection,
     lease_id: &LeaseId,
     workspace_id: &WorkspaceId,
     details_json: Option<JsonDocument>,
 ) -> QueryResult<()> {
-    record_workspace_reclaimed_by(
+    record_workspace_removed_by(
         connection,
         lease_id,
         workspace_id,
@@ -659,7 +659,7 @@ pub fn record_workspace_explicitly_removed(
     workspace_id: &WorkspaceId,
     details_json: Option<JsonDocument>,
 ) -> QueryResult<()> {
-    record_workspace_reclaimed_by(
+    record_workspace_removed_by(
         connection,
         lease_id,
         workspace_id,
@@ -669,7 +669,7 @@ pub fn record_workspace_explicitly_removed(
     )
 }
 
-fn record_workspace_reclaimed_by(
+fn record_workspace_removed_by(
     connection: &mut SqliteConnection,
     lease_id: &LeaseId,
     workspace_id: &WorkspaceId,
@@ -688,7 +688,7 @@ fn record_workspace_reclaimed_by(
         for repository in &repositories {
             diesel::update(repo_worktrees::table.find(&repository.id))
                 .set((
-                    repo_worktrees::state.eq(RepoWorktreeState::Reclaimed),
+                    repo_worktrees::state.eq(RepoWorktreeState::Removed),
                     repo_worktrees::last_observed_at.eq(&occurred_at),
                 ))
                 .execute(connection)?;
@@ -698,11 +698,11 @@ fn record_workspace_reclaimed_by(
                     operation_id,
                     entity_type: "repo_worktree".to_owned(),
                     entity_id: repository.id.to_string(),
-                    event_type: "worktree_reclaimed".to_owned(),
+                    event_type: "worktree_removed".to_owned(),
                     source: source.to_owned(),
                     occurred_at: occurred_at.clone(),
                     previous_state: Some(repository.state.to_string()),
-                    current_state: Some(RepoWorktreeState::Reclaimed.to_string()),
+                    current_state: Some(RepoWorktreeState::Removed.to_string()),
                     details_json: details_json.clone(),
                     error_json: None,
                 },
@@ -710,10 +710,10 @@ fn record_workspace_reclaimed_by(
         }
         diesel::update(workspaces::table.find(workspace_id))
             .set((
-                workspaces::state.eq(WorkspaceState::Reclaimed),
+                workspaces::state.eq(WorkspaceState::Removed),
                 workspaces::updated_at.eq(&occurred_at),
                 workspaces::last_reconciled_at.eq(&occurred_at),
-                workspaces::reclaimed_at.eq(&occurred_at),
+                workspaces::removed_at.eq(&occurred_at),
             ))
             .execute(connection)?;
         finish_operation_in_transaction(
@@ -730,11 +730,11 @@ fn record_workspace_reclaimed_by(
                 operation_id,
                 entity_type: "workspace".to_owned(),
                 entity_id: workspace.id.to_string(),
-                event_type: "workspace_reclaimed".to_owned(),
+                event_type: "workspace_removed".to_owned(),
                 source: source.to_owned(),
                 occurred_at,
                 previous_state: Some(workspace.state.to_string()),
-                current_state: Some(WorkspaceState::Reclaimed.to_string()),
+                current_state: Some(WorkspaceState::Removed.to_string()),
                 details_json,
                 error_json: None,
             },
@@ -750,13 +750,13 @@ pub fn record_workspace_gc_skipped(
     details_json: Option<JsonDocument>,
     error_json: JsonDocument,
 ) -> QueryResult<()> {
-    record_workspace_reclamation_skipped(
+    record_workspace_removal_skipped(
         connection,
         lease_id,
         workspace_id,
         details_json,
         error_json,
-        ReclamationEventMetadata {
+        RemovalEventMetadata {
             source: "gc",
             event_type: "workspace_gc_skipped",
             pending_step: "GC skipped workspace",
@@ -771,13 +771,13 @@ pub fn record_workspace_remove_skipped(
     details_json: Option<JsonDocument>,
     error_json: JsonDocument,
 ) -> QueryResult<()> {
-    record_workspace_reclamation_skipped(
+    record_workspace_removal_skipped(
         connection,
         lease_id,
         workspace_id,
         details_json,
         error_json,
-        ReclamationEventMetadata {
+        RemovalEventMetadata {
             source: "remove",
             event_type: "workspace_remove_skipped",
             pending_step: "explicit removal skipped workspace",
@@ -785,13 +785,13 @@ pub fn record_workspace_remove_skipped(
     )
 }
 
-fn record_workspace_reclamation_skipped(
+fn record_workspace_removal_skipped(
     connection: &mut SqliteConnection,
     lease_id: &LeaseId,
     workspace_id: &WorkspaceId,
     details_json: Option<JsonDocument>,
     error_json: JsonDocument,
-    metadata: ReclamationEventMetadata<'_>,
+    metadata: RemovalEventMetadata<'_>,
 ) -> QueryResult<()> {
     with_short_transaction(connection, |connection| {
         let operation_id = operation_id_for_lease(connection, lease_id)?;
@@ -834,13 +834,13 @@ pub fn record_workspace_gc_failure(
     details_json: Option<JsonDocument>,
     error_json: JsonDocument,
 ) -> QueryResult<()> {
-    record_workspace_reclamation_failure(
+    record_workspace_removal_failure(
         connection,
         lease_id,
         workspace_id,
         details_json,
         error_json,
-        ReclamationEventMetadata {
+        RemovalEventMetadata {
             source: "gc",
             event_type: "workspace_gc_failed",
             pending_step: "GC failed",
@@ -855,13 +855,13 @@ pub fn record_workspace_remove_failure(
     details_json: Option<JsonDocument>,
     error_json: JsonDocument,
 ) -> QueryResult<()> {
-    record_workspace_reclamation_failure(
+    record_workspace_removal_failure(
         connection,
         lease_id,
         workspace_id,
         details_json,
         error_json,
-        ReclamationEventMetadata {
+        RemovalEventMetadata {
             source: "remove",
             event_type: "workspace_remove_failed",
             pending_step: "explicit removal failed",
@@ -869,13 +869,13 @@ pub fn record_workspace_remove_failure(
     )
 }
 
-fn record_workspace_reclamation_failure(
+fn record_workspace_removal_failure(
     connection: &mut SqliteConnection,
     lease_id: &LeaseId,
     workspace_id: &WorkspaceId,
     details_json: Option<JsonDocument>,
     error_json: JsonDocument,
-    metadata: ReclamationEventMetadata<'_>,
+    metadata: RemovalEventMetadata<'_>,
 ) -> QueryResult<()> {
     with_short_transaction(connection, |connection| {
         let operation_id = operation_id_for_lease(connection, lease_id)?;
@@ -920,7 +920,7 @@ fn record_workspace_reclamation_failure(
 }
 
 #[derive(Clone, Copy)]
-struct ReclamationEventMetadata<'a> {
+struct RemovalEventMetadata<'a> {
     source: &'a str,
     event_type: &'a str,
     pending_step: &'a str,
@@ -998,14 +998,14 @@ pub fn list_repo_worktrees(
 
 pub fn list_status_repo_worktrees(
     connection: &mut SqliteConnection,
-    include_reclaimed: bool,
+    include_removed: bool,
 ) -> QueryResult<Vec<RepoWorktreeRow>> {
     let mut query = repo_worktrees::table
         .inner_join(origin_repositories::table)
         .inner_join(workspaces::table.on(workspaces::id.eq(repo_worktrees::workspace_id)))
         .into_boxed();
-    if !include_reclaimed {
-        query = query.filter(workspaces::state.ne(WorkspaceState::Reclaimed));
+    if !include_removed {
+        query = query.filter(workspaces::state.ne(WorkspaceState::Removed));
     }
     query
         .order((
@@ -1069,7 +1069,7 @@ pub fn list_current_automatic_operation_leases(
     operation_leases::table
         .inner_join(workspaces::table)
         .filter(workspaces::management_mode.eq(WorkspaceManagementMode::Automatic))
-        .filter(workspaces::state.ne(WorkspaceState::Reclaimed))
+        .filter(workspaces::state.ne(WorkspaceState::Removed))
         .filter(workspaces::pool_id.is_not_null())
         .order(operation_leases::workspace_id.asc())
         .select(OperationLeaseRow::as_select())
@@ -1078,14 +1078,14 @@ pub fn list_current_automatic_operation_leases(
 
 pub fn list_status_leased_operations(
     connection: &mut SqliteConnection,
-    include_reclaimed: bool,
+    include_removed: bool,
 ) -> QueryResult<Vec<LeasedOperation>> {
     let mut query = operation_leases::table
         .inner_join(operations::table)
         .inner_join(workspaces::table.on(workspaces::id.eq(operation_leases::workspace_id)))
         .into_boxed();
-    if !include_reclaimed {
-        query = query.filter(workspaces::state.ne(WorkspaceState::Reclaimed));
+    if !include_removed {
+        query = query.filter(workspaces::state.ne(WorkspaceState::Removed));
     }
     query
         .order(operation_leases::workspace_id.asc())
@@ -1100,7 +1100,7 @@ pub fn list_status_leased_operations(
 
 pub fn list_status_operation_events(
     connection: &mut SqliteConnection,
-    include_reclaimed: bool,
+    include_removed: bool,
 ) -> QueryResult<Vec<EventRow>> {
     let mut query = lifecycle_events::table
         .inner_join(
@@ -1109,8 +1109,8 @@ pub fn list_status_operation_events(
         )
         .inner_join(workspaces::table.on(workspaces::id.eq(operation_leases::workspace_id)))
         .into_boxed();
-    if !include_reclaimed {
-        query = query.filter(workspaces::state.ne(WorkspaceState::Reclaimed));
+    if !include_removed {
+        query = query.filter(workspaces::state.ne(WorkspaceState::Removed));
     }
     query
         .filter(lifecycle_events::entity_type.eq("operation"))
@@ -2221,7 +2221,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_reclamation_keeps_tombstones_and_prior_events() {
+    fn workspace_removal_keeps_tombstones_and_prior_events() {
         let database_path =
             std::env::temp_dir().join(format!("trees-{}.sqlite", WorkspaceId::new()));
         let mut connection = database::connect(&database_path).expect("database should open");
@@ -2260,7 +2260,7 @@ mod tests {
             workspace_id,
             "gc",
             Timestamp::after_seconds(300),
-            "reclaim workspace",
+            "remove workspace",
             JsonDocument::parse(r#"{"kind":"gc"}"#).unwrap(),
         );
         let operation =
@@ -2282,20 +2282,20 @@ mod tests {
         )
         .expect("prior event should be inserted");
 
-        record_workspace_reclaimed(
+        record_workspace_removed(
             &mut connection,
             &intent.lease_id,
             &workspace_id,
             Some(JsonDocument::parse(r#"{"forced":false}"#).unwrap()),
         )
-        .expect("workspace should be reclaimed");
+        .expect("workspace should be removed");
 
         let workspace = find_workspace(&mut connection, &workspace_id).unwrap();
-        assert_eq!(workspace.state, WorkspaceState::Reclaimed);
-        assert!(workspace.reclaimed_at.is_some());
+        assert_eq!(workspace.state, WorkspaceState::Removed);
+        assert!(workspace.removed_at.is_some());
         assert_eq!(
             list_repo_worktrees(&mut connection, &workspace_id).unwrap()[0].state,
-            RepoWorktreeState::Reclaimed
+            RepoWorktreeState::Removed
         );
         let events = list_events_for_operation(&mut connection, &operation.id).unwrap();
         assert!(events
@@ -2303,7 +2303,7 @@ mod tests {
             .any(|event| event.event_type == "workspace_released"));
         assert!(events
             .iter()
-            .any(|event| event.event_type == "workspace_reclaimed"));
+            .any(|event| event.event_type == "workspace_removed"));
         assert!(events
             .iter()
             .any(|event| event.entity_id == worktree.id.to_string()));

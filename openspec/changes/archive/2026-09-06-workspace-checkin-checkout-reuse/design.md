@@ -6,7 +6,7 @@ workspace row and one repo-worktree row per child, and the lifecycle database
 already serializes non-terminal Git operations. Reconciliation can detect
 missing or diverged worktrees, but it does not currently model an access
 claim, whether a worktree contains local changes, or whether Trees may
-reclaim the workspace. A workspace path is unique, so the automatic form
+remove the workspace. A workspace path is unique, so the automatic form
 must allocate by repository set rather than ask the caller for a path.
 
 The reuse protocol must preserve the stable workspace and repo-worktree
@@ -20,7 +20,7 @@ short-transaction, and boundary-reconciliation discipline.
 **Goals:**
 
 - Make a previously created workspace explicitly reusable and returnable.
-- Distinguish `automatic` workspaces, which Trees may reclaim, from `manual`
+- Distinguish `automatic` workspaces, which Trees may remove, from `manual`
   workspaces, which are never selected by GC.
 - Enforce one active workspace claim per workspace across processes.
 - Keep workspace health (`ready`, `degraded`, and so on) separate from access
@@ -29,7 +29,7 @@ short-transaction, and boundary-reconciliation discipline.
   recorded revisions.
 - Recover abandoned operations without giving a new caller dirty or diverged
   files.
-- Reclaim only idle automatic workspaces after a caller-supplied age threshold,
+- Remove only idle automatic workspaces after a caller-supplied age threshold,
   while retaining database tombstones and lifecycle events.
 - Preserve the existing workspace identity, Git worktrees, lifecycle history,
   manual creation behavior, and direct-child worktree structure.
@@ -299,7 +299,7 @@ an incomplete setup. Recovery of access, GC, or integration operations is
 non-destructive: it reconciles current state and records a terminal recovery
 event without removing a managed worktree.
 
-### Reclaim Only Idle Automatic Workspaces
+### Remove Only Idle Automatic Workspaces
 
 `trees gc --older-than <duration> [--dry-run] [--yes] [--force]` calculates a
 cutoff from the current UTC time. A workspace is idle when its
@@ -310,8 +310,8 @@ active claim or operation always skips the candidate. GC does not infer claim
 abandonment from process liveness or override an active claim.
 
 Before a non-dry-run GC starts, it prints a summary with the automatic,
-unclaimed, claimed, age-qualified, and safe-to-reclaim counts. It
-then asks for confirmation such as `Reclaim N workspaces? [y/N]`. `--yes`
+unclaimed, claimed, age-qualified, and safe-to-remove counts. It
+then asks for confirmation such as `Remove N workspaces? [y/N]`. `--yes`
 skips this confirmation but keeps the normal safety filter. `--force` implies
 `--yes` and uses the forced safety policy below. A noninteractive invocation
 without either flag fails before mutation and tells the caller to inspect with
@@ -347,15 +347,15 @@ worktree with a non-forced `git worktree remove` in normal mode or the forced
 variant when `--force` is set, then removes the empty workspace directory (or
 the explicitly authorized unexpected content in forced mode). Only after all
 physical removals succeed does it mark
-repo-worktree rows and the workspace as `reclaimed`, finish the operation as
-`succeeded`, and append a `workspace_reclaimed` event. The database rows and
-all prior lifecycle events remain as tombstones, so a reclaimed workspace is
+repo-worktree rows and the workspace as `removed`, finish the operation as
+`succeeded`, and append a `workspace_removed` event. The database rows and
+all prior lifecycle events remain as tombstones, so a removed workspace is
 not reusable and its history is not lost. Recreating the same canonical path
 is outside this change.
 
 If a physical removal fails after an earlier removal succeeded, GC stops,
 records the partial result and failure details, marks the workspace `failed`
-or `degraded` as appropriate, and never reports a successful reclamation. It
+or `degraded` as appropriate, and never reports a successful removal. It
 does not attempt an unsafe automatic rollback or continue with additional
 removal steps.
 
@@ -364,9 +364,9 @@ removal steps.
 Acquisition, release, and GC append immutable operation facts with kinds
 `acquire`, `release`, and `gc`. Recovery reuses the expired operation fact and
 only appends recovery lifecycle events; it never mutates or creates an
-operation fact. Each intent is persisted before any claim or reclamation
+operation fact. Each intent is persisted before any claim or removal
 mutation. The current lease row, terminal lifecycle event, state change, and
-claim/reclamation mutation are committed atomically in short Diesel
+claim/removal mutation are committed atomically in short Diesel
 transactions. External Git and filesystem work is performed between those
 transactions. Access and GC events use `entity_type = workspace` and the stable
 workspace ID; structured details carry claim identifiers, GC counts, age cutoffs,
@@ -437,7 +437,7 @@ that reason lookup without adding a safety or persistence boundary.
    acquisition, release, and GC.
 4. Add the CLI workflow, safe non-forced GC removal path, and integration
    tests. If the change is rolled back, active claims must be released before
-   removing the claim table; reclaimed filesystem content is not recoverable
+   removing the claim table; removed filesystem content is not recoverable
    through Trees.
 
 ## Open Questions

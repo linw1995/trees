@@ -20,7 +20,7 @@ diagnosis but should be an explicit detail view rather than the default.
 **Non-Goals:**
 
 - Treat manual workspaces as allocatable pool capacity.
-- Count reclaimed tombstones as current capacity.
+- Count removed tombstones as current capacity.
 - Reconcile persisted state with Git or the filesystem.
 - Assert live reusability without access-boundary checks.
 - Show lifecycle history or completed operations.
@@ -32,7 +32,7 @@ diagnosis but should be an explicit detail view rather than the default.
 The interface is `trees status [--view pools|workspaces] [--all] [--json]`.
 `--view` defaults to `pools`. The pool view reports automatic allocation and
 capacity. The workspace view retains individual manual and automatic records.
-`--all` is valid only with `--view workspaces` and includes reclaimed workspace
+`--all` is valid only with `--view workspaces` and includes removed workspace
 tombstones there.
 
 The default is pool-oriented because automatic create allocates by exact
@@ -42,7 +42,7 @@ capacity question.
 
 ### Define Pool Capacity Counts
 
-Each pool uses current non-reclaimed automatic workspaces as its capacity.
+Each pool uses current non-removed automatic workspaces as its capacity.
 `available` counts slots whose persisted workspace state is `ready`, with no
 active claim and no retained operation lease. `abnormal` counts slots whose
 persisted state is `degraded` or `failed`. A `creating` slot is transient rather
@@ -61,7 +61,7 @@ parent component at a time until they are unique within the repository set.
 
 Pools use lexicographical order based on their canonical source-path list, with
 pool ID as a deterministic tiebreaker. Pools without current
-non-reclaimed automatic slots are omitted.
+non-removed automatic slots are omitted.
 
 ### Render Compact Pool and Detailed Workspace Tables
 
@@ -98,7 +98,7 @@ output and `NO_COLOR` use the same `<ready>/<total>` value without ANSI escapes.
 Each repository label uses its persisted repo-worktree state. Ready labels are
 green without a suffix. Pending labels are yellow with `(pending)`. Dirty,
 missing, diverged, and failed labels are red with `(dirty)`, `(missing)`,
-`(mismatch)`, and `(error)`. Reclaimed labels are gray with `(removed)`.
+`(mismatch)`, and `(error)`. Removed labels are gray with `(removed)`.
 Non-terminal output retains these suffixes without color, so color is never the
 only indication of a problem.
 
@@ -130,7 +130,7 @@ explicit empty program is invalid. Program execution reuses the create-open
 handoff: inherited environment and standard streams, canonical workspace path
 as the current directory, and process replacement where supported.
 
-The lookup uses a read-only connection. Reclaimed workspaces and workspaces
+The lookup uses a read-only connection. Removed workspaces and workspaces
 with a retained operation lease are rejected. An automatic workspace must
 already have an active claim, so open cannot bypass pool allocation. Manual
 workspaces do not require a claim. The database connection is dropped before
