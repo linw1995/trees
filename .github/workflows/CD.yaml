@@ -2,11 +2,14 @@ name: CD
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - 'release/*'
 
 permissions:
   contents: read
+
+env:
+  RELEASE_BRANCH: ${{ github.ref_name }}
 
 concurrency:
   group: release-${{ github.ref }}
@@ -37,13 +40,12 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
 
-      - name: Validate tag and set build metadata
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
+      - name: Validate release branch and set build metadata
         run: |
           version=$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "trees") | .version')
-          test "$RELEASE_TAG" = "v$version"
+          test "$RELEASE_BRANCH" = "release/$version"
           {
+            echo "RELEASE_TAG=v$version"
             echo "GIT_COMMIT_SHA=$(git rev-parse HEAD)"
             echo "GIT_DIRTY=false"
             echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)"
@@ -65,12 +67,11 @@ jobs:
 
       - name: Generate third-party notices
         run: |
-          cargo install cargo-about --version 0.9.0 --locked
+          cargo install cargo-about --version 0.9.0 --locked --features cli
           bash scripts/generate-third-party-notices.sh
 
       - name: Package release
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_TARGET: ${{ matrix.target }}
         run: bash scripts/package-release.sh "$RELEASE_TAG" "$RELEASE_TARGET"
 
@@ -86,6 +87,22 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Validate release tag
+        run: |
+          release_tag="v${RELEASE_BRANCH#release/}"
+          if git show-ref --verify --quiet "refs/tags/$release_tag"; then
+            tag_commit=$(git rev-parse "refs/tags/$release_tag^{commit}")
+            if [[ "$tag_commit" != "$GITHUB_SHA" ]]; then
+              echo "Tag $release_tag already points to $tag_commit, expected $GITHUB_SHA" >&2
+              exit 1
+            fi
+          fi
+          echo "RELEASE_TAG=$release_tag" >> "$GITHUB_ENV"
+
       - uses: actions/download-artifact@v8
         with:
           pattern: trees-*
@@ -96,7 +113,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
         working-directory: dist
         run: |
           sha256sum ./*.tar.gz > SHA256SUMS
@@ -105,4 +121,4 @@ jobs:
             flags+=(--prerelease)
           fi
           gh release create "$RELEASE_TAG" ./*.tar.gz SHA256SUMS \
-            --verify-tag --generate-notes --title "$RELEASE_TAG" "${flags[@]}"
+            --target "$GITHUB_SHA" --generate-notes --title "$RELEASE_TAG" "${flags[@]}"
