@@ -36,15 +36,15 @@
 
 ## 4. CLI Integration and Documentation
 
-- [ ] 4.1 Route status through the combined snapshot before printing anything;
+- [x] 4.1 Route status through the combined snapshot before printing anything;
   verify unknown IDs, current directory resolution failures, missing storage, and pending
   migrations emit no partial standard output and preserve typed error sources.
-- [ ] 4.2 Extend CLI regression coverage for current directory and explicit IDs across all views
+- [x] 4.2 Extend CLI regression coverage for current directory and explicit IDs across all views
   and output modes; verify no Git invocation, workspace mutation, database write,
   claim change, or operation recovery occurs.
-- [ ] 4.3 Update `docs/status.md` with current directory/ID examples, summary layout, silent
+- [x] 4.3 Update `docs/status.md` with current directory/ID examples, summary layout, silent
   no-target behavior, persisted-health semantics, and additive JSON contract;
   verify examples match the rendered fixtures and Markdown lint passes.
-- [ ] 4.4 Run workspace tests, formatting, Clippy, repository hooks, and strict
+- [x] 4.4 Run workspace tests, formatting, Clippy, repository hooks, and strict
   OpenSpec validation; verify all pass and preserve the existing repos-view
   requirements when syncing the completed delta into the main spec.

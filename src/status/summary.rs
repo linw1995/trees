@@ -175,6 +175,18 @@ mod tests {
     }
 
     #[test]
+    fn documentation_example_matches_the_rendered_summary() {
+        let mut target = target();
+        target.workspace_id = "01990000-0000-7000-8000-000000000001".parse().unwrap();
+        let selector = TargetSelector::Directory(target.path.clone());
+        let summary = render_target_with_offset(&target, &selector, false, |_| {
+            UtcOffset::from_hms(8, 0, 0).ok()
+        });
+        let example = format!("{summary}\n\nPools\nNo workspace pools.");
+        assert!(include_str!("../../docs/status.md").contains(&example));
+    }
+
+    #[test]
     fn converts_the_recorded_instant_with_date_boundary_and_utc_fallback() {
         let time = Timestamp::parse("2025-12-31T23:32:05Z").unwrap();
         let local = reconciliation_time(Some(&time), |instant| {

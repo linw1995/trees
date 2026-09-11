@@ -493,63 +493,25 @@ fn run_status(arguments: trees::cli::StatusArgs) -> Result<ExitCode, CliError> {
     if arguments.all && arguments.view != trees::cli::StatusView::Workspaces {
         return InvalidStatusArgumentsSnafu.fail();
     }
-    match arguments.view {
-        trees::cli::StatusView::Pools => run_pool_status(arguments.json),
-        trees::cli::StatusView::Repos => run_repo_status(arguments.json),
-        trees::cli::StatusView::Workspaces => run_workspace_status(arguments.all, arguments.json),
-    }
-}
-
-fn run_repo_status(json: bool) -> Result<ExitCode, CliError> {
-    let snapshot = match trees::database::open_read_only() {
-        Ok(mut connection) => {
-            trees::status::repos::load(&mut connection).context(RepoStatusSnafu)?
-        }
-        Err(trees::database::DatabaseError::ReadOnlyDatabaseMissing { .. }) => {
-            trees::status::repos::RepoSnapshot::empty()
-        }
-        Err(source) => return Err(source.into()),
+    let selector = trees::status::target::TargetSelector::resolve(arguments.workspace_id)?;
+    let view = match arguments.view {
+        trees::cli::StatusView::Pools => trees::status::StatusView::Pools,
+        trees::cli::StatusView::Workspaces => trees::status::StatusView::Workspaces,
+        trees::cli::StatusView::Repos => trees::status::StatusView::Repos,
     };
-    if json {
-        print_json(&snapshot)
-    } else {
-        println!("{}", trees::status::repos::render(&snapshot));
-        Ok(ExitCode::SUCCESS)
-    }
-}
-
-fn run_pool_status(json: bool) -> Result<ExitCode, CliError> {
-    let snapshot = load_pool_status_snapshot()?;
-    if json {
-        print_json(&snapshot)
-    } else {
-        println!(
-            "{}",
-            trees::status::render_pools_human(&snapshot, status_color_enabled())
-        );
-        Ok(ExitCode::SUCCESS)
-    }
-}
-
-fn load_pool_status_snapshot() -> Result<trees::status::PoolStatusSnapshot, CliError> {
     let mut connection = match trees::database::open_read_only() {
-        Ok(connection) => connection,
-        Err(trees::database::DatabaseError::ReadOnlyDatabaseMissing { .. }) => {
-            return Ok(trees::status::PoolStatusSnapshot::empty());
-        }
+        Ok(connection) => Some(connection),
+        Err(trees::database::DatabaseError::ReadOnlyDatabaseMissing { .. }) => None,
         Err(source) => return Err(source.into()),
     };
-    trees::status::load_pool_snapshot(&mut connection).context(PoolStatusSnafu)
-}
-
-fn run_workspace_status(include_removed: bool, json: bool) -> Result<ExitCode, CliError> {
-    let snapshot = load_workspace_status_snapshot(include_removed)?;
-    if json {
+    let snapshot =
+        trees::status::combined::load(connection.as_mut(), &selector, view, arguments.all)?;
+    if arguments.json {
         print_json(&snapshot)
     } else {
         println!(
             "{}",
-            trees::status::render_workspaces_human(&snapshot, status_color_enabled())
+            trees::status::summary::render(&snapshot, &selector, status_color_enabled())
         );
         Ok(ExitCode::SUCCESS)
     }
@@ -557,19 +519,6 @@ fn run_workspace_status(include_removed: bool, json: bool) -> Result<ExitCode, C
 
 fn status_color_enabled() -> bool {
     io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
-}
-
-fn load_workspace_status_snapshot(
-    include_removed: bool,
-) -> Result<trees::status::StatusSnapshot, CliError> {
-    let mut connection = match trees::database::open_read_only() {
-        Ok(connection) => connection,
-        Err(trees::database::DatabaseError::ReadOnlyDatabaseMissing { .. }) => {
-            return Ok(trees::status::StatusSnapshot::empty());
-        }
-        Err(source) => return Err(source.into()),
-    };
-    trees::status::load_snapshot(&mut connection, include_removed).context(WorkspaceStatusSnafu)
 }
 
 fn print_automatic_claim_result(result: &trees::workspace::AutomaticClaimResult) {
@@ -699,10 +648,14 @@ enum CliError {
     InvalidStatusArguments,
     #[snafu(display("failed to load repository status: {source}"))]
     RepoStatus { source: diesel::result::Error },
-    #[snafu(display("failed to load workspace pool status: {source}"))]
-    PoolStatus { source: diesel::result::Error },
-    #[snafu(display("failed to load workspace status: {source}"))]
-    WorkspaceStatus { source: diesel::result::Error },
+    #[snafu(transparent)]
+    StatusTarget {
+        source: trees::status::target::TargetError,
+    },
+    #[snafu(transparent)]
+    StatusSnapshot {
+        source: trees::status::combined::SnapshotError,
+    },
     #[snafu(display("failed to serialize JSON output: {source}"))]
     SerializeJson { source: serde_json::Error },
     #[snafu(transparent)]
