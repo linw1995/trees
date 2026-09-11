@@ -1,9 +1,9 @@
 ## 1. Target Selection
 
-- [ ] 1.1 Add optional `WORKSPACE_ID` parsing while retaining all view and `--all`
+- [x] 1.1 Add optional `WORKSPACE_ID` parsing while retaining all view and `--all`
   rules; verify parser tests cover valid IDs, invalid IDs, each view, and invalid
   `--all` combinations.
-- [ ] 1.2 Implement ID and canonical current directory selection using typed errors and nearest
+- [x] 1.2 Implement ID and canonical current directory selection using typed errors and nearest
   path-component ancestry; verify nested, symlinked, prefix-only, explicit-ID,
   unknown-ID, and removed-boundary cases.
 

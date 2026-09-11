@@ -135,6 +135,9 @@ pub struct RemoveArgs {
 
 #[derive(Debug, Args)]
 pub struct StatusArgs {
+    #[arg(value_name = "WORKSPACE_ID")]
+    pub workspace_id: Option<crate::domain::WorkspaceId>,
+
     #[arg(long, value_enum, default_value_t = StatusView::Pools)]
     pub view: StatusView,
 
@@ -461,6 +464,20 @@ mod tests {
         assert_eq!(arguments.view, StatusView::Workspaces);
         assert!(arguments.all);
         assert!(arguments.json);
+    }
+
+    #[test]
+    fn parses_status_targets_in_every_view() {
+        let id = crate::domain::WorkspaceId::new();
+        for view in ["pools", "workspaces", "repos"] {
+            let cli = Cli::try_parse_from(["trees", "status", &id.to_string(), "--view", view])
+                .expect("target should parse");
+            let Command::Status(arguments) = cli.command else {
+                panic!("expected status")
+            };
+            assert_eq!(arguments.workspace_id, Some(id));
+        }
+        assert!(Cli::try_parse_from(["trees", "status", "invalid"]).is_err());
     }
 
     #[test]

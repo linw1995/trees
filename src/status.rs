@@ -1,4 +1,5 @@
 pub mod repos;
+pub mod target;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -727,7 +728,7 @@ mod tests {
         CanonicalPath::from_absolute(value).expect("test path should be absolute")
     }
 
-    fn insert_workspace(
+    pub(super) fn insert_workspace(
         connection: &mut SqliteConnection,
         value: &str,
         state: WorkspaceState,
