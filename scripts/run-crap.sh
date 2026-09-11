@@ -12,6 +12,11 @@ crap_args=(
   --threshold "${crap_threshold}"
 )
 
+# Native Linux coverage cannot measure the conditionally compiled macOS adapter.
+if [[ "$(uname -s)" == "Linux" ]]; then
+  crap_args+=(--exclude "src/status/processes/macos.rs")
+fi
+
 if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
   cargo-crap "${crap_args[@]}" --format github
 fi

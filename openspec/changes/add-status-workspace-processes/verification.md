@@ -51,6 +51,16 @@ On Linux ARM64:
 ## Completion
 
 All implementation tasks and required native platform verification are complete.
-The process adapters were tested on Linux ARM64 and macOS ARM64. Native x86_64
-execution was not performed in this workspace. No change has been archived,
-pushed, or published.
+The process adapters were tested locally on Linux ARM64 and macOS ARM64.
+GitHub Actions additionally passed native Linux x86_64 coverage and Nix package
+builds for PR #25. The OpenSpec change has not been archived.
+
+## CI Platform Scope
+
+The first complexity check scanned the macOS-only adapter against Linux coverage,
+which necessarily contains no execution data for that module. The Linux check now
+excludes only `src/status/processes/macos.rs`; the threshold remains 30 and all
+other source files retain the existing coverage requirements. Replaying the CI
+coverage artifact locally with that scope analyzed 619 functions with zero
+threshold violations. Native macOS adapter tests remain covered by the local
+platform verification above.
