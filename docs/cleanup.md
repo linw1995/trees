@@ -2,9 +2,9 @@
 
 [Back to Trees](../README.md#documentation)
 
-## Reclaim Old Automatic Workspaces
+## Remove Old Automatic Workspaces
 
-Reclaim old automatic workspaces with an explicit age threshold:
+Remove old automatic workspaces with an explicit age threshold:
 
 ```sh
 trees gc --older-than 30d --dry-run
@@ -33,7 +33,7 @@ Explicit removal accepts automatic and manual workspaces and does not apply an
 age threshold. Normal mode requires a safe clean workspace. `--force` may
 remove dirty worktrees or unexpected content, but it does not break an active
 claim or operation and does not bypass path or repository identity guards.
-Successful removal keeps the workspace and worktree records as reclaimed
+Successful removal keeps the workspace and worktree records as removed
 tombstones.
 
 ## Remove a Source Record

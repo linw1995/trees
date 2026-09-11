@@ -15,8 +15,8 @@
 - [x] 1.4 Define a typed workspace claim with an acquisition timestamp; keep
   expiry and renewal on operation leases only, and define
   explicit mode/access/health separation
-- [x] 1.5 Extend lifecycle states with `dirty` and `reclaimed`, plus
-  `last_released_at`, pool ID, and reclamation timestamps; update claim parsing,
+- [x] 1.5 Extend lifecycle states with `dirty` and `removed`, plus
+  `last_released_at`, pool ID, and removal timestamps; update claim parsing,
   serialization, workspace-state
   aggregation, and affected validation paths
 
@@ -97,7 +97,7 @@
   and repository-identity guards
 - [x] 5.6 Add normal interactive confirmation, refusal without interaction or
   `--yes` or `--force`, safe `--yes` bypass, forced-run warnings, and stable
-  candidate/skipped/reclaimed/failed/unclaimed/claimed counts; ensure
+  candidate/skipped/removed/failed/unclaimed/claimed counts; ensure
   dry-run performs no SQLite, Git, or filesystem write
 - [x] 5.7 Keep manual `trees create` and existing `trees codex` flows
   compatible; document repository-set allocation, generated automatic paths,
@@ -111,7 +111,7 @@
   renewal/takeover, reusable predicates, and dirty-state reconciliation
 - [x] 6.2 Add integration tests for pool allocation, root resolution, generated
   paths, concurrency, operation lease recovery, rejected dirty release, and
-  mode isolation. Cover dry-run GC, thresholds, safe and forced reclamation,
+  mode isolation. Cover dry-run GC, thresholds, safe and forced removal,
   confirmation, partial failures, external worktree removal, and Git identity
   preservation.
 - [x] 6.3 Run `openspec validate workspace-checkin-checkout-reuse --strict`,

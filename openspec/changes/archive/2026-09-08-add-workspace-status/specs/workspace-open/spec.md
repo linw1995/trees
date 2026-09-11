@@ -32,7 +32,7 @@ Where supported, the program SHALL replace the Trees process.
 
 ### Requirement: Preserve Workspace Ownership Boundaries
 
-Open SHALL reject an unknown or reclaimed workspace. It SHALL reject a
+Open SHALL reject an unknown or removed workspace. It SHALL reject a
 workspace with a retained operation lease. An automatic workspace SHALL require
 an active claim; a manual workspace SHALL not require one. These checks SHALL
 come from one consistent read-only database transaction. Open SHALL NOT create
@@ -51,7 +51,7 @@ state, inspect repo-worktree contents, or append a lifecycle event.
 
 #### Scenario: Open a Manual Workspace
 
-- **WHEN** a non-reclaimed manual workspace has no operation lease
+- **WHEN** a non-removed manual workspace has no operation lease
 - **THEN** open starts the selected program without requiring a claim
 
 #### Scenario: Reject an Active or Interrupted Mutation

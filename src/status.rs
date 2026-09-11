@@ -23,7 +23,7 @@ use crate::storage::{
     RepoWorktreeRow, WorkspaceClaimRow, WorkspaceRow,
 };
 
-pub const STATUS_SCHEMA_VERSION: u8 = 1;
+pub const STATUS_SCHEMA_VERSION: u8 = 2;
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 pub struct StatusSnapshot {
@@ -76,7 +76,7 @@ pub struct WorkspaceStatus {
     pub updated_at: Timestamp,
     pub last_reconciled_at: Option<Timestamp>,
     pub last_released_at: Option<Timestamp>,
-    pub reclaimed_at: Option<Timestamp>,
+    pub removed_at: Option<Timestamp>,
     pub pool_id: Option<PoolId>,
     pub claim: Option<ClaimStatus>,
     pub current_operation: Option<CurrentOperationStatus>,
@@ -198,15 +198,15 @@ fn capacity_summary(pool: &PoolStatus, color: bool) -> String {
 
 pub fn load_snapshot(
     connection: &mut SqliteConnection,
-    include_reclaimed: bool,
+    include_removed: bool,
 ) -> QueryResult<StatusSnapshot> {
     connection.transaction(|connection| {
         let snapshot_at = Timestamp::now();
-        let workspaces = list_workspaces(connection, include_reclaimed)?;
-        let claims = list_status_workspace_claims(connection, include_reclaimed)?;
-        let operations = list_status_leased_operations(connection, include_reclaimed)?;
-        let operation_events = list_status_operation_events(connection, include_reclaimed)?;
-        let repositories = list_status_repo_worktrees(connection, include_reclaimed)?;
+        let workspaces = list_workspaces(connection, include_removed)?;
+        let claims = list_status_workspace_claims(connection, include_removed)?;
+        let operations = list_status_leased_operations(connection, include_removed)?;
+        let operation_events = list_status_operation_events(connection, include_removed)?;
+        let repositories = list_status_repo_worktrees(connection, include_removed)?;
 
         assemble_snapshot(
             snapshot_at.clone(),
@@ -361,7 +361,7 @@ fn repository_label(label: &str, state: RepoWorktreeState, color: bool) -> Strin
         RepoWorktreeState::Missing => (Some("missing"), 31),
         RepoWorktreeState::Diverged => (Some("mismatch"), 31),
         RepoWorktreeState::Failed => (Some("error"), 31),
-        RepoWorktreeState::Reclaimed => (Some("removed"), 90),
+        RepoWorktreeState::Removed => (Some("removed"), 90),
     };
     let label = escape_human_label(label);
     let display = suffix.map_or_else(|| label.clone(), |suffix| format!("{label}({suffix})"));
@@ -616,7 +616,7 @@ fn assemble_snapshot(
                 updated_at: workspace.updated_at,
                 last_reconciled_at: workspace.last_reconciled_at,
                 last_released_at: workspace.last_released_at,
-                reclaimed_at: workspace.reclaimed_at,
+                removed_at: workspace.removed_at,
                 pool_id: workspace.pool_id,
                 claim: claims_by_workspace.remove(&workspace_id),
                 current_operation: operations_by_workspace.remove(&workspace_id),
@@ -746,7 +746,7 @@ mod tests {
                 management_mode: WorkspaceManagementMode::Manual,
                 pool_id: None,
                 last_released_at: None,
-                reclaimed_at: (state == WorkspaceState::Reclaimed).then(Timestamp::now),
+                removed_at: (state == WorkspaceState::Removed).then(Timestamp::now),
             },
         )
         .expect("workspace should be inserted");
@@ -773,7 +773,7 @@ mod tests {
                 management_mode: WorkspaceManagementMode::Automatic,
                 pool_id: Some(pool_id),
                 last_released_at: None,
-                reclaimed_at: (state == WorkspaceState::Reclaimed).then(Timestamp::now),
+                removed_at: (state == WorkspaceState::Removed).then(Timestamp::now),
             },
         )
         .expect("automatic workspace should be inserted");
@@ -862,8 +862,8 @@ mod tests {
         );
         insert_automatic_workspace(
             &mut connection,
-            "/pool/reclaimed",
-            WorkspaceState::Reclaimed,
+            "/pool/removed",
+            WorkspaceState::Removed,
             pool_id,
         );
         insert_workspace(&mut connection, "/pool/manual", WorkspaceState::Ready);
@@ -890,16 +890,12 @@ mod tests {
     }
 
     #[test]
-    fn loads_ordered_related_rows_and_filters_reclaimed_workspaces() {
+    fn loads_ordered_related_rows_and_filters_removed_workspaces() {
         let database_path = temporary_database_path();
         let mut connection = database::connect(&database_path).expect("database should open");
         let second_id = insert_workspace(&mut connection, "/status/zeta", WorkspaceState::Ready);
         let first_id = insert_workspace(&mut connection, "/status/alpha", WorkspaceState::Ready);
-        insert_workspace(
-            &mut connection,
-            "/status/reclaimed",
-            WorkspaceState::Reclaimed,
-        );
+        insert_workspace(&mut connection, "/status/removed", WorkspaceState::Removed);
         let claim_id = ClaimId::new();
         insert_workspace_claim(
             &mut connection,
@@ -1043,7 +1039,7 @@ mod tests {
                 updated_at: Timestamp::parse("2026-09-08T10:00:00Z").unwrap(),
                 last_reconciled_at: Some(Timestamp::parse("2026-09-08T10:00:00Z").unwrap()),
                 last_released_at: None,
-                reclaimed_at: None,
+                removed_at: None,
                 pool_id: None,
                 claim: Some(ClaimStatus {
                     claim_id: ClaimId::new(),
@@ -1140,7 +1136,7 @@ mod tests {
             repository("/origins/missing", RepoWorktreeState::Missing),
             repository("/origins/mismatch", RepoWorktreeState::Diverged),
             repository("/origins/error", RepoWorktreeState::Failed),
-            repository("/origins/removed", RepoWorktreeState::Reclaimed),
+            repository("/origins/removed", RepoWorktreeState::Removed),
         ];
 
         assert_eq!(

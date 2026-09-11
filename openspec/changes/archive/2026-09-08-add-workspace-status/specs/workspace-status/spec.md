@@ -4,9 +4,9 @@
 
 The CLI SHALL provide `trees status [--view pools|workspaces] [--all]
 [--json]`. The view SHALL default to `pools`. The pool view SHALL contain only
-automatic repository-set pools with at least one current non-reclaimed
+automatic repository-set pools with at least one current non-removed
 workspace. The workspace view SHALL contain individual automatic and manual
-workspaces, exclude reclaimed records by default, and include reclaimed
+workspaces, exclude removed records by default, and include removed
 tombstones with `--all`. The CLI SHALL reject `--all` unless the selected view
 is `workspaces`.
 
@@ -18,12 +18,12 @@ is `workspaces`.
 #### Scenario: Select Workspace Details
 
 - **WHEN** status is invoked with `--view workspaces`
-- **THEN** it reports individual non-reclaimed manual and automatic workspaces
+- **THEN** it reports individual non-removed manual and automatic workspaces
 
-#### Scenario: Include Reclaimed Workspace Details
+#### Scenario: Include Removed Workspace Details
 
 - **WHEN** status is invoked with `--view workspaces --all`
-- **THEN** it additionally reports reclaimed workspace tombstones
+- **THEN** it additionally reports removed workspace tombstones
 
 #### Scenario: Reject All for Pool Status
 
@@ -34,7 +34,7 @@ is `workspaces`.
 ### Requirement: Aggregate Automatic Pool Allocation
 
 Each pool row SHALL represent one exact persisted repository-set pool.
-Capacity SHALL count its automatic workspaces whose state is not `reclaimed`.
+Capacity SHALL count its automatic workspaces whose state is not `removed`.
 Available SHALL count capacity slots whose persisted state is `ready` and which
 have neither an active workspace claim nor a retained operation lease.
 Abnormal SHALL count capacity slots whose persisted state is `degraded` or
@@ -52,9 +52,9 @@ SHALL NOT describe persisted availability as live reusability.
 - **WHEN** a ready unclaimed slot has a retained operation lease
 - **THEN** it contributes to capacity but not available or abnormal
 
-#### Scenario: Exclude Reclaimed and Manual Workspaces
+#### Scenario: Exclude Removed and Manual Workspaces
 
-- **WHEN** lifecycle storage contains reclaimed automatic workspaces and manual
+- **WHEN** lifecycle storage contains removed automatic workspaces and manual
   workspaces with the same repositories as a pool
 - **THEN** neither contributes to that pool's current capacity
 
@@ -102,7 +102,7 @@ the same `<ready>/<total>` value without ANSI escapes.
 Each repository label SHALL reflect its persisted state. Attached labels SHALL
 be green without a suffix. Pending labels SHALL be yellow with `(pending)`.
 Dirty, missing, diverged, and failed labels SHALL be red with `(dirty)`,
-`(missing)`, `(mismatch)`, and `(error)` respectively. Reclaimed labels SHALL
+`(missing)`, `(mismatch)`, and `(error)` respectively. Removed labels SHALL
 be gray with `(removed)`. Non-terminal output and `NO_COLOR` SHALL retain the
 same suffixes without ANSI escapes.
 
@@ -188,7 +188,7 @@ expression. Status SHALL NOT open lifecycle storage for writing or append an
 event. It SHALL NOT acquire or release a claim or start or recover an operation.
 It SHALL NOT invoke Git or inspect workspace filesystem contents.
 
-Persisted unhealthy states, claims, leases, and reclaimed rows in the explicit
+Persisted unhealthy states, claims, leases, and removed rows in the explicit
 workspace all-view SHALL be report data rather than command failures. Status
 SHALL return nonzero only when arguments are invalid or it cannot load or
 serialize a complete snapshot.

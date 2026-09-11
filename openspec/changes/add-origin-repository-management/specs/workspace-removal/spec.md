@@ -12,7 +12,7 @@ threshold.
 
 - **WHEN** a caller confirms removal for a safe manual workspace by its ID
 - **THEN** Trees removes the workspace's managed worktrees and directory and
-  records reclaimed tombstones
+  records removed tombstones
 
 #### Scenario: Remove an Automatic Workspace
 

@@ -8,7 +8,7 @@ workspace is immediately held by an active claim and returned with `release`.
 The claim is a persistent usage state, not a long-lived SQLite transaction or a
 database lock. It remains until the caller releases it; operation leases are
 the separate mechanism for short-lived concurrency and failure recovery.
-Automatically managed workspaces can later be reclaimed by an explicit
+Automatically managed workspaces can later be removed by an explicit
 time-bounded `gc` command. Normal GC reports how many automatic workspaces are
 currently not claimed and asks for confirmation. `--yes` skips that
 confirmation while keeping normal safety checks; `--force` also skips
@@ -23,7 +23,7 @@ trees gc --older-than 30d --force
 ```
 
 The normal command reports automatic, unclaimed, claimed, and
-reclaimable counts before confirmation. `--yes` bypasses confirmation without
+removable counts before confirmation. `--yes` bypasses confirmation without
 relaxing safety checks. `--force` implies `--yes` and may delete local changes
 in age-qualified automatic workspaces.
 

@@ -134,7 +134,7 @@ fn dry_runs_confirms_and_removes_a_workspace_by_id() {
             .expect("workspace lookup should succeed")
             .expect("workspace tombstone should remain")
             .state,
-        WorkspaceState::Reclaimed
+        WorkspaceState::Removed
     );
     drop(connection);
 

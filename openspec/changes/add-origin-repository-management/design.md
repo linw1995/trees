@@ -75,19 +75,19 @@ retain pending evidence and do not remove unrelated files.
 ### Keep Status Strictly Read-Only
 
 The repos human view contains `REPO`, `PATH`, and `ID`. Use shortest unique path
-suffixes for conflicting labels and existing terminal escaping. The version-1
+suffixes for conflicting labels and existing terminal escaping. The version-2
 JSON envelope contains `view: repos`, `snapshot_at`, and a `repos` array with
 `origin_repository_id`, `source_path`, `repository_identity`, and `label`.
 There is no mode or registration filter. `--all` remains valid only for the
-workspace view. Existing origin rows can be listed before the clone-operation
-migration is applied. No schema upgrade or Git probe occurs during status.
+workspace view. Status requires the current lifecycle schema and
+reports pending migrations without performing a schema upgrade or Git probe.
 
 ### Remove Records Only Without References
 
 Resolve full IDs against workspace and origin rows, rejecting cross-table
 ambiguity. Workspace removal is unchanged. For origins, read-only preflight
 reports the record, planned record-removal action, and counts of referencing
-repo-worktrees and pool memberships. All references count, including reclaimed
+repo-worktrees and pool memberships. All references count, including removed
 worktrees and retained pools, because their history depends on the origin ID.
 
 Only a record with zero references can be deleted. Repeat both entity resolution

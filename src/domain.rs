@@ -138,7 +138,7 @@ pub enum WorkspaceState {
     Ready,
     Degraded,
     Failed,
-    Reclaimed,
+    Removed,
 }
 
 impl WorkspaceState {
@@ -148,7 +148,7 @@ impl WorkspaceState {
             Self::Ready => "ready",
             Self::Degraded => "degraded",
             Self::Failed => "failed",
-            Self::Reclaimed => "reclaimed",
+            Self::Removed => "removed",
         }
     }
 }
@@ -168,14 +168,14 @@ impl FromStr for WorkspaceState {
             "ready" => Ok(Self::Ready),
             "degraded" => Ok(Self::Degraded),
             "failed" => Ok(Self::Failed),
-            "reclaimed" => Ok(Self::Reclaimed),
+            "removed" => Ok(Self::Removed),
             _ => Err(StateParseError::new(value, Self::ALL)),
         }
     }
 }
 
 impl WorkspaceState {
-    const ALL: &'static [&'static str] = &["creating", "ready", "degraded", "failed", "reclaimed"];
+    const ALL: &'static [&'static str] = &["creating", "ready", "degraded", "failed", "removed"];
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, AsExpression, FromSqlRow)]
@@ -188,7 +188,7 @@ pub enum RepoWorktreeState {
     Missing,
     Diverged,
     Failed,
-    Reclaimed,
+    Removed,
 }
 
 impl RepoWorktreeState {
@@ -200,18 +200,12 @@ impl RepoWorktreeState {
             Self::Missing => "missing",
             Self::Diverged => "diverged",
             Self::Failed => "failed",
-            Self::Reclaimed => "reclaimed",
+            Self::Removed => "removed",
         }
     }
 
     const ALL: &'static [&'static str] = &[
-        "pending",
-        "attached",
-        "dirty",
-        "missing",
-        "diverged",
-        "failed",
-        "reclaimed",
+        "pending", "attached", "dirty", "missing", "diverged", "failed", "removed",
     ];
 }
 
@@ -232,7 +226,7 @@ impl FromStr for RepoWorktreeState {
             "missing" => Ok(Self::Missing),
             "diverged" => Ok(Self::Diverged),
             "failed" => Ok(Self::Failed),
-            "reclaimed" => Ok(Self::Reclaimed),
+            "removed" => Ok(Self::Removed),
             _ => Err(StateParseError::new(value, Self::ALL)),
         }
     }
@@ -507,16 +501,16 @@ mod tests {
             WorkspaceManagementMode::Manual
         );
         assert_eq!(
-            WorkspaceState::from_str("reclaimed").unwrap(),
-            WorkspaceState::Reclaimed
+            WorkspaceState::from_str("removed").unwrap(),
+            WorkspaceState::Removed
         );
         assert_eq!(
             RepoWorktreeState::from_str("dirty").unwrap(),
             RepoWorktreeState::Dirty
         );
         assert_eq!(
-            RepoWorktreeState::from_str("reclaimed").unwrap(),
-            RepoWorktreeState::Reclaimed
+            RepoWorktreeState::from_str("removed").unwrap(),
+            RepoWorktreeState::Removed
         );
         assert_eq!(
             RepoWorktreeState::from_str("diverged").unwrap(),

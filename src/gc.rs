@@ -12,8 +12,8 @@ use crate::reconciliation;
 use crate::storage::{
     begin_operation, find_running_operation, find_workspace, find_workspace_claim,
     list_automatic_workspaces, list_repo_worktrees, record_workspace_explicitly_removed,
-    record_workspace_gc_failure, record_workspace_gc_skipped, record_workspace_reclaimed,
-    record_workspace_remove_failure, record_workspace_remove_skipped, renew_operation_lease,
+    record_workspace_gc_failure, record_workspace_gc_skipped, record_workspace_remove_failure,
+    record_workspace_remove_skipped, record_workspace_removed, renew_operation_lease,
     OperationIntent, OperationIntentError, RepoWorktreeRow,
 };
 use crate::validation;
@@ -99,7 +99,7 @@ pub struct GcCounts {
     pub unclaimed: usize,
     pub claimed: usize,
     pub age_eligible: usize,
-    pub safe_to_reclaim: usize,
+    pub safe_to_remove: usize,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -109,7 +109,7 @@ pub enum GcCandidateReason {
     Claimed,
     ActiveOperation,
     ExpiredOperation,
-    Reclaimed,
+    Removed,
     Unhealthy,
     UnsafeRoot,
     RepositoryIdentity,
@@ -127,7 +127,7 @@ impl fmt::Display for GcCandidateReason {
             Self::Claimed => "claimed",
             Self::ActiveOperation => "active_operation",
             Self::ExpiredOperation => "expired_operation",
-            Self::Reclaimed => "reclaimed",
+            Self::Removed => "removed",
             Self::Unhealthy => "unhealthy",
             Self::UnsafeRoot => "unsafe_root",
             Self::RepositoryIdentity => "repository_identity",
@@ -157,7 +157,7 @@ impl GcCandidate {
             && !self.claimed
             && self.active_operation
             && self.operation_expired
-            && self.workspace.state != WorkspaceState::Reclaimed
+            && self.workspace.state != WorkspaceState::Removed
             && (force || self.workspace.state == WorkspaceState::Ready)
     }
 
@@ -168,7 +168,7 @@ impl GcCandidate {
             Some(GcCandidateReason::Claimed)
         } else if self.active_operation {
             Some(GcCandidateReason::ActiveOperation)
-        } else if self.workspace.state == WorkspaceState::Reclaimed
+        } else if self.workspace.state == WorkspaceState::Removed
             || (!force && self.workspace.state != WorkspaceState::Ready)
         {
             Some(GcCandidateReason::Unhealthy)
@@ -218,7 +218,7 @@ pub struct GcFailure {
 #[derive(Debug)]
 pub struct GcExecutionReport {
     pub scan: GcScan,
-    pub reclaimed: Vec<CanonicalPath>,
+    pub removed: Vec<CanonicalPath>,
     pub skipped: Vec<GcSkipped>,
     pub failed: Vec<GcFailure>,
 }
@@ -260,7 +260,7 @@ enum PreparedRemoval {
 }
 
 enum GcCandidateResult {
-    Reclaimed(CanonicalPath),
+    Removed(CanonicalPath),
     Skipped(GcSkipped),
     Failed(GcFailure),
 }
@@ -318,7 +318,7 @@ pub fn scan_with_force(
                 prepare_removal(&candidate.workspace, &repositories, force).err();
         }
         if candidate.reason(force) == GcCandidateReason::Eligible {
-            counts.safe_to_reclaim += 1;
+            counts.safe_to_remove += 1;
         }
         candidates.push(candidate);
     }
@@ -339,13 +339,13 @@ pub fn execute(
     let scan = scan_with_force(connection, older_than, force)?;
     let mut report = GcExecutionReport {
         scan: scan.clone(),
-        reclaimed: Vec::new(),
+        removed: Vec::new(),
         skipped: Vec::new(),
         failed: Vec::new(),
     };
     for candidate in &scan.candidates {
         match execute_candidate(connection, candidate, &scan, force)? {
-            GcCandidateResult::Reclaimed(path) => report.reclaimed.push(path),
+            GcCandidateResult::Removed(path) => report.removed.push(path),
             GcCandidateResult::Skipped(skipped) => report.skipped.push(skipped),
             GcCandidateResult::Failed(failure) => {
                 report.failed.push(failure);
@@ -376,8 +376,8 @@ fn removal_reason(
     workspace: &crate::storage::WorkspaceRow,
     force: bool,
 ) -> Result<GcCandidateReason, GcError> {
-    if workspace.state == WorkspaceState::Reclaimed {
-        return Ok(GcCandidateReason::Reclaimed);
+    if workspace.state == WorkspaceState::Removed {
+        return Ok(GcCandidateReason::Removed);
     }
     if find_workspace_claim(connection, &workspace.id)
         .context(DatabaseSnafu)?
@@ -415,11 +415,8 @@ pub fn remove_workspace(
     }
 
     let refreshed = find_workspace(connection, workspace_id).context(DatabaseSnafu)?;
-    if refreshed.state == WorkspaceState::Reclaimed {
-        return Ok(removal_rejected(
-            workspace_path,
-            GcCandidateReason::Reclaimed,
-        ));
+    if refreshed.state == WorkspaceState::Removed {
+        return Ok(removal_rejected(workspace_path, GcCandidateReason::Removed));
     }
     let Some(started) = begin_removal_operation(connection, workspace_id, &refreshed, force)?
     else {
@@ -660,8 +657,8 @@ fn removal_reason_while_owned(
     workspace: &crate::storage::WorkspaceRow,
     force: bool,
 ) -> Result<GcCandidateReason, GcError> {
-    if workspace.state == WorkspaceState::Reclaimed {
-        return Ok(GcCandidateReason::Reclaimed);
+    if workspace.state == WorkspaceState::Removed {
+        return Ok(GcCandidateReason::Removed);
     }
     if find_workspace_claim(connection, &workspace.id)
         .context(DatabaseSnafu)?
@@ -864,7 +861,7 @@ fn execute_started_candidate(
 }
 
 fn workspace_is_unhealthy(workspace: &crate::storage::WorkspaceRow, force: bool) -> bool {
-    workspace.state == WorkspaceState::Reclaimed
+    workspace.state == WorkspaceState::Removed
         || (!force && workspace.state != WorkspaceState::Ready)
 }
 
@@ -897,7 +894,7 @@ fn execute_removal(
         );
     }
 
-    if let Err(error) = record_workspace_reclaimed(
+    if let Err(error) = record_workspace_removed(
         connection,
         lease_id,
         &workspace.id,
@@ -913,7 +910,7 @@ fn execute_removal(
             error_text,
         );
     }
-    Ok(GcCandidateResult::Reclaimed(workspace.canonical_path))
+    Ok(GcCandidateResult::Removed(workspace.canonical_path))
 }
 
 fn finish_candidate_failure(
@@ -946,7 +943,7 @@ fn recover_expired_automatic_operations(
             .clone()
             .unwrap_or_else(|| workspace.created_at.clone());
         if idle_since >= *cutoff
-            || workspace.state == WorkspaceState::Reclaimed
+            || workspace.state == WorkspaceState::Removed
             || (!force && workspace.state != WorkspaceState::Ready)
         {
             continue;
@@ -976,7 +973,7 @@ fn begin_gc_operation(
         candidate.workspace.id,
         "gc",
         Timestamp::after_seconds(300),
-        "reclaim workspace",
+        "remove workspace",
         intent_json,
     );
     let lease_id = intent.lease_id;
@@ -1002,7 +999,7 @@ fn gc_details(
             "unclaimed": scan.counts.unclaimed,
             "claimed": scan.counts.claimed,
             "age_eligible": scan.counts.age_eligible,
-            "safe_to_reclaim": scan.counts.safe_to_reclaim,
+            "safe_to_remove": scan.counts.safe_to_remove,
         },
         "error": error,
     }))
@@ -1526,7 +1523,7 @@ mod tests {
             (GcCandidateReason::Claimed, "claimed"),
             (GcCandidateReason::ActiveOperation, "active_operation"),
             (GcCandidateReason::ExpiredOperation, "expired_operation"),
-            (GcCandidateReason::Reclaimed, "reclaimed"),
+            (GcCandidateReason::Removed, "removed"),
             (GcCandidateReason::Unhealthy, "unhealthy"),
             (GcCandidateReason::UnsafeRoot, "unsafe_root"),
             (GcCandidateReason::RepositoryIdentity, "repository_identity"),
@@ -1556,7 +1553,7 @@ mod tests {
                     management_mode: WorkspaceManagementMode::Automatic,
                     pool_id: None,
                     last_released_at: None,
-                    reclaimed_at: None,
+                    removed_at: None,
                 },
                 idle_since: timestamp("2020-01-01T00:00:00Z"),
                 age_eligible,
@@ -1578,10 +1575,8 @@ mod tests {
             .recoverable_expired_operation(false));
         assert!(!candidate(WorkspaceState::Ready, true, false, true, false)
             .recoverable_expired_operation(false));
-        assert!(
-            !candidate(WorkspaceState::Reclaimed, true, false, true, true)
-                .recoverable_expired_operation(true)
-        );
+        assert!(!candidate(WorkspaceState::Removed, true, false, true, true)
+            .recoverable_expired_operation(true));
         assert!(
             !candidate(WorkspaceState::Degraded, true, false, true, true)
                 .recoverable_expired_operation(false)
@@ -1676,7 +1671,7 @@ mod tests {
                     management_mode: WorkspaceManagementMode::Automatic,
                     pool_id,
                     last_released_at: Some(idle_since),
-                    reclaimed_at: None,
+                    removed_at: None,
                 },
             )
             .expect("workspace should be inserted");
@@ -1700,7 +1695,7 @@ mod tests {
                 management_mode: WorkspaceManagementMode::Manual,
                 pool_id: None,
                 last_released_at: Some(old.clone()),
-                reclaimed_at: None,
+                removed_at: None,
             },
         )
         .expect("manual workspace should be inserted");
@@ -1714,7 +1709,7 @@ mod tests {
         assert_eq!(result.counts.unclaimed, 3);
         assert_eq!(result.counts.claimed, 1);
         assert_eq!(result.counts.age_eligible, 3);
-        assert_eq!(result.counts.safe_to_reclaim, 0);
+        assert_eq!(result.counts.safe_to_remove, 0);
         assert_eq!(workspace_ids.len(), 4);
 
         drop(connection);
@@ -1723,7 +1718,7 @@ mod tests {
     }
 
     #[test]
-    fn reclaims_an_old_clean_automatic_workspace() {
+    fn removes_an_old_clean_automatic_workspace() {
         let (root, database_path, mut connection, workspace, source, worktree) =
             automatic_workspace_fixture();
 
@@ -1734,7 +1729,7 @@ mod tests {
         )
         .expect("GC execution should succeed");
         assert_eq!(
-            report.reclaimed.as_slice(),
+            report.removed.as_slice(),
             std::slice::from_ref(&workspace.canonical_path)
         );
         assert!(report.skipped.is_empty());
@@ -1744,13 +1739,13 @@ mod tests {
             crate::storage::find_workspace(&mut connection, &workspace.id)
                 .expect("workspace lookup should succeed")
                 .state,
-            WorkspaceState::Reclaimed
+            WorkspaceState::Removed
         );
         assert_eq!(
             crate::storage::list_repo_worktrees(&mut connection, &workspace.id)
                 .expect("worktree lookup should succeed")[0]
                 .state,
-            crate::domain::RepoWorktreeState::Reclaimed
+            crate::domain::RepoWorktreeState::Removed
         );
         let operation_id = crate::schema::operations::table
             .filter(crate::schema::operations::workspace_id.eq(workspace.id))
@@ -1804,7 +1799,7 @@ mod tests {
             false,
         )
         .expect("GC should recover the stale operation");
-        assert_eq!(report.reclaimed, vec![workspace.canonical_path]);
+        assert_eq!(report.removed, vec![workspace.canonical_path]);
         assert_eq!(
             crate::storage::operation_state(&mut connection, &stale_operation.id)
                 .expect("stale operation state should be queryable"),
@@ -1855,7 +1850,7 @@ mod tests {
             false,
         )
         .expect("GC should skip the young workspace");
-        assert!(report.reclaimed.is_empty());
+        assert!(report.removed.is_empty());
         assert_eq!(report.skipped.len(), 1);
         assert_eq!(report.skipped[0].reason, GcCandidateReason::Young);
         assert_eq!(
@@ -1908,7 +1903,7 @@ mod tests {
             true,
         )
         .expect("GC should skip the claimed workspace");
-        assert!(report.reclaimed.is_empty());
+        assert!(report.removed.is_empty());
         assert_eq!(report.skipped.len(), 1);
         assert_eq!(report.skipped[0].reason, GcCandidateReason::Claimed);
         assert_eq!(
@@ -1931,7 +1926,7 @@ mod tests {
     }
 
     #[test]
-    fn force_reclaims_an_old_dirty_workspace_and_extra_content() {
+    fn force_removes_an_old_dirty_workspace_and_extra_content() {
         let (root, database_path, mut connection, workspace, source, worktree) =
             automatic_workspace_fixture();
         fs::write(worktree.join("local-change"), "dirty\n").expect("worktree should become dirty");
@@ -1945,7 +1940,7 @@ mod tests {
         )
         .expect("forced GC execution should succeed");
         assert_eq!(
-            report.reclaimed.as_slice(),
+            report.removed.as_slice(),
             std::slice::from_ref(&workspace.canonical_path)
         );
         assert!(report.skipped.is_empty());
@@ -1955,7 +1950,7 @@ mod tests {
             crate::storage::find_workspace(&mut connection, &workspace.id)
                 .expect("workspace lookup should succeed")
                 .state,
-            WorkspaceState::Reclaimed
+            WorkspaceState::Removed
         );
         assert_eq!(
             crate::git::list_worktrees(&source)
@@ -1981,7 +1976,7 @@ mod tests {
             false,
         )
         .expect("GC execution should complete with a skip");
-        assert!(report.reclaimed.is_empty());
+        assert!(report.removed.is_empty());
         assert!(report.failed.is_empty());
         assert_eq!(report.skipped.len(), 1);
         assert_eq!(

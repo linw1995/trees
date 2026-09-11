@@ -284,7 +284,7 @@ fn print_gc_scan(scan: &trees::gc::GcScan, force: bool) {
     println!("unclaimed={}", scan.counts.unclaimed);
     println!("claimed={}", scan.counts.claimed);
     println!("age_eligible={}", scan.counts.age_eligible);
-    println!("safe_to_reclaim={}", scan.counts.safe_to_reclaim);
+    println!("safe_to_remove={}", scan.counts.safe_to_remove);
     println!("candidates={}", scan.execution_candidate_count(force));
     for candidate in &scan.candidates {
         println!(
@@ -315,7 +315,7 @@ fn confirm_gc_interactively(candidate_count: usize) -> Result<GcConfirmation, Cl
     if !io::stdin().is_terminal() {
         return InteractiveConfirmationUnavailableSnafu.fail();
     }
-    print!("Reclaim {candidate_count} workspaces? [y/N] ");
+    print!("Remove {candidate_count} workspaces? [y/N] ");
     io::stdout().flush().context(FlushConfirmationSnafu)?;
     let mut answer = String::new();
     io::stdin()
@@ -332,7 +332,7 @@ fn execute_gc(arguments: &trees::cli::GcArgs) -> Result<ExitCode, CliError> {
     let report = execute_gc_report(arguments)?;
     println!("unclaimed={}", report.scan.counts.unclaimed);
     println!("claimed={}", report.scan.counts.claimed);
-    println!("reclaimed={}", report.reclaimed.len());
+    println!("removed={}", report.removed.len());
     println!("skipped={}", report.skipped.len());
     println!("failed={}", report.failed.len());
     if !report.failed.is_empty() {
@@ -542,8 +542,8 @@ fn load_pool_status_snapshot() -> Result<trees::status::PoolStatusSnapshot, CliE
     trees::status::load_pool_snapshot(&mut connection).context(PoolStatusSnafu)
 }
 
-fn run_workspace_status(include_reclaimed: bool, json: bool) -> Result<ExitCode, CliError> {
-    let snapshot = load_workspace_status_snapshot(include_reclaimed)?;
+fn run_workspace_status(include_removed: bool, json: bool) -> Result<ExitCode, CliError> {
+    let snapshot = load_workspace_status_snapshot(include_removed)?;
     if json {
         print_json(&snapshot)
     } else {
@@ -560,7 +560,7 @@ fn status_color_enabled() -> bool {
 }
 
 fn load_workspace_status_snapshot(
-    include_reclaimed: bool,
+    include_removed: bool,
 ) -> Result<trees::status::StatusSnapshot, CliError> {
     let mut connection = match trees::database::open_read_only() {
         Ok(connection) => connection,
@@ -569,7 +569,7 @@ fn load_workspace_status_snapshot(
         }
         Err(source) => return Err(source.into()),
     };
-    trees::status::load_snapshot(&mut connection, include_reclaimed).context(WorkspaceStatusSnafu)
+    trees::status::load_snapshot(&mut connection, include_removed).context(WorkspaceStatusSnafu)
 }
 
 fn print_automatic_claim_result(result: &trees::workspace::AutomaticClaimResult) {

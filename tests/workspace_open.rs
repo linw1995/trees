@@ -81,7 +81,7 @@ mod unix {
                 management_mode: mode,
                 pool_id,
                 last_released_at: None,
-                reclaimed_at: (state == WorkspaceState::Reclaimed).then_some(now),
+                removed_at: (state == WorkspaceState::Removed).then_some(now),
             },
         )
         .expect("workspace should be inserted");
@@ -173,11 +173,11 @@ mod unix {
             WorkspaceManagementMode::Automatic,
             Some(pool_id),
         );
-        let (reclaimed_id, _) = insert_workspace(
+        let (removed_id, _) = insert_workspace(
             &mut connection,
             &root,
-            "reclaimed",
-            WorkspaceState::Reclaimed,
+            "removed",
+            WorkspaceState::Removed,
             WorkspaceManagementMode::Automatic,
             Some(pool_id),
         );
@@ -204,7 +204,7 @@ mod unix {
 
         for (workspace_id, message) in [
             (unclaimed_id, "automatic workspace is unclaimed"),
-            (reclaimed_id, "workspace has been reclaimed"),
+            (removed_id, "workspace has been removed"),
             (active_id, "workspace has an active operation"),
             (WorkspaceId::new(), "workspace not found"),
         ] {

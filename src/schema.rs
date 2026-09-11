@@ -89,7 +89,7 @@ diesel::table! {
         management_mode -> Text,
         pool_id -> Nullable<Text>,
         last_released_at -> Nullable<Text>,
-        reclaimed_at -> Nullable<Text>,
+        removed_at -> Nullable<Text>,
     }
 }
 

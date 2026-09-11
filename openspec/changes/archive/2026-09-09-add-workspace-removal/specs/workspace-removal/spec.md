@@ -18,7 +18,7 @@ threshold.
 
 - **WHEN** a caller confirms removal for a safe manual workspace by its ID
 - **THEN** Trees removes the workspace's managed worktrees and directory and
-  records reclaimed tombstones
+  records removed tombstones
 
 #### Scenario: Remove an Automatic Workspace
 
@@ -27,7 +27,7 @@ threshold.
 
 ### Requirement: Preserve Removal Admission Guards
 
-Explicit removal SHALL reject unknown and already reclaimed workspaces. It
+Explicit removal SHALL reject unknown and already removed workspaces. It
 SHALL reject a workspace with an active claim or unexpired operation lease.
 It SHALL recover an expired operation before starting execution and SHALL
 serialize the new operation through the per-workspace operation lease.
@@ -92,14 +92,14 @@ is supplied. A noninteractive invocation without either flag SHALL fail.
 
 Explicit removal SHALL persist operation intent before external mutation,
 renew its lease during physical removal, and mark the workspace and its
-repo-worktrees reclaimed only after physical removal succeeds. It SHALL retain
+repo-worktrees removed only after physical removal succeeds. It SHALL retain
 prior lifecycle history. A partial or failed removal SHALL not mark the
-workspace reclaimed and SHALL remain auditable.
+workspace removed and SHALL remain auditable.
 
 #### Scenario: Persist Successful Explicit Removal
 
 - **WHEN** physical removal completes successfully
-- **THEN** the workspace and repo-worktrees are reclaimed tombstones and the
+- **THEN** the workspace and repo-worktrees are removed tombstones and the
   explicit removal operation is recorded as succeeded
 
 #### Scenario: Preserve Failed Explicit Removal

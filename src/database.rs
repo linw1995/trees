@@ -4,7 +4,7 @@ use diesel::connection::SimpleConnection;
 use diesel::sqlite::SqliteConnection;
 use diesel::Connection;
 use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
-use snafu::{OptionExt, ResultExt, Snafu};
+use snafu::{ensure, OptionExt, ResultExt, Snafu};
 
 use crate::paths::{self, PathError, StateDirectoryError};
 
@@ -47,7 +47,12 @@ pub fn connect_read_only(path: &Path) -> Result<SqliteConnection, DatabaseError>
     }
     let path_text = path.to_str().context(PathNotUtf8Snafu { path })?;
     let database_url = format!("sqlite://{path_text}?mode=ro");
-    SqliteConnection::establish(&database_url).context(ConnectionSnafu)
+    let mut connection = SqliteConnection::establish(&database_url).context(ConnectionSnafu)?;
+    let pending = connection
+        .has_pending_migration(MIGRATIONS)
+        .context(MigrationInspectionSnafu)?;
+    ensure!(!pending, SchemaUpgradeRequiredSnafu { path });
+    Ok(connection)
 }
 
 pub fn connect(path: &Path) -> Result<SqliteConnection, DatabaseError> {
@@ -78,6 +83,12 @@ pub enum DatabaseError {
     Connection { source: diesel::ConnectionError },
     #[snafu(display("failed to configure SQLite connection: {source}"))]
     Configuration { source: diesel::result::Error },
+    #[snafu(display("database schema upgrade required before read-only access: {}", path.display()))]
+    SchemaUpgradeRequired { path: PathBuf },
+    #[snafu(display("failed to inspect database migrations: {source}"))]
+    MigrationInspection {
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
     #[snafu(display("failed to apply database migrations: {source}"))]
     Migration {
         source: Box<dyn std::error::Error + Send + Sync>,

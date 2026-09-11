@@ -11,7 +11,7 @@
 
 - [x] 2.1 Add `trees status [--all] [--json]` parsing and dispatch
 - [x] 2.2 Render deterministic human summaries, including empty state and
-  reclaimed filtering
+  removed filtering
 - [x] 2.3 Render the versioned JSON envelope without non-JSON standard output
 
 ## 3. Verification and Documentation
@@ -87,7 +87,7 @@
   canonical paths in JSON
 - [x] 12.2 Add `trees open <workspace-id> [--program=<PROGRAM>]` with shared
   program resolution and process handoff
-- [x] 12.3 Enforce reclaimed, operation-lease, and automatic-claim admission
+- [x] 12.3 Enforce removed, operation-lease, and automatic-claim admission
   without lifecycle mutation
 - [x] 12.4 Add integration tests and documentation for workspace open
 

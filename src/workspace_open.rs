@@ -15,8 +15,8 @@ pub fn resolve_target(
                 workspace_id: *workspace_id,
             },
         )?;
-        if snapshot.workspace.state == WorkspaceState::Reclaimed {
-            return Err(WorkspaceOpenError::Reclaimed {
+        if snapshot.workspace.state == WorkspaceState::Removed {
+            return Err(WorkspaceOpenError::Removed {
                 workspace_id: *workspace_id,
             });
         }
@@ -40,8 +40,8 @@ pub fn resolve_target(
 pub enum WorkspaceOpenError {
     #[snafu(display("workspace not found: {workspace_id}"))]
     NotFound { workspace_id: WorkspaceId },
-    #[snafu(display("workspace has been reclaimed: {workspace_id}"))]
-    Reclaimed { workspace_id: WorkspaceId },
+    #[snafu(display("workspace has been removed: {workspace_id}"))]
+    Removed { workspace_id: WorkspaceId },
     #[snafu(display("workspace has an active operation: {workspace_id}"))]
     OperationActive { workspace_id: WorkspaceId },
     #[snafu(display("automatic workspace is unclaimed: {workspace_id}"))]

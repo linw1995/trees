@@ -526,12 +526,12 @@ fn explicitly_removes_a_manual_workspace_and_preserves_its_tombstone() {
         find_workspace(&mut connection, &workspace.id)
             .expect("workspace tombstone should remain")
             .state,
-        WorkspaceState::Reclaimed
+        WorkspaceState::Removed
     );
     assert!(list_repo_worktrees(&mut connection, &workspace.id)
         .expect("worktree tombstones should remain")
         .iter()
-        .all(|worktree| worktree.state == RepoWorktreeState::Reclaimed));
+        .all(|worktree| worktree.state == RepoWorktreeState::Removed));
 
     drop(connection);
     fs::remove_file(database_path).expect("database should be removable");
@@ -661,7 +661,7 @@ fn explicit_removal_rejects_active_operations_and_recovers_expired_ones() {
 }
 
 #[test]
-fn removal_preflight_is_read_only_and_rejects_unknown_or_reclaimed_ids() {
+fn removal_preflight_is_read_only_and_rejects_unknown_or_removed_ids() {
     let fixture = automatic_fixture();
     let workspace_id = fixture.workspace.id;
     let database_path = fixture.database_path.clone();
@@ -695,7 +695,7 @@ fn removal_preflight_is_read_only_and_rejects_unknown_or_reclaimed_ids() {
     let repeated = gc::remove_workspace(&mut connection, &workspace_id, true)
         .expect("repeated removal should be rejected");
     assert!(!repeated.removed);
-    assert_eq!(repeated.reason, gc::GcCandidateReason::Reclaimed);
+    assert_eq!(repeated.reason, gc::GcCandidateReason::Removed);
 
     drop(connection);
     fs::remove_file(database_path).expect("database should be removable");
@@ -731,7 +731,7 @@ fn dry_run_scan_uses_a_read_only_connection_and_preserves_state() {
     let after_workspace = find_workspace(&mut read_only, &workspace_id)
         .expect("workspace should exist")
         .state;
-    assert_eq!(result.counts.safe_to_reclaim, 1);
+    assert_eq!(result.counts.safe_to_remove, 1);
     assert_eq!(before_events, after_events);
     assert_eq!(before_workspace, after_workspace);
 
@@ -745,7 +745,7 @@ fn dry_run_scan_uses_a_read_only_connection_and_preserves_state() {
 }
 
 #[test]
-fn force_gc_reclaims_diverged_worktrees_and_extra_content() {
+fn force_gc_removes_diverged_worktrees_and_extra_content() {
     let fixture = automatic_fixture();
     fs::write(fixture.worktree_path.join("diverged"), "diverged\n")
         .expect("worktree should contain a divergent commit");
@@ -764,7 +764,7 @@ fn force_gc_reclaims_diverged_worktrees_and_extra_content() {
     )
     .expect("forced GC should succeed");
     assert_eq!(
-        report.reclaimed.as_slice(),
+        report.removed.as_slice(),
         std::slice::from_ref(&fixture.workspace.canonical_path)
     );
     assert!(!fixture.workspace.canonical_path.as_path().exists());
@@ -772,7 +772,7 @@ fn force_gc_reclaims_diverged_worktrees_and_extra_content() {
         find_workspace(&mut connection, &fixture.workspace.id)
             .expect("workspace should exist")
             .state,
-        WorkspaceState::Reclaimed
+        WorkspaceState::Removed
     );
     assert_eq!(
         git::list_worktrees(&fixture.source)
@@ -800,7 +800,7 @@ fn force_gc_skips_a_branch_attached_worktree() {
         true,
     )
     .expect("forced GC should complete with a skip");
-    assert!(report.reclaimed.is_empty());
+    assert!(report.removed.is_empty());
     assert_eq!(report.skipped.len(), 1);
     assert_eq!(
         report.skipped[0].reason,
@@ -837,7 +837,7 @@ fn force_gc_keeps_a_claimed_workspace() {
         true,
     )
     .expect("forced GC should complete with a skip");
-    assert!(report.reclaimed.is_empty());
+    assert!(report.removed.is_empty());
     assert_eq!(report.skipped.len(), 1);
     assert_eq!(report.skipped[0].reason, gc::GcCandidateReason::Claimed);
     assert!(fixture.workspace.canonical_path.as_path().exists());
@@ -860,7 +860,7 @@ fn force_gc_keeps_a_claimed_workspace() {
 
 #[cfg(unix)]
 #[test]
-fn records_a_partial_gc_failure_without_reporting_reclamation() {
+fn records_a_partial_gc_failure_without_reporting_removal() {
     use std::os::unix::fs::PermissionsExt;
 
     let fixture = automatic_fixture();
@@ -874,7 +874,7 @@ fn records_a_partial_gc_failure_without_reporting_reclamation() {
         false,
     )
     .expect("GC should report the physical failure");
-    assert!(report.reclaimed.is_empty());
+    assert!(report.removed.is_empty());
     assert_eq!(report.failed.len(), 1);
     assert!(fixture.workspace.canonical_path.as_path().exists());
     assert_eq!(
