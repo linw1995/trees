@@ -67,10 +67,11 @@ Linux reads process metadata from `/proc`; macOS reads native process informatio
 through `libproc`. Neither adapter launches helpers or collects command arguments,
 environment values, CPU samples, or memory statistics.
 
-A synchronized child test passes on macOS, including physical directory attribution
-through a symbolic link and omission after exit. The Linux parser and simulated
-process filesystem tests also run on macOS; native Linux verification is tracked
-in the implementation checklist.
+Synchronized child tests pass on macOS ARM64 and Linux ARM64, including physical
+directory attribution through a symbolic link, deleted working directories, and
+omission after exit. The Linux parser and simulated process filesystem tests also
+run on macOS. The complete native Linux suite passes in a temporary container
+without network access or elevated privileges; see [verification results](verification.md).
 
 Use process identity information internally where available to discard `PID` reuse
 or exit races instead of combining fields from different processes. Do not retry

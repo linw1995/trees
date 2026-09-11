@@ -1,8 +1,8 @@
 ## 1. Platform Observation
 
-- [ ] 1.1 Validate the narrow `sysinfo` adapter against `cwd/UID` visibility and error classification on Linux and macOS; record findings and the dependency or native-adapter decision in `design.md` with real-child evidence.
+- [x] 1.1 Evaluate `sysinfo` against required visibility and error classification; document the native-adapter decision in `design.md` and verify the selected adapters with real children on Linux and macOS.
 - [x] 1.2 Implement typed observation models, issue aggregation, and Snafu source errors in `src/status/processes.rs`; verify `complete/partial/unavailable` serialization and count invariants with unit tests.
-- [ ] 1.3 Implement Linux and macOS enumeration with current-user filtering, thread exclusion, `self/helper` exclusion, and race handling; verify controlled child processes and injected failures without elevated privileges.
+- [x] 1.3 Implement Linux and macOS enumeration with current-user filtering, thread exclusion, `self/helper` exclusion, and race handling; verify controlled child processes and injected failures without elevated privileges.
 
 ## 2. Workspace Attribution and Orchestration
 
@@ -18,11 +18,10 @@
 
 ## 4. Integration and Documentation
 
-- [ ] 4.1 Add CLI integration coverage with synchronized child startup and guaranteed cleanup on `Linux/macOS`; verify `inferred/explicit` targets, nested `cwd`, other-workspace exclusion, and process exit without timing-based sleeps.
+- [x] 4.1 Add CLI integration coverage with synchronized child startup and guaranteed cleanup on `Linux/macOS`; verify `inferred/explicit` targets, nested `cwd`, other-workspace exclusion, and process exit without timing-based sleeps.
 - [x] 4.2 Verify observation failures preserve successful persisted status and valid single-document JSON; verify storage contents, lifecycle events, Git metadata, and workspace contents remain unchanged.
 - [x] 4.3 Update `docs/status.md` with output examples, JSON fields, `effective-UID/cwd` ownership, visibility limits, and separate observation timing; verify statements agree with the delta spec and no longer describe status as exclusively persisted data.
 - [x] 4.4 Run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, existing repository checks, and strict OpenSpec validation; record results and platform coverage before marking implementation complete.
 
-Native Linux verification for tasks 1.1, 1.3, and 4.1 is pending explicit container
-access authorization. See [verification results](verification.md) for completed checks
-and platform coverage.
+All tasks are complete. See [verification results](verification.md) for native
+Linux and macOS results, environment details, and platform coverage.
