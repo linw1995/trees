@@ -570,7 +570,7 @@ fn unresolvable_invocation_directory_is_an_error_without_output() {
     let directory = root.join("vanished");
     fs::create_dir_all(&directory).unwrap();
     let template = command(&root);
-    let mut shell = Command::new("/bin/sh");
+    let mut shell = Command::new("sh");
     for (key, value) in template.get_envs() {
         if let Some(value) = value {
             shell.env(key, value);

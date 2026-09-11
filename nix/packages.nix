@@ -18,6 +18,7 @@
       (root + /LICENSE)
       (root + /about.hbs)
       (root + /about.toml)
+      (root + /docs/status.md)
       (root + /migrations)
       (root + /scripts/generate-third-party-notices.sh)
     ];
