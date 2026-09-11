@@ -2,11 +2,16 @@ name: CD
 
 on:
   push:
+    branches:
+      - 'release/0.1.0'
     tags:
       - 'v*'
 
 permissions:
   contents: read
+
+env:
+  RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v0.1.0' }}
 
 concurrency:
   group: release-${{ github.ref }}
@@ -38,8 +43,6 @@ jobs:
           rustup default stable
 
       - name: Validate tag and set build metadata
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           version=$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "trees") | .version')
           test "$RELEASE_TAG" = "v$version"
@@ -65,12 +68,11 @@ jobs:
 
       - name: Generate third-party notices
         run: |
-          cargo install cargo-about --version 0.9.0 --locked
+          cargo install cargo-about --version 0.9.0 --locked --features cli
           bash scripts/generate-third-party-notices.sh
 
       - name: Package release
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_TARGET: ${{ matrix.target }}
         run: bash scripts/package-release.sh "$RELEASE_TAG" "$RELEASE_TARGET"
 
@@ -81,6 +83,7 @@ jobs:
           if-no-files-found: error
 
   release:
+    if: startsWith(github.ref, 'refs/tags/')
     needs: package
     runs-on: ubuntu-latest
     permissions:
