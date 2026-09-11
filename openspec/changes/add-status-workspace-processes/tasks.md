@@ -1,7 +1,7 @@
 ## 1. Platform Observation
 
 - [ ] 1.1 Validate the narrow `sysinfo` adapter against `cwd/UID` visibility and error classification on Linux and macOS; record findings and the dependency or native-adapter decision in `design.md` with real-child evidence.
-- [ ] 1.2 Implement typed observation models, issue aggregation, and Snafu source errors in `src/status/processes.rs`; verify `complete/partial/unavailable` serialization and count invariants with unit tests.
+- [x] 1.2 Implement typed observation models, issue aggregation, and Snafu source errors in `src/status/processes.rs`; verify `complete/partial/unavailable` serialization and count invariants with unit tests.
 - [ ] 1.3 Implement Linux and macOS enumeration with current-user filtering, thread exclusion, `self/helper` exclusion, and race handling; verify controlled child processes and injected failures without elevated privileges.
 
 ## 2. Workspace Attribution and Orchestration

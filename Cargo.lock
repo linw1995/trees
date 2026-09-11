@@ -750,6 +750,7 @@ dependencies = [
  "diesel",
  "diesel_migrations",
  "fs2",
+ "libc",
  "libsqlite3-sys",
  "serde",
  "serde_json",

@@ -1,4 +1,5 @@
 pub mod combined;
+pub mod processes;
 pub mod repos;
 pub mod summary;
 pub mod target;

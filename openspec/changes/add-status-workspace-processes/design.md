@@ -58,14 +58,17 @@ Create `status/processes.rs` with a small observer interface, raw candidate data
 a pure attribution function, typed observation issues, and typed Snafu source
 errors. Keep platform enumeration separate from presentation and SQLite.
 
-Evaluate `sysinfo` first using only `UID`, `cwd`, identity, and name collection, with
-thread enumeration and `CPU/memory` refresh disabled. Accept it only if the adapter
-can distinguish enumeration failure and unreadable candidates from empty results.
-If the API loses required diagnostics, implement the affected platform adapter
-using `OS` process interfaces (Linux `procfs` and macOS native process APIs). This
-choice must not weaken the output contract. Record the selected dependency and
-platform findings in this design during implementation. Avoid parsing `ps/lsof`
-human output or introducing a required external executable.
+Use native platform adapters through the existing locked `libc` version.
+The `sysinfo` API exposes optional working directories rather than typed read
+errors, which loses the distinction needed for failure classification.
+Linux reads process metadata from `/proc`; macOS reads native process information
+through `libproc`. Neither adapter launches helpers or collects command arguments,
+environment values, CPU samples, or memory statistics.
+
+A synchronized child test passes on macOS, including physical directory attribution
+through a symbolic link and omission after exit. The Linux parser and simulated
+process filesystem tests also run on macOS; native Linux verification is tracked
+in the implementation checklist.
 
 Use process identity information internally where available to discard `PID` reuse
 or exit races instead of combining fields from different processes. Do not retry
