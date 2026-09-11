@@ -202,12 +202,12 @@ target path to exist or skip observation merely because its record is removed.
 
 #### Scenario: Respect the Nearest Registered Boundary
 
-- **WHEN** /`work/api/nested` is registered inside /`work/api`, including as removed
-- **THEN** a process in /`work/api/nested/repo` belongs only to the nested workspace
+- **WHEN** `/work/api/nested` is registered inside `/work/api`, including as removed
+- **THEN** a process in `/work/api/nested/repo` belongs only to the nested workspace
 
 #### Scenario: Reject Similar Prefixes
 
-- **WHEN** the target is /`work/api` and a process has `cwd` /`work/api-extra`
+- **WHEN** the target is `/work/api` and a process has `cwd` `/work/api-extra`
 - **THEN** the process is excluded from the target observation
 
 #### Scenario: Resolve Physical Working Directories
@@ -237,7 +237,7 @@ target path to exist or skip observation merely because its record is removed.
 Each attempted observation SHALL capture an RFC 3339 `observed_at` at the start of
 collection. It SHALL report complete, partial, or unavailable. Observation SHALL be
 best effort under `OS` visibility and SHALL NOT claim an atomic process snapshot
-or safe workspace `removal/reuse.` It SHALL NOT require elevated privileges.
+or safe workspace removal or reuse. It SHALL NOT require elevated privileges.
 
 Complete SHALL mean enumeration succeeded and all enumerated eligible live
 candidates were classified. Unknown candidate user identity, unreadable eligible

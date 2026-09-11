@@ -53,7 +53,8 @@ On Linux ARM64:
 All implementation tasks and required native platform verification are complete.
 The process adapters were tested locally on Linux ARM64 and macOS ARM64.
 GitHub Actions additionally passed native Linux x86_64 coverage and Nix package
-builds for PR #25. The OpenSpec change has not been archived.
+builds for PR #25. The completed OpenSpec change is archived with its requirements incorporated
+into the main workspace status specification.
 
 ## CI Platform Scope
 
@@ -64,3 +65,14 @@ other source files retain the existing coverage requirements. Replaying the CI
 coverage artifact locally with that scope analyzed 619 functions with zero
 threshold violations. Native macOS adapter tests remain covered by the local
 platform verification above.
+
+## Archive Review
+
+Reviewed the merged implementation from PR #25 against the delta requirements,
+CLI documentation, platform adapters, and recorded test results. No blocking
+findings remain. The review covered nearest-boundary attribution, effective-user
+filtering, directory identity checks, incomplete observations, read-only snapshot
+consistency, and the additive version-2 JSON contract.
+
+All checks passed for implementation commit `86ba17a`; the merged tree at
+`e935e41` matches that implementation. The archive adds no runtime changes.
