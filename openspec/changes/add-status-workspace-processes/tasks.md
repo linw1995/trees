@@ -19,6 +19,10 @@
 ## 4. Integration and Documentation
 
 - [ ] 4.1 Add CLI integration coverage with synchronized child startup and guaranteed cleanup on `Linux/macOS`; verify `inferred/explicit` targets, nested `cwd`, other-workspace exclusion, and process exit without timing-based sleeps.
-- [ ] 4.2 Verify observation failures preserve successful persisted status and valid single-document JSON; verify storage contents, lifecycle events, Git metadata, and workspace contents remain unchanged.
+- [x] 4.2 Verify observation failures preserve successful persisted status and valid single-document JSON; verify storage contents, lifecycle events, Git metadata, and workspace contents remain unchanged.
 - [x] 4.3 Update `docs/status.md` with output examples, JSON fields, `effective-UID/cwd` ownership, visibility limits, and separate observation timing; verify statements agree with the delta spec and no longer describe status as exclusively persisted data.
-- [ ] 4.4 Run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, existing repository checks, and strict OpenSpec validation; record results and platform coverage before marking implementation complete.
+- [x] 4.4 Run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, existing repository checks, and strict OpenSpec validation; record results and platform coverage before marking implementation complete.
+
+Native Linux verification for tasks 1.1, 1.3, and 4.1 is pending explicit container
+access authorization. See [verification results](verification.md) for completed checks
+and platform coverage.

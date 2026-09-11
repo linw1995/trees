@@ -46,6 +46,8 @@ repository contents or require the target directory to exist. A removed target
 still receives the normal observation attempt: current path ownership, not a
 historical association, determines matches. Unresolved or deleted `cwd` values
 are unclassified rather than guessed from display strings such as a deleted suffix.
+Compare the resolved directory device and `inode` against the observed directory
+identity to reject deleted paths that happen to name a different directory.
 
 Sort matches by numeric `PID`. Keep absolute `cwd` in JSON and render a relative `cwd`
 in human output, with a dot for the workspace root. Resolve paths before display
