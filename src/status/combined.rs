@@ -13,7 +13,10 @@ pub enum SnapshotError {
     Target { source: TargetError },
     #[snafu(context(false), display("failed to load status snapshot: {source}"))]
     Transaction { source: diesel::result::Error },
-    #[snafu(display("failed to load {view} status: {source}"))]
+    #[snafu(
+        visibility(pub(super)),
+        display("failed to load {view} status: {source}")
+    )]
     Inventory {
         view: &'static str,
         source: diesel::result::Error,

@@ -402,6 +402,15 @@ pub fn list_workspaces(
         .load(connection)
 }
 
+pub fn list_workspace_boundaries(
+    connection: &mut SqliteConnection,
+) -> QueryResult<Vec<(WorkspaceId, CanonicalPath)>> {
+    workspaces::table
+        .select((workspaces::id, workspaces::canonical_path))
+        .order(workspaces::canonical_path.asc())
+        .load(connection)
+}
+
 pub fn list_status_workspace_claims(
     connection: &mut SqliteConnection,
     include_removed: bool,

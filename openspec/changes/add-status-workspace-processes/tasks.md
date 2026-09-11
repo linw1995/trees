@@ -7,7 +7,7 @@
 ## 2. Workspace Attribution and Orchestration
 
 - [ ] 2.1 Implement component-based nearest-boundary attribution; verify root, nested, removed-boundary, prefix collision, physical symlink, `missing/deleted` `cwd`, and other-user cases with focused tests.
-- [ ] 2.2 Load minimal boundary context in the existing SQLite snapshot; verify concurrent registration changes cannot split target selection and attribution boundaries and preserve inventory consistency tests.
+- [x] 2.2 Load minimal boundary context in the existing SQLite snapshot; verify concurrent registration changes cannot split target selection and attribution boundaries and preserve inventory consistency tests.
 - [ ] 2.3 Invoke the observer once after dropping the read-only connection and only for a valid target; verify fake-observer call `counts/order` for every view, no target, unknown ID, missing storage, and database failure.
 
 ## 3. Output
