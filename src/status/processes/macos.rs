@@ -78,11 +78,12 @@ impl Native {
                 code: IssueCode::CwdUnreadable
             }
         );
-        let cwd = PathBuf::from(OsString::from_vec(bytes))
-            .canonicalize()
-            .context(ReadSnafu {
-                code: IssueCode::CwdUnreadable,
-            })?;
+        let stat = paths.pvi_cdir.vip_vi.vi_stat;
+        let cwd = super::physical_cwd(
+            &PathBuf::from(OsString::from_vec(bytes)),
+            u64::from(stat.vst_dev),
+            stat.vst_ino,
+        )?;
         let mut name = c_bytes(before.pbi_name);
         if name.is_empty() {
             name = c_bytes(before.pbi_comm);
@@ -100,12 +101,11 @@ impl Source for Native {
         const PROC_ALL_PIDS: u32 = 1;
         // A null buffer queries the required byte count without writing memory.
         let needed = unsafe { libc::proc_listpids(PROC_ALL_PIDS, 0, std::ptr::null_mut(), 0) };
-        ensure!(
-            needed > 0,
-            InvalidSnafu {
-                code: IssueCode::EnumerationFailed
-            }
-        );
+        if needed <= 0 {
+            return Err(io::Error::last_os_error()).context(ReadSnafu {
+                code: IssueCode::EnumerationFailed,
+            });
+        }
         let mut capacity = needed as usize / size_of::<i32>() + 256;
         // Bounded growth handles a changing process list without waiting for quiescence.
         for _ in 0..3 {

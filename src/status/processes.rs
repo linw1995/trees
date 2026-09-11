@@ -4,10 +4,12 @@ use std::path::{Path, PathBuf};
 
 use serde::{Serialize, Serializer};
 use snafu::Snafu;
+#[cfg(unix)]
+use snafu::{ensure, ResultExt};
 
 use crate::domain::{CanonicalPath, Timestamp, WorkspaceId};
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", all(test, unix)))]
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -191,6 +193,26 @@ fn collect(
     }
 }
 
+#[cfg(unix)]
+fn physical_cwd(path: &Path, device: u64, inode: u64) -> Result<PathBuf, ProbeError> {
+    use std::os::unix::fs::MetadataExt;
+    let path = path.canonicalize().context(ReadSnafu {
+        code: IssueCode::CwdUnreadable,
+    })?;
+    let metadata = std::fs::metadata(&path).context(ReadSnafu {
+        code: IssueCode::CwdUnreadable,
+    })?;
+    // A deleted cwd's displayed path can name a replacement directory or a literal
+    // " (deleted)" sibling. Only the observed directory identity is authoritative.
+    ensure!(
+        metadata.dev() == device && metadata.ino() == inode,
+        InvalidSnafu {
+            code: IssueCode::CwdUnreadable
+        }
+    );
+    Ok(path)
+}
+
 fn owner(cwd: &Path, boundaries: &[Boundary]) -> Option<WorkspaceId> {
     boundaries
         .iter()
@@ -311,6 +333,21 @@ mod tests {
         assert_eq!(partial.count, Some(0));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_replaced_directory_identity() {
+        use std::os::unix::fs::MetadataExt;
+        let root = std::env::temp_dir().join(format!("trees-cwd-{}", WorkspaceId::new()));
+        std::fs::create_dir_all(root.join("cwd")).unwrap();
+        let metadata = std::fs::metadata(root.join("cwd")).unwrap();
+        std::fs::rename(root.join("cwd"), root.join("original")).unwrap();
+        std::fs::create_dir(root.join("cwd")).unwrap();
+        let error = physical_cwd(&root.join("cwd"), metadata.dev(), metadata.ino()).unwrap_err();
+        assert_eq!(error.code(), IssueCode::CwdUnreadable);
+        assert!(physical_cwd(&root.join("original"), metadata.dev(), metadata.ino()).is_ok());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn unavailable_has_no_numeric_count() {
         let json = serde_json::to_value(Observation::unavailable(
@@ -375,6 +412,14 @@ mod native_tests {
             .processes
             .iter()
             .any(|process| process.pid == std::process::id()));
+        std::fs::remove_dir(root.join("workspace/repo")).unwrap();
+        std::fs::create_dir(root.join("workspace/repo (deleted)")).unwrap();
+        let deleted = observe(target, &boundaries);
+        assert!(!deleted
+            .processes
+            .iter()
+            .any(|process| process.pid == child.0.id()));
+        assert_eq!(deleted.status, Completeness::Partial);
         child.0.kill().unwrap();
         child.0.wait().unwrap();
         let result = observe(target, &boundaries);

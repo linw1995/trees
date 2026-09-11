@@ -1,5 +1,6 @@
 use std::fs;
-use std::path::PathBuf;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 
 use snafu::{ensure, OptionExt, ResultExt};
 
@@ -33,11 +34,7 @@ impl Procfs {
         if effective_uid(&status)? != uid {
             return Ok(None);
         }
-        let cwd = fs::read_link(root.join("cwd"))
-            .and_then(fs::canonicalize)
-            .context(ReadSnafu {
-                code: IssueCode::CwdUnreadable,
-            });
+        let cwd = read_cwd(&root.join("cwd"));
         // Check identity after the cwd read, including failed reads, to distinguish exits.
         let after = self.identity(pid)?;
         if after.exited {
@@ -87,6 +84,16 @@ impl Source for Procfs {
             result => result,
         }
     }
+}
+
+fn read_cwd(link: &Path) -> Result<PathBuf, ProbeError> {
+    let path = fs::read_link(link).context(ReadSnafu {
+        code: IssueCode::CwdUnreadable,
+    })?;
+    let metadata = fs::metadata(link).context(ReadSnafu {
+        code: IssueCode::CwdUnreadable,
+    })?;
+    super::physical_cwd(&path, metadata.dev(), metadata.ino())
 }
 
 struct Identity {
