@@ -153,7 +153,7 @@ pub fn inspect_fetched_upstream_repository(
     inspect_fetched_upstream_repository_with_heartbeat(repository, || Ok(()))
 }
 
-pub fn inspect_fetched_upstream_repository_with_heartbeat<F>(
+pub(crate) fn inspect_fetched_upstream_repository_with_heartbeat<F>(
     repository: &CanonicalPath,
     mut heartbeat: F,
 ) -> Result<RepositoryInfo, GitError>
@@ -436,7 +436,7 @@ where
     Ok(output.trim().is_empty())
 }
 
-pub fn move_worktree_with_heartbeat<F>(
+pub(crate) fn move_worktree_with_heartbeat<F>(
     repository: &CanonicalPath,
     from: &Path,
     to: &Path,
@@ -460,7 +460,10 @@ where
     Ok(())
 }
 
-pub fn has_ignored_files_with_heartbeat<F>(path: &Path, heartbeat: F) -> Result<bool, GitError>
+pub(crate) fn has_ignored_files_with_heartbeat<F>(
+    path: &Path,
+    heartbeat: F,
+) -> Result<bool, GitError>
 where
     F: FnMut() -> Result<(), GitError>,
 {

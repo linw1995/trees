@@ -1,7 +1,9 @@
-pub mod persistence;
-pub mod planning;
-pub mod workflow;
+mod persistence;
+mod planning;
+mod workflow;
+pub(crate) use persistence::{ensure_resolved, unresolved};
 pub use workflow::execute;
+pub(crate) use workflow::recover;
 
 use std::path::PathBuf;
 
@@ -24,12 +26,12 @@ pub struct AddRequest {
 }
 
 #[derive(Debug)]
-pub struct AddTarget {
-    pub workspace: WorkspaceRow,
-    pub claim_id: Option<ClaimId>,
+struct AddTarget {
+    workspace: WorkspaceRow,
+    claim_id: Option<ClaimId>,
 }
 
-pub fn locate_target(
+fn locate_target(
     connection: &mut SqliteConnection,
     selector: &WorkspaceSelector,
 ) -> Result<AddTarget, AddError> {
@@ -59,35 +61,35 @@ pub fn locate_target(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RepositoryPlan {
-    pub origin_repository_id: OriginRepositoryId,
-    pub worktree_id: RepoWorktreeId,
-    pub source_path: CanonicalPath,
-    pub repository_identity: CanonicalPath,
-    pub worktree_path: CanonicalPath,
-    pub head: String,
-    pub git_file: Option<String>,
+struct RepositoryPlan {
+    origin_repository_id: OriginRepositoryId,
+    worktree_id: RepoWorktreeId,
+    source_path: CanonicalPath,
+    repository_identity: CanonicalPath,
+    worktree_path: CanonicalPath,
+    head: String,
+    git_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Relocation {
-    pub worktree_id: RepoWorktreeId,
-    pub previous_path: CanonicalPath,
-    pub worktree_path: CanonicalPath,
-    pub staging_path: CanonicalPath,
+struct Relocation {
+    worktree_id: RepoWorktreeId,
+    previous_path: CanonicalPath,
+    worktree_path: CanonicalPath,
+    staging_path: CanonicalPath,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AddPlan {
-    pub version: u32,
-    pub workspace_id: WorkspaceId,
-    pub workspace_path: CanonicalPath,
-    pub claim_id: Option<ClaimId>,
-    pub previous_pool_id: Option<PoolId>,
-    pub existing: Vec<RepositoryPlan>,
-    pub additions: Vec<RepositoryPlan>,
-    pub requested: Vec<OriginRepositoryId>,
-    pub relocation: Option<Relocation>,
+struct AddPlan {
+    version: u32,
+    workspace_id: WorkspaceId,
+    workspace_path: CanonicalPath,
+    claim_id: Option<ClaimId>,
+    previous_pool_id: Option<PoolId>,
+    existing: Vec<RepositoryPlan>,
+    additions: Vec<RepositoryPlan>,
+    requested: Vec<OriginRepositoryId>,
+    relocation: Option<Relocation>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -190,7 +192,7 @@ pub enum AddError {
     },
 }
 
-pub fn document(value: &impl Serialize) -> Result<crate::domain::JsonDocument, AddError> {
+fn document(value: &impl Serialize) -> Result<crate::domain::JsonDocument, AddError> {
     crate::domain::JsonDocument::from_serializable(value).context(JsonSnafu)
 }
 

@@ -10,7 +10,7 @@ use super::*;
 use crate::domain::{LeaseId, RepoWorktreeState};
 use crate::git;
 
-pub fn absent(path: &Path) -> Result<(), AddError> {
+pub(super) fn absent(path: &Path) -> Result<(), AddError> {
     match std::fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(source) => Err(IoSnafu { path }.into_error(source)),
@@ -18,7 +18,7 @@ pub fn absent(path: &Path) -> Result<(), AddError> {
     }
 }
 
-pub fn resolve_with_lease(
+fn resolve_with_lease(
     db: &mut SqliteConnection,
     lease: &LeaseId,
     inputs: &[PathBuf],
@@ -60,7 +60,7 @@ pub fn resolve_with_lease(
     })
 }
 
-pub fn observe(
+pub(super) fn observe(
     db: &mut SqliteConnection,
     lease: &LeaseId,
     repository: &RepositoryPlan,
@@ -132,7 +132,7 @@ pub fn observe(
     Ok(RepoWorktreeState::Attached)
 }
 
-pub fn prepare(
+pub(super) fn prepare(
     db: &mut SqliteConnection,
     lease: &LeaseId,
     target: &AddTarget,

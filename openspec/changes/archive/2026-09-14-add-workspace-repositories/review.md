@@ -27,3 +27,14 @@ metric check identified five functions above its threshold. The workflows were
 split into focused source resolution, planning, compensation, and recovery
 helpers without changing the lifecycle contract or metric threshold. All 343
 local tests and Clippy passed after this refactor.
+
+## Visibility Review
+
+The addition submodules, plan types, target lookup, and execution helpers are
+private. Only the request, result, error types, and execution entry point form
+the external API. Internal callers use restricted crate or parent visibility;
+Snafu selectors remain private. Unused source resolution API was removed.
+
+Tests that require internal steps now live inside the workflow module. Public
+behavior remains covered by integration tests, using shared test fixtures.
+The full suite still contains 343 tests, with no scenarios removed.

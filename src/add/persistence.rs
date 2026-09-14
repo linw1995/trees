@@ -9,16 +9,16 @@ use crate::schema::{lifecycle_events, operations, repo_worktrees, workspaces};
 use crate::storage::{EventDraft, OperationIntent, TransitionMetadata};
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct RequestIntent {
-    pub version: u32,
-    pub repositories: Vec<PathBuf>,
-    pub offline: bool,
-    pub claim_id: Option<ClaimId>,
-    pub previous_pool_id: Option<PoolId>,
-    pub recovery_of: Option<OperationId>,
+pub(super) struct RequestIntent {
+    version: u32,
+    repositories: Vec<PathBuf>,
+    offline: bool,
+    claim_id: Option<ClaimId>,
+    previous_pool_id: Option<PoolId>,
+    pub(super) recovery_of: Option<OperationId>,
 }
 
-pub fn admit(
+pub(super) fn admit(
     db: &mut SqliteConnection,
     target: &AddTarget,
     request: &AddRequest,
@@ -65,7 +65,10 @@ pub fn admit(
     }
 }
 
-pub fn renew(db: &mut SqliteConnection, lease: &LeaseId) -> Result<(), crate::git::GitError> {
+pub(super) fn renew(
+    db: &mut SqliteConnection,
+    lease: &LeaseId,
+) -> Result<(), crate::git::GitError> {
     match storage::renew_operation_lease(db, lease)
         .map_err(crate::git::GitError::from_heartbeat_source)?
     {
@@ -76,7 +79,7 @@ pub fn renew(db: &mut SqliteConnection, lease: &LeaseId) -> Result<(), crate::gi
     }
 }
 
-pub fn event(
+pub(super) fn event(
     db: &mut SqliteConnection,
     lease: &LeaseId,
     kind: &str,
@@ -104,7 +107,7 @@ pub fn event(
     Ok(())
 }
 
-pub fn step(
+pub(super) fn step(
     db: &mut SqliteConnection,
     lease: &LeaseId,
     name: &str,
@@ -114,7 +117,7 @@ pub fn step(
     Ok(())
 }
 
-pub fn load_plan(
+pub(super) fn load_plan(
     db: &mut SqliteConnection,
     operation: &OperationId,
 ) -> Result<Option<AddPlan>, AddError> {
@@ -134,7 +137,7 @@ pub fn load_plan(
     .transpose()
 }
 
-pub fn has_event(
+pub(super) fn has_event(
     db: &mut SqliteConnection,
     operation: &OperationId,
     kind: &str,
@@ -144,7 +147,7 @@ pub fn has_event(
         .any(|event| event.event_type == kind))
 }
 
-pub fn unresolved(
+pub(crate) fn unresolved(
     db: &mut SqliteConnection,
     workspace: &WorkspaceId,
 ) -> Result<Option<OperationId>, AddError> {
@@ -164,12 +167,15 @@ pub fn unresolved(
     Ok(latest.and_then(|(id, kind)| (kind == "workspace_add_unresolved").then_some(id)))
 }
 
-pub fn ensure_resolved(db: &mut SqliteConnection, workspace: &WorkspaceId) -> Result<(), AddError> {
+pub(crate) fn ensure_resolved(
+    db: &mut SqliteConnection,
+    workspace: &WorkspaceId,
+) -> Result<(), AddError> {
     ensure!(unresolved(db, workspace)?.is_none(), UnresolvedSnafu);
     Ok(())
 }
 
-pub fn active_repositories(
+pub(super) fn active_repositories(
     db: &mut SqliteConnection,
     workspace: &WorkspaceId,
 ) -> Result<Vec<storage::RepoWorktreeRow>, AddError> {
@@ -179,7 +185,7 @@ pub fn active_repositories(
         .collect())
 }
 
-pub fn finish(
+pub(super) fn finish(
     db: &mut SqliteConnection,
     lease: &LeaseId,
     plan: &AddPlan,
@@ -312,7 +318,7 @@ pub fn finish(
     })
 }
 
-pub fn terminal(
+pub(super) fn terminal(
     db: &mut SqliteConnection,
     lease: &LeaseId,
     state: OperationState,
@@ -333,7 +339,7 @@ pub fn terminal(
     Ok(())
 }
 
-pub fn retain_residuals(
+pub(super) fn retain_residuals(
     db: &mut SqliteConnection,
     lease: &LeaseId,
     plan: &AddPlan,
@@ -371,7 +377,7 @@ pub fn retain_residuals(
     })
 }
 
-pub fn compensated(
+pub(super) fn compensated(
     db: &mut SqliteConnection,
     lease: &LeaseId,
     plan: &AddPlan,
@@ -392,7 +398,7 @@ pub fn compensated(
     })
 }
 
-pub fn request_intent(
+pub(super) fn request_intent(
     db: &mut SqliteConnection,
     id: &OperationId,
 ) -> Result<RequestIntent, AddError> {

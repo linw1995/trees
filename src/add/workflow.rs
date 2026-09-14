@@ -106,7 +106,7 @@ fn fail_execution(
     }
 }
 
-pub fn result(plan: &AddPlan, operation_id: OperationId, pool_id: Option<PoolId>) -> AddResult {
+fn result(plan: &AddPlan, operation_id: OperationId, pool_id: Option<PoolId>) -> AddResult {
     let repositories = plan
         .requested
         .iter()
@@ -186,7 +186,7 @@ fn move_original(
     )
 }
 
-pub fn apply(
+fn apply(
     db: &mut SqliteConnection,
     lease: &LeaseId,
     plan: &AddPlan,
@@ -207,11 +207,7 @@ fn verify_plan(db: &mut SqliteConnection, lease: &LeaseId, plan: &AddPlan) -> Re
     Ok(())
 }
 
-pub fn provision(
-    db: &mut SqliteConnection,
-    lease: &LeaseId,
-    plan: &AddPlan,
-) -> Result<(), AddError> {
+fn provision(db: &mut SqliteConnection, lease: &LeaseId, plan: &AddPlan) -> Result<(), AddError> {
     verify_plan(db, lease, plan)?;
     if let Some(move_) = &plan.relocation {
         let original = plan
@@ -300,7 +296,7 @@ fn owns_directory(
     Ok(false)
 }
 
-pub fn final_observations(
+fn final_observations(
     db: &mut SqliteConnection,
     lease: &LeaseId,
     plan: &AddPlan,
@@ -443,7 +439,7 @@ fn remove_container(
     )
 }
 
-pub fn compensate(
+fn compensate(
     db: &mut SqliteConnection,
     lease: &LeaseId,
     plan: &AddPlan,
@@ -647,7 +643,7 @@ fn compensate_or_retain(
     }
 }
 
-pub fn recover(
+pub(crate) fn recover(
     db: &mut SqliteConnection,
     operation: &storage::OperationRow,
     lease: &LeaseId,
@@ -716,3 +712,7 @@ fn can_publish_recovery(
 }
 
 use snafu::IntoError;
+
+#[cfg(test)]
+#[path = "tests.rs"]
+mod tests;
