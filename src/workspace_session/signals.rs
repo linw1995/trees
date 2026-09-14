@@ -32,6 +32,7 @@ extern "C" fn notify(signal: libc::c_int) {
 
 pub(super) struct Supervisor {
     previous: Vec<(libc::c_int, libc::sigaction)>,
+    previous_mask: Option<libc::sigset_t>,
     read: OwnedFd,
     _write: OwnedFd,
     _session: MutexGuard<'static, ()>,
@@ -56,6 +57,7 @@ impl Supervisor {
         }
         let mut supervisor = Self {
             previous: Vec::new(),
+            previous_mask: None,
             read,
             _write: write,
             _session: session,
@@ -72,6 +74,20 @@ impl Supervisor {
             }
             supervisor.previous.push((signal, previous));
         }
+        let mut managed = unsafe { std::mem::zeroed() };
+        unsafe { libc::sigemptyset(&mut managed) };
+        for (signal, _) in &supervisor.previous {
+            unsafe { libc::sigaddset(&mut managed, *signal) };
+        }
+        let mut previous_mask = unsafe { std::mem::zeroed() };
+        // Signal dispositions alone cannot wake the supervisor when the caller
+        // blocked notifications. Restore the caller's mask when the session ends.
+        let result =
+            unsafe { libc::pthread_sigmask(libc::SIG_UNBLOCK, &managed, &mut previous_mask) };
+        if result != 0 {
+            return Err(io::Error::from_raw_os_error(result));
+        }
+        supervisor.previous_mask = Some(previous_mask);
         Ok(supervisor)
     }
 
@@ -125,5 +141,39 @@ impl Drop for Supervisor {
             unsafe { libc::sigaction(*signal, action, std::ptr::null_mut()) };
         }
         NOTIFY_FD.store(-1, Ordering::SeqCst);
+        if let Some(mask) = &self.previous_mask {
+            unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, mask, std::ptr::null_mut()) };
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restores_the_callers_signal_mask_after_supervision() {
+        unsafe {
+            let mut before = std::mem::zeroed();
+            assert_eq!(
+                libc::pthread_sigmask(libc::SIG_SETMASK, std::ptr::null(), &mut before),
+                0
+            );
+            let mut blocked = before;
+            libc::sigaddset(&mut blocked, libc::SIGCHLD);
+            assert_eq!(
+                libc::pthread_sigmask(libc::SIG_SETMASK, &blocked, std::ptr::null_mut()),
+                0
+            );
+            let supervisor = Supervisor::new().unwrap();
+            let mut during = std::mem::zeroed();
+            libc::pthread_sigmask(libc::SIG_SETMASK, std::ptr::null(), &mut during);
+            drop(supervisor);
+            let mut after = std::mem::zeroed();
+            libc::pthread_sigmask(libc::SIG_SETMASK, std::ptr::null(), &mut after);
+            libc::pthread_sigmask(libc::SIG_SETMASK, &before, std::ptr::null_mut());
+            assert_eq!(libc::sigismember(&during, libc::SIGCHLD), 0);
+            assert_eq!(libc::sigismember(&after, libc::SIGCHLD), 1);
+        }
     }
 }

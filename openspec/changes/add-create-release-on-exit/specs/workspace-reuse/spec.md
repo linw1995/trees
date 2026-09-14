@@ -23,7 +23,7 @@ be interpreted as evidence that ownership has ended.
 #### Scenario: Release After Program Failure
 
 - **WHEN** the initial program exits nonzero, terminates from a signal, or cannot start
-- **THEN** Trees attempts to release of its original claim
+- **THEN** Trees attempts to release its original claim
 
 #### Scenario: Preserve Dirty Work
 
@@ -129,3 +129,8 @@ cleanup. The session SHALL track the launched child, not detached descendants.
 
 - **WHEN** waiting is interrupted or the child has not been confirmed terminated
 - **THEN** Trees does not release the workspace while that child may still be running
+
+#### Scenario: Receive Inherited Blocked Child Notifications
+
+- **WHEN** the caller has blocked `SIGCHLD` before launching a supervised session
+- **THEN** Trees still observes child termination and attempts to release the original claim

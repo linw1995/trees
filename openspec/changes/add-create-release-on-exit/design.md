@@ -93,7 +93,10 @@ validates `$SHELL` before allocation as it does today.
 In supervised `UNIX` mode keep the child in the inherited foreground process
 group so terminal input and output and shell job control remain usable. Install scoped
 supervisor handlers for `SIGINT/SIGQUIT` rather than ignored dispositions; children
-must receive default dispositions when spawned. The supervisor survives terminal
+must receive default dispositions when spawned. Supervision temporarily clears
+signal blocking with `pthread_sigmask` and restores the caller's mask when the
+session ends. An inherited blocked `SIGCHLD` cannot prevent observation of child
+termination. The supervisor survives terminal
 interrupts while the foreground child receives them. Forward supervisor `SIGTERM`
 to the active child from normal control flow, not by performing lifecycle work
 inside a signal handler. Reap each child before releasing and retry interrupted

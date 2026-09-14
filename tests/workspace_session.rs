@@ -769,3 +769,39 @@ fn invalid_session_arguments_fail_before_storage_or_workspace_mutation() {
         assert!(!fixture.root.join("manual-workspace").exists());
     }
 }
+
+#[test]
+fn inherited_blocked_child_notifications_do_not_prevent_release() {
+    let fixture = Fixture::new();
+    let program = fixture.script(
+        "program",
+        "exec \"$SESSION_TEST_BINARY\" --exact process_helper --nocapture",
+    );
+    let mut command = fixture.create(&program);
+    command.env("SESSION_PROCESS_HELPER", "1");
+    unsafe {
+        command.pre_exec(|| {
+            let mut signals = std::mem::zeroed();
+            libc::sigemptyset(&mut signals);
+            libc::sigaddset(&mut signals, libc::SIGCHLD);
+            let result = libc::pthread_sigmask(libc::SIG_BLOCK, &signals, std::ptr::null_mut());
+            if result != 0 {
+                return Err(std::io::Error::from_raw_os_error(result));
+            }
+            Ok(())
+        });
+    }
+    let mut terminal = Terminal::spawn(command);
+    terminal.until("SESSION_CHILD_READY");
+    terminal.send(b"\n");
+    assert!(terminal.finish().success(), "{}", terminal.output);
+    let mut connection = fixture.connection();
+    let workspace = trees::storage::list_workspaces(&mut connection, false)
+        .unwrap()
+        .remove(0);
+    assert!(
+        trees::storage::find_workspace_claim(&mut connection, &workspace.id)
+            .unwrap()
+            .is_none()
+    );
+}
