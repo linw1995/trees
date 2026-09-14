@@ -33,10 +33,10 @@
 
 ## 6. Validation
 
-- [ ] 6.1 Cover manual and claimed automatic additions. Check current directory/positional/named ID/path/claim selection; pairwise and direct-construction conflicts; explicit misses without fallback; nested removed boundaries; ID/claim lookup without current directory; stale claims; idle targets; input aliases; URL/name ambiguity. Check offline and output contracts.
-- [ ] 6.2 Cover single-to-multiple promotion and existing child directory structures with staged, unstaged, untracked, ignored, branch-attached, and changed-HEAD content; verify preserved IDs and bytes.
-- [ ] 6.3 Cover occupied/symlink paths, name collisions, broken identities, locked or unsupported worktree moves, and no-op auditing without fetch or directory structure changes.
-- [ ] 6.4 Cover exact pool migration, existing destination pools, other-slot preservation, failed migration, unchanged claims, and release followed by exact-set reuse.
-- [ ] 6.5 Inject failure before/after each journal, Git move/`add`, container creation, compensation, and final publication boundary; verify events, lease cleanup, atomicity, and safe retry.
-- [ ] 6.6 Exercise recovery with a missing root, complete/partial directory structures, compensation already selected, dirty or ambiguous residuals, lost lease, and competing takeover; verify no user-content deletion.
-- [ ] 6.7 Run focused integration tests and repository-required formatting, lint, and test checks; validate the OpenSpec change before implementation review.
+- [x] 6.1 Cover manual and claimed automatic additions. Check current directory/positional/named ID/path/claim selection; pairwise and direct-construction conflicts; explicit misses without fallback; nested removed boundaries; ID/claim lookup without current directory; stale claims; idle targets; input aliases; URL/name ambiguity. Check offline and output contracts.
+- [x] 6.2 Cover single-to-multiple promotion and existing child directory structures with staged, unstaged, untracked, ignored, branch-attached, and changed-HEAD content; verify preserved IDs and bytes.
+- [x] 6.3 Cover occupied/symlink paths, name collisions, broken identities, locked or unsupported worktree moves, and no-op auditing without fetch or directory structure changes.
+- [x] 6.4 Cover exact pool migration, existing destination pools, other-slot preservation, failed migration, unchanged claims, and release followed by exact-set reuse.
+- [x] 6.5 Inject failure before/after each journal, Git move/`add`, container creation, compensation, and final publication boundary; verify events, lease cleanup, atomicity, and safe retry.
+- [x] 6.6 Exercise recovery with a missing root, complete/partial directory structures, compensation already selected, dirty or ambiguous residuals, lost lease, and competing takeover; verify no user-content deletion.
+- [x] 6.7 Run focused integration tests and repository-required formatting, lint, and test checks; validate the OpenSpec change before implementation review.

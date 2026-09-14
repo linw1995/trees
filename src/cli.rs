@@ -74,19 +74,27 @@ pub struct CreateArgs {
 #[derive(Debug, Args)]
 #[command(group(workspace_locator::group(Self::SELECTION_DEFAULT)))]
 pub struct AddArgs {
-    #[arg(id = "add_workspace_dir", group = workspace_locator::GROUP, value_name = "WORKSPACE_DIR")]
+    #[arg(id = "add_workspace_dir", group = workspace_locator::GROUP, value_name = "WORKSPACE_DIR", help = "Select an exact workspace root")]
     pub workspace_dir: Option<PathBuf>,
 
     #[command(flatten)]
     pub locator: WorkspaceLocatorArgs,
 
-    #[arg(long = "repo", required = true, value_name = "PATH|URL|NAME")]
+    #[arg(
+        long = "repo",
+        required = true,
+        value_name = "PATH|URL|NAME",
+        help = "Add a local path, remote URL, or registered source name"
+    )]
     pub repositories: Vec<PathBuf>,
 
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Use local HEAD for new repositories without fetching remotes"
+    )]
     pub offline: bool,
 
-    #[arg(long)]
+    #[arg(long, help = "Print the addition result as JSON")]
     pub json: bool,
 }
 

@@ -479,6 +479,14 @@ fn compensate_or_retain(
     match compensate(db, lease, plan, operation) {
         Ok(()) => Ok(()),
         Err(error) => {
+            eprintln!("Addition recovery is incomplete for workspace {} at {}. Inspect the reported paths, preserve local work, then retry trees add --workspace-id {} --repo PATH.",
+                plan.workspace_id, plan.workspace_path, plan.workspace_id);
+            if let Some(relocation) = &plan.relocation {
+                eprintln!(
+                    "Original worktree paths: original={} staging={} intended={}",
+                    relocation.previous_path, relocation.staging_path, relocation.worktree_path
+                );
+            }
             // Residual snapshots describe only paths that this addition attempted to create.
             let evidence = evidence_operation(db, operation)?;
             let mut remaining = Vec::new();

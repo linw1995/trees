@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use snafu::{ensure, ResultExt, Snafu};
@@ -36,7 +36,8 @@ fn resolve_inputs(
     let mut urls = HashSet::new();
     let mut pending = Vec::new();
     let mut names = HashSet::new();
-    for input in parsed {
+    let mut input_order = HashMap::new();
+    for (index, input) in parsed.into_iter().enumerate() {
         let info = match input {
             RepositoryInput::Path(path) => {
                 let paths = validation::validate_repositories(&[path])?;
@@ -59,7 +60,7 @@ fn resolve_inputs(
                 } else {
                     ensure!(!offline, OfflineSnafu);
                     ensure!(names.insert(reservation::directory_name(&url)), LayoutSnafu);
-                    pending.push(url);
+                    pending.push((index, url));
                     None
                 }
             }
@@ -83,6 +84,7 @@ fn resolve_inputs(
                 ),
                 LayoutSnafu
             );
+            input_order.entry(info.common_dir.clone()).or_insert(index);
             resolved.push(info);
         }
     }
@@ -102,16 +104,19 @@ fn resolve_inputs(
         let root = crate::config::origins_directory()?;
         let locks = crate::paths::state_directory()?.join("origin-locks");
         let mut connection = database::open_default()?;
-        for url in pending {
+        for (index, url) in pending {
             let row = provision::provision(&mut connection, &url, &root, &locks)?;
             eprintln!(
                 "Origin available for reuse: {} ({})",
                 row.id, row.source_path
             );
-            resolved.push(inspect_primary(&row.source_path)?);
+            let info = inspect_primary(&row.source_path)?;
+            input_order.entry(info.common_dir.clone()).or_insert(index);
+            resolved.push(info);
         }
     }
     if deduplicate {
+        resolved.sort_by_key(|info| input_order[&info.common_dir]);
         let mut seen = HashSet::new();
         resolved.retain(|info| seen.insert(info.common_dir.clone()));
     }
