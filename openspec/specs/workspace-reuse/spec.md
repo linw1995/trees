@@ -224,7 +224,7 @@ The CLI SHALL accept `trees release [<workspace-dir>]` or `trees release
 --claim-id <claim-id>`. The positional workspace directory and claim identifier
 SHALL be mutually exclusive. An explicit workspace directory MAY be absolute
 or relative; release SHALL resolve a relative directory against the process
-current directory and select that exact managed workspace. When neither input
+current directory and select that exact managed workspace. When no selector
 is supplied, release SHALL select the nearest managed workspace containing the
 canonical current directory. A claim identifier SHALL select its active claim
 and associated workspace.
@@ -310,6 +310,17 @@ path, claim identifier, and release timestamp.
   selected workspace
 - **THEN** release returns a busy failure without waiting, retrying, or changing
   Git or claim state
+
+Release SHALL also accept `--workspace-id` and `--workspace-dir`. All named
+selectors and the positional path SHALL be mutually exclusive. An ID SHALL
+select the stored workspace; a named path SHALL preserve exact-root semantics.
+Release SHALL preserve the initially selected claim and reject a replacement
+claim during admission, without adopting the replacement or an outer workspace.
+
+#### Scenario: Release by Workspace Identifier
+
+- **WHEN** release receives one workspace ID for a claimed automatic workspace
+- **THEN** it snapshots that workspace's claim and uses existing release admission
 
 ### Requirement: Remove Idle Automatic Workspaces
 

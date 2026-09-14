@@ -38,6 +38,21 @@ Where supported, the program SHALL replace the Trees process.
 - **WHEN** open receives a malformed or non-v7 workspace ID
 - **THEN** it fails before opening lifecycle storage or starting a program
 
+Open SHALL also accept `--workspace-id`, `--workspace-dir`, or `--claim-id` as
+alternatives to the positional ID. Exactly one explicit selector SHALL be
+required. A path SHALL select an exact root and a claim SHALL select its
+associated workspace. All existing ownership checks SHALL apply to every form.
+
+#### Scenario: Require One Explicit Selector
+
+- **WHEN** open receives no selector or multiple selectors
+- **THEN** it fails before storage access or program launch
+
+#### Scenario: Open by Path or Claim
+
+- **WHEN** one explicit path or claim identifies an eligible workspace
+- **THEN** open launches the selected program in that workspace
+
 ### Requirement: Preserve Workspace Ownership Boundaries
 
 Open SHALL reject an unknown or removed workspace. It SHALL reject a
