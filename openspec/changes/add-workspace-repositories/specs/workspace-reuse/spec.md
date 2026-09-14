@@ -24,6 +24,11 @@ addition is admitted.
 - **WHEN** `add` races another `add`, release, removal, acquisition, or integration operation on the same workspace
 - **THEN** at most one operation owns the mutation lease and `add` returns busy if it cannot acquire admission
 
+#### Scenario: Preserve the Selected Claim Across Recovery
+
+- **WHEN** the claim captured before recovery is replaced before admission
+- **THEN** the addition rejects the changed allocation instead of selecting its replacement claim
+
 ### Requirement: Migrate Expanded Workspaces to the Exact Repository Pool
 
 A successful addition to an automatic workspace SHALL assign it to the pool for the exact union of

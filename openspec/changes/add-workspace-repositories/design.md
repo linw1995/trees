@@ -143,6 +143,12 @@ snapshot plus a running operation while physical work is in progress; it must no
 uncommitted additions as completed. Output success only after publication. A lost standard output
 response after commit is handled by an idempotent retry.
 
+Each new target directory is created exclusively and its filesystem identity is recorded before
+Git attaches a worktree. Recovery checks that evidence before publication or compensation. An
+intended path alone cannot establish ownership. If directory creation succeeds but the identity
+record fails, preserve the unverified directory for repair. Source publication events retain origin
+IDs and paths even when a later clone fails before the complete plan is available.
+
 ### Compensation and Recovery
 
 Use a dedicated `add` recovery dispatch before the generic non-create branch. Resolve expired adds

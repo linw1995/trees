@@ -37,7 +37,8 @@ pub fn execute(db: &mut SqliteConnection, request: AddRequest) -> Result<AddResu
         )?;
         compensate_or_retain(db, &recovery.lease_id, &plan, &original)?;
     }
-    let target = locate_target(db, &request.selector)?;
+    // Keep the claim captured before recovery; never adopt a later allocation.
+    let target = current;
     let operation = persistence::admit(db, &target, &request, None)?;
     let plan = match planning::prepare(db, &operation.lease_id, &target, &request) {
         Ok(plan) => plan,
@@ -180,11 +181,23 @@ pub fn apply(
     persistence::finish(db, lease, plan, &observed, false)
 }
 
+fn verify_plan(db: &mut SqliteConnection, lease: &LeaseId, plan: &AddPlan) -> Result<(), AddError> {
+    let operation = storage::repository::operation_lease_for_mutation(db, lease)?;
+    let persisted =
+        persistence::load_plan(db, &operation.operation_id)?.ok_or_else(|| JournalSnafu.build())?;
+    ensure!(
+        operation.workspace_id == plan.workspace_id && document(&persisted)? == document(plan)?,
+        JournalSnafu
+    );
+    Ok(())
+}
+
 pub fn provision(
     db: &mut SqliteConnection,
     lease: &LeaseId,
     plan: &AddPlan,
 ) -> Result<(), AddError> {
+    verify_plan(db, lease, plan)?;
     if let Some(move_) = &plan.relocation {
         let original = plan
             .existing
@@ -225,6 +238,19 @@ pub fn provision(
             document(repo)?,
         )?;
         persistence::event(db, lease, "worktree_add_intended", document(repo)?)?;
+        persistence::step(db, lease, "create new worktree directory", document(repo)?)?;
+        std::fs::create_dir(repo.worktree_path.as_path()).context(IoSnafu {
+            path: repo.worktree_path.as_path(),
+        })?;
+        persistence::event(
+            db,
+            lease,
+            "worktree_directory_created",
+            document(&json!({
+                "worktree_id": repo.worktree_id, "identity": directory_identity(repo.worktree_path.as_path())?,
+            }))?,
+        )?;
+        persistence::step(db, lease, "attach new worktree", document(repo)?)?;
         persistence::renew(db, lease)?;
         git::add_detached_worktree_at_with_heartbeat(
             &repo.source_path,
@@ -235,6 +261,28 @@ pub fn provision(
         persistence::event(db, lease, "worktree_add_completed", document(repo)?)?;
     }
     Ok(())
+}
+
+fn owns_directory(
+    db: &mut SqliteConnection,
+    operation: &OperationId,
+    repo: &RepositoryPlan,
+) -> Result<bool, AddError> {
+    let actual = directory_identity(repo.worktree_path.as_path())?;
+    for event in storage::list_events_for_operation(db, operation)? {
+        if event.event_type == "worktree_directory_created" {
+            if let Some(details) = event.details_json {
+                let value: serde_json::Value =
+                    serde_json::from_str(&details.to_string()).context(DecodeSnafu)?;
+                if value["worktree_id"] == repo.worktree_id.to_string() {
+                    let expected: DirectoryIdentity =
+                        serde_json::from_value(value["identity"].clone()).context(DecodeSnafu)?;
+                    return Ok(expected == actual);
+                }
+            }
+        }
+    }
+    Ok(false)
 }
 
 pub fn final_observations(
@@ -249,7 +297,15 @@ pub fn final_observations(
             planning::observe(db, lease, repo, final_path(plan, repo))?,
         ));
     }
+    let operation = storage::repository::operation_lease_for_mutation(db, lease)?.operation_id;
+    let evidence = evidence_operation(db, &operation)?;
     for repo in &plan.additions {
+        ensure!(
+            owns_directory(db, &evidence, repo)?,
+            UnsafeSnafu {
+                path: repo.worktree_path.as_path()
+            }
+        );
         let state = planning::observe(db, lease, repo, &repo.worktree_path)?;
         ensure!(
             state == RepoWorktreeState::Attached,
@@ -268,8 +324,8 @@ struct DirectoryIdentity {
     device: u64,
     #[cfg(unix)]
     inode: u64,
-    #[cfg(not(unix))]
-    created: std::time::SystemTime,
+    #[serde(default)]
+    created: Option<std::time::SystemTime>,
 }
 
 fn directory_identity(path: &Path) -> Result<DirectoryIdentity, AddError> {
@@ -284,12 +340,13 @@ fn directory_identity(path: &Path) -> Result<DirectoryIdentity, AddError> {
         Ok(DirectoryIdentity {
             device: metadata.dev(),
             inode: metadata.ino(),
+            created: metadata.created().ok(),
         })
     }
     #[cfg(not(unix))]
     {
         Ok(DirectoryIdentity {
-            created: metadata.created().context(IoSnafu { path })?,
+            created: Some(metadata.created().context(IoSnafu { path })?),
         })
     }
 }
@@ -377,7 +434,18 @@ pub fn compensate(
     plan: &AddPlan,
     operation: &OperationId,
 ) -> Result<(), AddError> {
+    verify_plan(db, lease, plan)?;
     let evidence = evidence_operation(db, operation)?;
+    let events = storage::list_events_for_operation(db, &evidence)?;
+    let mutated = events.iter().any(|event| {
+        matches!(
+            event.event_type.as_str(),
+            "worktree_relocated" | "workspace_container_created" | "worktree_directory_created"
+        )
+    }) || plan
+        .relocation
+        .as_ref()
+        .is_some_and(|relocation| relocation.staging_path.as_path().exists());
     persistence::event(db, lease, "workspace_add_rollback", document(plan)?)?;
     for repo in plan.additions.iter().rev() {
         if !intended(db, &evidence, repo)? {
@@ -393,6 +461,23 @@ pub fn compensate(
                     path: repo.worktree_path.as_path()
                 }
             );
+            continue;
+        }
+        ensure!(
+            owns_directory(db, &evidence, repo)?,
+            UnsafeSnafu {
+                path: repo.worktree_path.as_path()
+            }
+        );
+        let trees = git::list_worktrees_with_heartbeat(&repo.source_path, || {
+            persistence::renew(db, lease)
+        })?;
+        if !trees.iter().any(|tree| tree.path == repo.worktree_path) {
+            persistence::step(db, lease, "remove empty new directory", document(repo)?)?;
+            std::fs::remove_dir(repo.worktree_path.as_path()).context(IoSnafu {
+                path: repo.worktree_path.as_path(),
+            })?;
+            persistence::event(db, lease, "worktree_directory_removed", document(repo)?)?;
             continue;
         }
         ensure!(
@@ -467,7 +552,23 @@ pub fn compensate(
         health,
         storage::TransitionMetadata::new("workspace_add_restored", "trees"),
     )?;
-    persistence::compensated(db, lease, plan)
+    let state = if mutated {
+        OperationState::RolledBack
+    } else {
+        OperationState::Failed
+    };
+    if persistence::request_intent(db, &owned.operation_id)?
+        .recovery_of
+        .is_some()
+    {
+        persistence::event(
+            db,
+            lease,
+            "operation_recovered",
+            document(&json!({"outcome": state}))?,
+        )?;
+    }
+    persistence::compensated(db, lease, plan, state)
 }
 
 fn compensate_or_retain(
@@ -541,7 +642,13 @@ pub fn recover(
         document(&json!({"decision": "rollback"}))?,
     )?;
     match compensate_or_retain(db, lease, &plan, &operation.id) {
-        Ok(()) => Ok(RecoveryOutcome::RolledBack),
+        Ok(()) => Ok(
+            if storage::operation_state(db, &operation.id)? == Some(OperationState::RolledBack) {
+                RecoveryOutcome::RolledBack
+            } else {
+                RecoveryOutcome::Failed
+            },
+        ),
         Err(error) => {
             if storage::operation_state(db, &operation.id)? == Some(OperationState::Failed) {
                 Ok(RecoveryOutcome::Failed)

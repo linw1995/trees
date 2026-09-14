@@ -50,7 +50,7 @@ last committed snapshot from the in-flight operation.
 #### Scenario: Lose Output After Commit
 
 - **WHEN** successful publication commits but the caller does not receive standard output
-- **THEN** a retry observes committed membership and succeeds without duplication without duplicating associations
+- **THEN** a retry observes committed membership and succeeds without duplicating associations
 
 ### Requirement: Compensate Only Changes Owned by an Addition
 
@@ -80,6 +80,16 @@ and fetched refs SHALL NOT be represented as rolled back.
 
 - **WHEN** a prior addition has fully rolled back and the same repositories are requested again
 - **THEN** retained audit records or tombstones do not prevent a new valid addition
+
+#### Scenario: Preserve a Foreign Worktree at an Intended Path
+
+- **WHEN** a worktree exists at an intended path without matching ownership evidence from the addition
+- **THEN** recovery neither adopts nor deletes that worktree and records unresolved state
+
+#### Scenario: Record Failure Before Workspace Mutation
+
+- **WHEN** the initial worktree move fails without changing the workspace
+- **THEN** the operation terminates as `failed` rather than claiming completed compensation
 
 ### Requirement: Recover Interrupted Additions by Their Recorded Plan
 

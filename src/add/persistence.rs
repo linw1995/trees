@@ -375,6 +375,7 @@ pub fn compensated(
     db: &mut SqliteConnection,
     lease: &LeaseId,
     plan: &AddPlan,
+    state: OperationState,
 ) -> Result<(), AddError> {
     db.immediate_transaction(|db| {
         for repo in &plan.additions {
@@ -387,7 +388,7 @@ pub fn compensated(
             .execute(db)?;
         }
         event(db, lease, "workspace_add_resolved", document(plan)?)?;
-        terminal(db, lease, OperationState::RolledBack, None)
+        terminal(db, lease, state, None)
     })
 }
 

@@ -582,6 +582,7 @@ fn faulted_journal_boundaries_never_publish_partial_membership() {
         "worktree_relocated",
         "workspace_container_created",
         "worktree_add_intended",
+        "worktree_directory_created",
         "worktree_add_completed",
         "worktree_added",
         "worktree_observed",
@@ -614,6 +615,11 @@ fn faulted_journal_boundaries_never_publish_partial_membership() {
                 .next()
                 .is_none());
             fs::remove_dir(fixture.path.as_path()).unwrap();
+        }
+        if event == "worktree_directory_created" {
+            let path = fixture.path.as_path().join("web");
+            assert!(fs::read_dir(&path).unwrap().next().is_none());
+            fs::remove_dir(path).unwrap();
         }
         let request = fixture.request(vec![fixture.web.clone()]);
         let result = add::execute(&mut fixture.db, request)
@@ -1050,4 +1056,178 @@ fn ambiguous_registered_names_fail_without_changing_the_workspace() {
     assert!(!rejected.status.success());
     assert!(rejected.stdout.is_empty());
     assert!(Path::new(path).join(".git").is_file());
+}
+
+#[test]
+fn recovery_does_not_adopt_a_foreign_worktree_at_an_intended_path() {
+    let mut fixture = Fixture::new();
+    let request = fixture.request(vec![fixture.web.clone()]);
+    add::execute(&mut fixture.db, request).unwrap();
+    let shared = Fixture::repository(&fixture.root, "shared");
+    let request = fixture.request(vec![shared.clone()]);
+    let (intent, plan) = fixture.plan(&request);
+    persistence::event(
+        &mut fixture.db,
+        &intent.lease_id,
+        "workspace_add_planned",
+        add::document(&plan).unwrap(),
+    )
+    .unwrap();
+    persistence::event(
+        &mut fixture.db,
+        &intent.lease_id,
+        "worktree_add_intended",
+        add::document(&plan.additions[0]).unwrap(),
+    )
+    .unwrap();
+    let foreign = plan.additions[0].worktree_path.as_path();
+    git(
+        &shared,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            foreign.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    expire(&mut fixture.db, intent.lease_id);
+    assert!(matches!(
+        trees::reconciliation::recover_expired_operation(&mut fixture.db, &fixture.workspace)
+            .unwrap(),
+        trees::reconciliation::RecoveryOutcome::Failed
+    ));
+    assert!(foreign.join(".git").is_file());
+    assert_eq!(
+        fs::read_to_string(foreign.join("README")).unwrap(),
+        "initial\n"
+    );
+}
+
+#[test]
+fn recovery_does_not_delete_a_replacement_of_an_owned_directory() {
+    let mut fixture = Fixture::new();
+    let request = fixture.request(vec![fixture.web.clone()]);
+    let (intent, plan) = fixture.plan(&request);
+    persistence::event(
+        &mut fixture.db,
+        &intent.lease_id,
+        "workspace_add_planned",
+        add::document(&plan).unwrap(),
+    )
+    .unwrap();
+    add::workflow::provision(&mut fixture.db, &intent.lease_id, &plan).unwrap();
+    let path = plan.additions[0].worktree_path.as_path();
+    git(
+        &fixture.web,
+        &["worktree", "remove", path.to_str().unwrap()],
+    );
+    git(
+        &fixture.web,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            path.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    expire(&mut fixture.db, intent.lease_id);
+    assert!(matches!(
+        trees::reconciliation::recover_expired_operation(&mut fixture.db, &fixture.workspace)
+            .unwrap(),
+        trees::reconciliation::RecoveryOutcome::Failed
+    ));
+    assert!(path.join(".git").is_file());
+}
+
+#[test]
+fn a_failed_move_without_mutation_has_failed_terminal_state() {
+    let mut fixture = Fixture::new();
+    git(
+        &fixture.api,
+        &["worktree", "lock", fixture.path.as_path().to_str().unwrap()],
+    );
+    let request = fixture.request(vec![fixture.web.clone()]);
+    assert!(add::execute(&mut fixture.db, request).is_err());
+    use diesel::prelude::*;
+    let operation = trees::schema::operations::table
+        .filter(trees::schema::operations::kind.eq("add"))
+        .select(trees::schema::operations::id)
+        .first::<trees::domain::OperationId>(&mut fixture.db)
+        .unwrap();
+    assert_eq!(
+        storage::operation_state(&mut fixture.db, &operation).unwrap(),
+        Some(trees::domain::OperationState::Failed)
+    );
+}
+
+#[test]
+fn public_provisioning_refuses_an_unrecorded_plan() {
+    let mut fixture = Fixture::new();
+    let request = fixture.request(vec![fixture.web.clone()]);
+    let (intent, plan) = fixture.plan(&request);
+    assert!(matches!(
+        add::workflow::provision(&mut fixture.db, &intent.lease_id, &plan),
+        Err(add::AddError::Journal)
+    ));
+    assert!(fixture.path.as_path().join(".git").is_file());
+}
+
+#[test]
+fn failed_source_provisioning_retains_published_origin_audit_details() {
+    use diesel::prelude::*;
+    let fixture = Fixture::new();
+    fs::create_dir_all(fixture.root.join("home")).unwrap();
+    let created = json_output(cli(&fixture.root).args([
+        "create",
+        "manual",
+        "--repo",
+        "api",
+        "--offline",
+        "--json",
+    ]));
+    let path = created["workspace_path"].as_str().unwrap();
+    let valid = format!("file://{}", fixture.web.display());
+    let missing = format!("file://{}/missing", fixture.root.display());
+    let output = cli(&fixture.root)
+        .args(["add", path, "--repo", &valid, "--repo", &missing, "--json"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    #[cfg(target_os = "macos")]
+    let state = fixture
+        .root
+        .join("home/Library/Application Support/trees/db.sqlite");
+    #[cfg(target_os = "linux")]
+    let state = fixture.root.join("state/trees/db.sqlite");
+    #[cfg(target_os = "windows")]
+    let state = fixture.root.join("local-app-data/trees/db.sqlite");
+    let mut db = trees::database::connect(&state).unwrap();
+    let operation = trees::schema::operations::table
+        .filter(trees::schema::operations::kind.eq("add"))
+        .select(trees::schema::operations::id)
+        .first::<trees::domain::OperationId>(&mut db)
+        .unwrap();
+    let events = storage::list_events_for_operation(&mut db, &operation).unwrap();
+    let published = events
+        .iter()
+        .find(|event| event.event_type == "workspace_add_origin_available")
+        .unwrap();
+    assert!(published
+        .details_json
+        .as_ref()
+        .unwrap()
+        .to_string()
+        .contains("origin_repository_id"));
+    assert!(published
+        .details_json
+        .as_ref()
+        .unwrap()
+        .to_string()
+        .contains("/web"));
+    assert_eq!(
+        storage::operation_state(&mut db, &operation).unwrap(),
+        Some(trees::domain::OperationState::Failed)
+    );
 }

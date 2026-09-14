@@ -11,14 +11,22 @@ pub fn resolve(
     offline: bool,
     workspace_path: Option<&Path>,
 ) -> Result<Vec<git::RepositoryInfo>, ResolveError> {
-    resolve_inputs(inputs, offline, workspace_path, false)
+    resolve_inputs(inputs, offline, workspace_path, false, &mut |_| {})
 }
 
 pub fn resolve_add(
     inputs: &[PathBuf],
     offline: bool,
 ) -> Result<Vec<git::RepositoryInfo>, ResolveError> {
-    resolve_inputs(inputs, offline, None, true)
+    resolve_add_with_progress(inputs, offline, &mut |_| {})
+}
+
+pub fn resolve_add_with_progress(
+    inputs: &[PathBuf],
+    offline: bool,
+    published: &mut dyn FnMut(&storage::OriginRepositoryRow),
+) -> Result<Vec<git::RepositoryInfo>, ResolveError> {
+    resolve_inputs(inputs, offline, None, true, published)
 }
 
 fn resolve_inputs(
@@ -26,6 +34,7 @@ fn resolve_inputs(
     offline: bool,
     workspace_path: Option<&Path>,
     deduplicate: bool,
+    published: &mut dyn FnMut(&storage::OriginRepositoryRow),
 ) -> Result<Vec<git::RepositoryInfo>, ResolveError> {
     let parsed = inputs
         .iter()
@@ -106,6 +115,7 @@ fn resolve_inputs(
         let mut connection = database::open_default()?;
         for (index, url) in pending {
             let row = provision::provision(&mut connection, &url, &root, &locks)?;
+            published(&row);
             eprintln!(
                 "Origin available for reuse: {} ({})",
                 row.id, row.source_path

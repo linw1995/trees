@@ -26,15 +26,33 @@ pub fn resolve_with_lease(
 ) -> Result<Vec<git::RepositoryInfo>, AddError> {
     // Source provisioning owns its own database connection and reservation locks.
     // Renew this workspace's independent lease while waiting for it.
+    enum Progress {
+        Published(storage::OriginRepositoryRow),
+        Finished(Result<Vec<git::RepositoryInfo>, crate::origin::resolve::ResolveError>),
+    }
     std::thread::scope(|scope| {
         let (sender, receiver) = mpsc::sync_channel(1);
         scope.spawn(move || {
-            let _ = sender.send(crate::origin::resolve::resolve_add(inputs, offline));
+            let result =
+                crate::origin::resolve::resolve_add_with_progress(inputs, offline, &mut |origin| {
+                    let _ = sender.send(Progress::Published(origin.clone()));
+                });
+            let _ = sender.send(Progress::Finished(result));
         });
         loop {
             persistence::renew(db, lease)?;
             match receiver.recv_timeout(Duration::from_secs(5)) {
-                Ok(result) => return Ok(result?),
+                Ok(Progress::Finished(result)) => return Ok(result?),
+                Ok(Progress::Published(origin)) => {
+                    persistence::event(
+                        db,
+                        lease,
+                        "workspace_add_origin_available",
+                        document(&serde_json::json!({
+                            "origin_repository_id": origin.id, "source_path": origin.source_path,
+                        }))?,
+                    )?;
+                }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => return JournalSnafu.fail(),
             }
@@ -208,6 +226,14 @@ pub fn prepare(
             "Origin available for reuse: {} ({})",
             origin.id, origin.source_path
         );
+        persistence::event(
+            db,
+            lease,
+            "workspace_add_origin_available",
+            document(&serde_json::json!({
+                "origin_repository_id": origin.id, "source_path": origin.source_path,
+            }))?,
+        )?;
         let name = info.root.as_path().file_name().ok_or_else(|| {
             UnsafeSnafu {
                 path: info.root.as_path(),

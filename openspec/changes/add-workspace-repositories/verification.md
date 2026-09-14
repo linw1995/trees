@@ -2,8 +2,8 @@
 
 Implemented against `origin/main` at `5ecd658`.
 
-- All 338 tests passed with all workspace targets and features enabled.
-- The addition integration suite contains 24 tests, including table-driven failure cases.
+- All 343 tests passed with all workspace targets and features enabled.
+- The addition integration suite contains 29 tests, including table-driven failure cases.
 - Clippy passed with warnings denied. Commit hooks also run formatting, compilation,
   Rust Analyzer, documentation checks, and the runtime SQL boundary check.
 - Strict OpenSpec validation passed. CLI help exposes all shared selectors.
