@@ -135,6 +135,10 @@ fn run_automatic_create(
             });
             if let Err(error) = &report.cleanup {
                 eprintln!("Error: {error}");
+                eprintln!(
+                    "Workspace: {}\nClaim: {}\nManual recovery: trees release --claim-id {}",
+                    identity.workspace_path, identity.claim_id, identity.claim_id
+                );
             }
             return Ok(ExitCode::from(
                 report.initial.exit_code(report.cleanup.is_ok()),

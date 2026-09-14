@@ -367,6 +367,9 @@ fn missing_database_does_not_recreate_storage_or_imply_released_ownership() {
         .unwrap();
     assert!(!output.status.success());
     assert!(!fixture.database_path().exists());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Manual recovery: trees release --claim-id"));
+    assert!(!stderr.contains("Opening $SHELL"));
     let mut connection =
         trees::database::connect(&fixture.database_path().with_extension("sqlite.saved")).unwrap();
     let workspace = trees::storage::list_workspaces(&mut connection, false)
@@ -414,4 +417,84 @@ fn recovery_shell_retries_after_each_exit_and_allows_manual_release() {
                 .is_none()
         );
     }
+}
+
+#[test]
+fn unavailable_recovery_shells_report_manual_intervention() {
+    for shell in [None, Some(""), Some("/nonexistent/trees-shell")] {
+        let fixture = Fixture::new();
+        let program = fixture.script("program", "printf dirty > unsaved");
+        let mut command = fixture.create(&program);
+        match shell {
+            Some(shell) => {
+                command.env("SHELL", shell);
+            }
+            None => {
+                command.env_remove("SHELL");
+            }
+        }
+        let mut terminal = Terminal::spawn(command);
+        assert_eq!(terminal.finish().code(), Some(1));
+        let mut connection = fixture.connection();
+        let workspace = trees::storage::list_workspaces(&mut connection, false)
+            .unwrap()
+            .remove(0);
+        let claim = trees::storage::find_workspace_claim(&mut connection, &workspace.id)
+            .unwrap()
+            .unwrap();
+        assert!(terminal
+            .output
+            .contains(&workspace.canonical_path.to_string()));
+        assert!(terminal
+            .output
+            .contains(&format!("trees release --claim-id {}", claim.id)));
+        assert!(workspace.canonical_path.as_path().join("unsaved").exists());
+    }
+}
+
+#[test]
+fn missing_workspace_directory_reports_recovery_start_failure() {
+    let fixture = Fixture::new();
+    let program = fixture.script("program", "workspace=\"$PWD\"; cd /; rm -rf \"$workspace\"");
+    let mut command = fixture.create(&program);
+    command.env("SHELL", "/bin/sh");
+    let mut terminal = Terminal::spawn(command);
+    assert_eq!(terminal.finish().code(), Some(1));
+    assert!(
+        terminal.output.contains("recovery shell failed"),
+        "{}",
+        terminal.output
+    );
+    assert!(terminal
+        .output
+        .contains("Manual recovery: trees release --claim-id"));
+}
+
+#[test]
+fn noninteractive_failure_never_starts_a_shell_but_clean_release_needs_no_shell() {
+    let fixture = Fixture::new();
+    let shell = fixture.script("shell", "touch \"$SHELL_STARTED\"");
+    let started = fixture.root.join("shell-started");
+    let program = fixture.script("program", "printf dirty > unsaved");
+    let output = fixture
+        .create(&program)
+        .env("SHELL", shell)
+        .env("SHELL_STARTED", &started)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr.contains("interactive recovery requires terminal input and output"));
+    assert!(stderr.contains("Manual recovery: trees release --claim-id"));
+    assert!(!started.exists());
+    let output = fixture
+        .create(Path::new("/usr/bin/true"))
+        .env_remove("SHELL")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
