@@ -1,5 +1,31 @@
 use std::process::Command;
 
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+
+#[test]
+fn build_timestamp_uses_source_epoch_or_head_committer_time() {
+    let expected_epoch = match option_env!("SOURCE_DATE_EPOCH") {
+        Some(value) => value.parse::<i64>().unwrap(),
+        None => {
+            let output = Command::new("git")
+                .args(["show", "-s", "--format=%ct", "HEAD"])
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .output()
+                .unwrap();
+            if !output.status.success() {
+                return;
+            }
+            String::from_utf8(output.stdout)
+                .unwrap()
+                .trim()
+                .parse::<i64>()
+                .unwrap()
+        }
+    };
+    let actual = OffsetDateTime::parse(env!("BUILT_TIME_UTC"), &Rfc3339).unwrap();
+    assert_eq!(actual.unix_timestamp(), expected_epoch);
+}
+
 #[test]
 fn short_version_preserves_the_package_version() {
     let output = Command::new(env!("CARGO_BIN_EXE_trees"))
