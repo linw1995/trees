@@ -140,9 +140,7 @@ fn run_automatic_create(
                     identity.workspace_path, identity.claim_id, identity.claim_id
                 );
             }
-            return Ok(ExitCode::from(
-                report.initial.exit_code(report.cleanup.is_ok()),
-            ));
+            return Ok(ExitCode::from(report.exit_code()));
         }
         return open_workspace(program, result.workspace_path.as_path());
     }

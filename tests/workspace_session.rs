@@ -498,3 +498,63 @@ fn noninteractive_failure_never_starts_a_shell_but_clean_release_needs_no_shell(
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn preserves_program_exit_codes_after_successful_and_failed_cleanup() {
+    for code in [0, 7, 255] {
+        for dirty in [false, true] {
+            let fixture = Fixture::new();
+            let body = format!(
+                "{}exit {code}",
+                if dirty {
+                    "printf dirty > unsaved; "
+                } else {
+                    ""
+                }
+            );
+            let program = fixture.script("program", &body);
+            let output = fixture.create(&program).output().unwrap();
+            let expected = if dirty && code == 0 { 1 } else { code };
+            assert_eq!(
+                output.status.code(),
+                Some(expected),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(output.stdout.is_empty());
+        }
+    }
+}
+
+#[test]
+fn initial_launch_failure_stays_failed_after_successful_release() {
+    let fixture = Fixture::new();
+    let output = fixture
+        .create(&fixture.root.join("missing-program"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("failed to start"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("Manual recovery"));
+    let mut connection = fixture.connection();
+    let workspace = trees::storage::list_workspaces(&mut connection, false)
+        .unwrap()
+        .remove(0);
+    assert!(
+        trees::storage::find_workspace_claim(&mut connection, &workspace.id)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn recovery_launch_failure_preserves_the_initial_nonzero_exit() {
+    let fixture = Fixture::new();
+    let program = fixture.script("program", "printf dirty > unsaved; exit 7");
+    let mut command = fixture.create(&program);
+    command.env("SHELL", "/nonexistent/trees-shell");
+    let mut terminal = Terminal::spawn(command);
+    assert_eq!(terminal.finish().code(), Some(7), "{}", terminal.output);
+    assert!(terminal.output.contains("recovery shell failed"));
+    assert!(terminal.output.contains("Manual recovery"));
+}

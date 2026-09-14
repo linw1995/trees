@@ -68,6 +68,12 @@ pub struct SessionReport {
     pub cleanup: Result<(), SessionError>,
 }
 
+impl SessionReport {
+    pub fn exit_code(&self) -> u8 {
+        self.initial.exit_code(self.cleanup.is_ok())
+    }
+}
+
 pub enum SessionEvent<'a> {
     InitialFailed(&'a ProcessError),
     ReleaseFailed(&'a SessionError),
