@@ -623,7 +623,7 @@ fn assemble_snapshot(
             .push(repository.into());
     }
 
-    let workspaces = workspaces
+    let mut workspaces = workspaces
         .into_iter()
         .map(|workspace| {
             let workspace_id = workspace.id;
@@ -645,7 +645,8 @@ fn assemble_snapshot(
                     .unwrap_or_default(),
             }
         })
-        .collect();
+        .collect::<Vec<_>>();
+    workspaces.sort_by_key(|workspace| workspace.claim.is_none());
 
     Ok(StatusSnapshot {
         schema_version: STATUS_SCHEMA_VERSION,
