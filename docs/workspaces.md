@@ -147,6 +147,59 @@ with `SIGKILL` or losing the supervisor cannot guarantee release. Only the
 launched process is tracked: use a program's foreground or wait mode when it
 would otherwise detach and continue working in the background.
 
+## Add Repositories to a Workspace
+
+```sh
+trees add --repo web
+trees add ./workspace --repo web --repo /path/to/shared
+trees add --workspace-id WORKSPACE_ID --repo web
+trees add --workspace-dir ./workspace --repo web
+trees add --claim-id CLAIM_ID --repo web --offline --json
+```
+
+Without a selector, `add` chooses the nearest registered workspace containing
+the current directory. An explicit directory selects that exact workspace root.
+The positional directory and the three named selectors are mutually exclusive.
+An explicit miss never falls back to the current workspace.
+
+Each `--repo` accepts the same paths, URLs, and registered source names as
+`create`. New worktrees use the same detached starting revision rules.
+`--offline` skips fetching and cannot clone an unknown URL. Repeated repository
+identities return `already_present` without fetching or resetting existing work.
+Existing branches, commits, staged changes, local files, and ignored files remain
+intact. Broken associations and occupied destination paths reject the operation.
+
+Manual workspaces need no claim. An automatic workspace must already have an
+active claim; adding repositories preserves that claim and changes its pool to
+the exact expanded repository set. Other workspace slots do not change.
+After release, the expanded workspace can be reused for its new repository set.
+The pool ID originally returned by `create` can therefore become stale.
+
+When the original worktree occupies the workspace root, adding a second
+repository moves it into a named child. For example, an `api` worktree at
+`./workspace` becomes `./workspace/api`, alongside the new `./workspace/web`.
+The workspace path and existing worktree ID remain stable. The command reports
+the old and new repository paths. Shells may follow the moved directory;
+running editors and other tools are not updated automatically.
+
+The result reports operation, workspace, claim, and pool IDs, repository results,
+and moved paths. `--json` emits one object with schema version 1; diagnostics use
+standard error. A request containing only existing repositories still succeeds
+and records an operation.
+
+Each addition records its plan and mutation steps before changing worktrees.
+Failure attempts to undo only the new work and restore the original directory
+structure. Published source clones remain registered for retry. Interrupted
+operations are recovered before a later mutation; use an explicit workspace ID
+or claim ID if the workspace root is temporarily absent.
+
+If recovery finds new user changes or cannot prove ownership, it preserves the
+files and records an unresolved addition. Inspect the reported paths and repair
+or save the affected content, then retry `trees add`. Unresolved additions block
+further membership changes, release, and reuse. Recovery retains the original
+failure history. Existing project roots refresh through the normal project
+preparation flow on a later invocation.
+
 ## Release Automatic Workspaces
 
 ```sh

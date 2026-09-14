@@ -1,35 +1,4 @@
-# Workspace Locator Specification
-
-## Purpose
-
-Define shared workspace lookup and mutually exclusive CLI selection while
-preserving command-specific lifecycle and transaction boundaries.
-
-## Requirements
-
-### Requirement: Locate One Workspace
-
-The locator SHALL accept exactly one typed selection strategy: workspace ID,
-exact canonical path, containing canonical directory, or claim ID. It SHALL
-return the matching workspace and preserve the selected claim ID for a claim
-lookup. It SHALL distinguish an absent target from a storage failure using typed
-errors and preserve source errors. A dangling claim SHALL be an integrity error.
-
-#### Scenario: Select the Nearest Registered Boundary
-
-- **WHEN** a directory is contained by nested registered workspaces
-- **THEN** the nearest registered ancestor is selected, including removed records
-- **AND** an ineligible inner workspace does not cause fallback to an outer one
-
-#### Scenario: Keep Exact Paths Exact
-
-- **WHEN** an explicit path is a child of a workspace but is not a registered root
-- **THEN** exact-path lookup returns no target
-
-#### Scenario: Preserve Claim Identity
-
-- **WHEN** a workspace is selected by a claim ID
-- **THEN** the result retains that exact claim ID for subsequent validation
+## MODIFIED Requirements
 
 ### Requirement: Share CLI Selection
 

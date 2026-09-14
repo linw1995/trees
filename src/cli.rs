@@ -29,6 +29,8 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     Create(CreateArgs),
+    #[command(about = "Add repositories to an existing workspace")]
+    Add(AddArgs),
     Release(ReleaseArgs),
     Config(ConfigArgs),
     Gc(GcArgs),
@@ -75,6 +77,46 @@ pub struct CreateArgs {
         help = "Release the automatic workspace after the program exits, opening a shell on failure"
     )]
     pub release_on_exit: bool,
+}
+
+#[derive(Debug, Args)]
+#[command(group(workspace_locator::group(Self::SELECTION_DEFAULT)))]
+pub struct AddArgs {
+    #[arg(id = "add_workspace_dir", group = workspace_locator::GROUP, value_name = "WORKSPACE_DIR", help = "Select an exact workspace root")]
+    pub workspace_dir: Option<PathBuf>,
+
+    #[command(flatten)]
+    pub locator: WorkspaceLocatorArgs,
+
+    #[arg(
+        long = "repo",
+        required = true,
+        value_name = "PATH|URL|NAME",
+        help = "Add a local path, remote URL, or registered source name"
+    )]
+    pub repositories: Vec<PathBuf>,
+
+    #[arg(
+        long,
+        help = "Use local HEAD for new repositories without fetching remotes"
+    )]
+    pub offline: bool,
+
+    #[arg(long, help = "Print the addition result as JSON")]
+    pub json: bool,
+}
+
+impl AddArgs {
+    const SELECTION_DEFAULT: SelectionDefault = SelectionDefault::CurrentDirectory;
+
+    pub fn selector(&self) -> Result<WorkspaceSelector, InputError> {
+        self.locator.resolve(
+            self.workspace_dir
+                .clone()
+                .map(WorkspaceLocatorInput::ExactPath),
+            Self::SELECTION_DEFAULT,
+        )
+    }
 }
 
 #[derive(Debug, Args)]
