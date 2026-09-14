@@ -20,4 +20,7 @@
 
 - [x] 4.1 Add synchronized `CLI/PTY` integration tests using isolated repositories and controlled helper programs; verify new and reused allocations, multi-repository dirty protection, lifecycle audit records, repeated recovery, claim replacement, and absence of held database transactions during children. Use startup handshakes rather than timing-based sleeps and guarantee helper cleanup.
 - [x] 4.2 Update `README.md` and `docs/workspaces.md` with opt-in examples, retry-on-shell-exit behavior, preserved program status, noninteractive fallback, direct-child lifetime, concurrent manual-release limits, and abrupt supervisor termination; verify examples match the delta specifications and existing existing behavior remains documented.
-- [ ] 4.3 Run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, required repository checks, and `openspec validate add-create-release-on-exit --strict`; record results and native platform coverage before marking implementation complete.
+- [x] 4.3 Run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, required repository checks, and `openspec validate add-create-release-on-exit --strict`; record results and native platform coverage before marking implementation complete.
+
+All implementation tasks are complete. See [verification results](verification.md)
+for native platform coverage, repository checks, and environment details.

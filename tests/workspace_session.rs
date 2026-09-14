@@ -490,7 +490,7 @@ fn noninteractive_failure_never_starts_a_shell_but_clean_release_needs_no_shell(
     assert!(stderr.contains("Manual recovery: trees release --claim-id"));
     assert!(!started.exists());
     let output = fixture
-        .create(Path::new("/usr/bin/true"))
+        .create(Path::new("true"))
         .env_remove("SHELL")
         .output()
         .unwrap();
@@ -566,7 +566,7 @@ fn clean_sessions_reuse_the_same_workspace() {
     let fixture = Fixture::new();
     let mut paths = Vec::new();
     for _ in 0..2 {
-        let output = fixture.create(Path::new("/bin/pwd")).output().unwrap();
+        let output = fixture.create(Path::new("pwd")).output().unwrap();
         assert!(
             output.status.success(),
             "{}",
@@ -724,7 +724,7 @@ fn default_shell_supports_supervision_and_unflagged_create_retains_its_claim() {
             .args(["create", "--offline", "--repo"])
             .arg(&fixture.repo)
             .arg("--open")
-            .env("SHELL", "/usr/bin/true");
+            .env("SHELL", "true");
         if release {
             command.arg("--release-on-exit");
         }

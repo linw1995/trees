@@ -322,8 +322,7 @@ mod tests {
         };
         let supervisor = ProcessSupervisor::new().unwrap();
         assert_eq!(
-            ProgramOutcome(supervisor.run(&identity, OsStr::new("/usr/bin/true"), false))
-                .exit_code(true),
+            ProgramOutcome(supervisor.run(&identity, OsStr::new("true"), false)).exit_code(true),
             0
         );
         let missing = ProgramOutcome(supervisor.run(
