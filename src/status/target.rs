@@ -1,5 +1,5 @@
 use diesel::SqliteConnection;
-use snafu::{ResultExt, Snafu};
+use snafu::Snafu;
 
 use crate::domain::{CanonicalPath, CanonicalPathError, ClaimId, WorkspaceId};
 use crate::storage::WorkspaceRow;
@@ -19,15 +19,6 @@ pub enum TargetError {
     UnknownClaim { claim_id: ClaimId },
     #[snafu(transparent)]
     Locate { source: LocateError },
-}
-
-pub fn resolve(workspace_id: Option<WorkspaceId>) -> Result<WorkspaceSelector, TargetError> {
-    match workspace_id {
-        Some(id) => Ok(WorkspaceSelector::Id(id)),
-        None => Ok(WorkspaceSelector::ContainingDirectory(
-            CanonicalPath::resolve(".").context(DirectorySnafu)?,
-        )),
-    }
 }
 
 pub fn select(

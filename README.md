@@ -67,6 +67,23 @@ repositories, it contains one direct child worktree per repository. Existing
 local repositories are also supported through `--repo /path/to/repo`; their
 source directories stay at their original paths.
 
+## Select a Workspace
+
+Status, open, and release share mutually exclusive workspace selectors:
+
+```sh
+trees status --workspace-id WORKSPACE_ID
+trees status --workspace-dir ./workspace
+trees open --claim-id CLAIM_ID --program=bash
+trees release --workspace-id WORKSPACE_ID
+```
+
+Use exactly one of `--workspace-id`, `--workspace-dir`, or `--claim-id`, or keep
+using the existing positional argument. Paths select exact registered roots.
+Without a selector, status and release find the nearest workspace containing
+the current directory; open requires an explicit selector. Status outside a
+workspace still displays the global inventory. Explicit missing targets fail.
+
 ## Documentation
 
 | Guide | Topics |

@@ -1,7 +1,13 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
+
+pub mod workspace_locator;
+use crate::workspace_locator::WorkspaceSelector;
+use workspace_locator::{
+    InputError, SelectionDefault, WorkspaceLocatorArgs, WorkspaceLocatorInput,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -64,17 +70,26 @@ pub struct CreateArgs {
 }
 
 #[derive(Debug, Args)]
-#[command(group(
-    ArgGroup::new("target")
-        .multiple(false)
-        .args(["workspace_dir", "claim_id"])
-))]
+#[command(group(workspace_locator::group(Self::SELECTION_DEFAULT)))]
 pub struct ReleaseArgs {
-    #[arg(value_name = "WORKSPACE_DIR")]
+    #[arg(id = "legacy_workspace_dir", group = workspace_locator::GROUP, value_name = "WORKSPACE_DIR")]
     pub workspace_dir: Option<PathBuf>,
 
-    #[arg(long = "claim-id", value_name = "CLAIM_ID")]
-    pub claim_id: Option<String>,
+    #[command(flatten)]
+    pub locator: WorkspaceLocatorArgs,
+}
+
+impl ReleaseArgs {
+    const SELECTION_DEFAULT: SelectionDefault = SelectionDefault::CurrentDirectory;
+
+    pub fn selector(&self) -> Result<WorkspaceSelector, InputError> {
+        self.locator.resolve(
+            self.workspace_dir
+                .clone()
+                .map(WorkspaceLocatorInput::ExactPath),
+            Self::SELECTION_DEFAULT,
+        )
+    }
 }
 
 #[derive(Debug, Args)]
@@ -134,9 +149,13 @@ pub struct RemoveArgs {
 }
 
 #[derive(Debug, Args)]
+#[command(group(workspace_locator::group(Self::SELECTION_DEFAULT)))]
 pub struct StatusArgs {
-    #[arg(value_name = "WORKSPACE_ID")]
+    #[arg(id = "legacy_workspace_id", group = workspace_locator::GROUP, value_name = "WORKSPACE_ID")]
     pub workspace_id: Option<crate::domain::WorkspaceId>,
+
+    #[command(flatten)]
+    pub locator: WorkspaceLocatorArgs,
 
     #[arg(long, value_enum, default_value_t = StatusView::Pools)]
     pub view: StatusView,
@@ -148,6 +167,17 @@ pub struct StatusArgs {
     pub json: bool,
 }
 
+impl StatusArgs {
+    const SELECTION_DEFAULT: SelectionDefault = SelectionDefault::CurrentDirectory;
+
+    pub fn selector(&self) -> Result<WorkspaceSelector, InputError> {
+        self.locator.resolve(
+            self.workspace_id.map(WorkspaceLocatorInput::Id),
+            Self::SELECTION_DEFAULT,
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
 pub enum StatusView {
     Pools,
@@ -156,12 +186,27 @@ pub enum StatusView {
 }
 
 #[derive(Debug, Args)]
+#[command(group(workspace_locator::group(Self::SELECTION_DEFAULT)))]
 pub struct OpenArgs {
-    #[arg(value_name = "WORKSPACE_ID")]
-    pub workspace_id: crate::domain::WorkspaceId,
+    #[arg(id = "legacy_workspace_id", group = workspace_locator::GROUP, value_name = "WORKSPACE_ID")]
+    pub workspace_id: Option<crate::domain::WorkspaceId>,
+
+    #[command(flatten)]
+    pub locator: WorkspaceLocatorArgs,
 
     #[arg(long, value_name = "PROGRAM", require_equals = true)]
     pub program: Option<OsString>,
+}
+
+impl OpenArgs {
+    const SELECTION_DEFAULT: SelectionDefault = SelectionDefault::RequireExplicit;
+
+    pub fn selector(&self) -> Result<WorkspaceSelector, InputError> {
+        self.locator.resolve(
+            self.workspace_id.map(WorkspaceLocatorInput::Id),
+            Self::SELECTION_DEFAULT,
+        )
+    }
 }
 
 #[derive(Debug, Args)]
@@ -337,7 +382,7 @@ mod tests {
             arguments.workspace_dir,
             Some(PathBuf::from("relative/workspace"))
         );
-        assert_eq!(arguments.claim_id, None);
+        assert_eq!(arguments.locator.claim_id, None);
     }
 
     #[test]
@@ -348,7 +393,7 @@ mod tests {
             panic!("expected release command");
         };
         assert_eq!(arguments.workspace_dir, None);
-        assert_eq!(arguments.claim_id, None);
+        assert_eq!(arguments.locator.claim_id, None);
     }
 
     #[test]
@@ -360,7 +405,7 @@ mod tests {
             panic!("expected release command");
         };
         assert_eq!(arguments.workspace_dir, None);
-        assert_eq!(arguments.claim_id.as_deref(), Some("claim-id"));
+        assert_eq!(arguments.locator.claim_id.as_deref(), Some("claim-id"));
     }
 
     #[test]
@@ -505,7 +550,7 @@ mod tests {
         let Command::Open(arguments) = cli.command else {
             panic!("expected open command");
         };
-        assert_eq!(arguments.workspace_id, workspace_id);
+        assert_eq!(arguments.workspace_id, Some(workspace_id));
         assert_eq!(arguments.program, Some(OsString::from("/usr/bin/env")));
     }
 

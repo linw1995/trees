@@ -24,3 +24,14 @@ and CLI tests will cover added selection forms and direct-construction conflicts
   status, open, managed-session preparation, forwarding, and workspace reuse.
 - Removed the release and status selector enums and both old ancestor algorithms.
   Transaction admission and removal dispatch retain their existing storage reads.
+
+## CLI Integration
+
+- `cargo test --locked --lib cli::`: 30 tests passed. The shared parser matrix
+  covers all pairwise conflicts, repeated named selectors, malformed IDs,
+  defaults, help, and conversion through each command.
+- `cargo test --locked --test workspace_locator_cli`: two integration tests
+  passed, exercising all named selectors, status views/headings, program launch,
+  release cycles, missing claims, and automatic-workspace eligibility.
+- Direct conversion tests reject conflicts before path access and verify that
+  explicit identifiers do not resolve the current directory.

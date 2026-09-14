@@ -106,17 +106,22 @@ trees release
 trees release /absolute/path/to/workspace
 trees release relative/path/to/workspace
 trees release --claim-id CLAIM_ID
+trees release --workspace-id WORKSPACE_ID
+trees release --workspace-dir ./workspace
 ```
 
-Choose one release target:
+Choose one release target. Named options and the positional path are mutually
+exclusive, including when two inputs identify the same workspace:
 
 | Target | Selection |
 | --- | --- |
 | No argument | Nearest managed workspace containing the current directory. |
 | Absolute or relative path | That exact managed workspace. |
+| `--workspace-id WORKSPACE_ID` | The workspace with the exact stored ID. |
+| `--workspace-dir PATH` | The exact registered root, like the positional path. |
 | `--claim-id CLAIM_ID` | The exact claim returned by automatic create. |
 
-Path and current-directory targets release the claim active when the workspace
+ID, path, and current-directory targets release the claim active when the workspace
 is resolved. Use the claim ID in automation to target a specific allocation.
 Successful release prints `workspace_id`, `workspace_path`, `claim_id`, and
 `released_at` as line-oriented key-value pairs.

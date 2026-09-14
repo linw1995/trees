@@ -13,6 +13,8 @@ trees status --view workspaces --all
 trees status --view repos
 trees status --view repos --json
 trees status WORKSPACE_ID
+trees status --workspace-dir ./workspace
+trees status --claim-id CLAIM_ID
 trees status WORKSPACE_ID --view repos --json
 ```
 
@@ -28,7 +30,7 @@ for removal at a chosen age threshold.
 Every view starts with a summary of the current workspace, including when run
 from a nested repository directory. Status resolves the invocation directory
 through symlinks and selects the nearest registered ancestor by path components.
-An optional `WORKSPACE_ID` selects a different workspace regardless of the
+An optional `WORKSPACE_ID` or `--workspace-id WORKSPACE_ID` selects a different workspace regardless of the
 invocation directory. Selection does not filter the global inventory.
 
 For example, a claimed automatic workspace with no attached repositories renders
@@ -197,11 +199,20 @@ only to the workspace view; repos has no hidden registration state.
 
 ```sh
 trees open WORKSPACE_ID
+trees open --workspace-dir ./workspace
+trees open --claim-id CLAIM_ID
 trees open WORKSPACE_ID --program=codex
 ```
 
+Both commands also accept `--workspace-dir` for an exact registered root and
+`--claim-id` for the workspace associated with an active claim. Named selectors
+and the positional ID are mutually exclusive, even if they identify the same
+workspace. Explicit missing targets fail. Open requires one explicit selector;
+status retains its current-directory default. All open selectors apply the same
+claim and operation checks.
+
 The human workspace view identifies each record by stable workspace ID rather
-than path. `trees open` resolves that ID and starts `$SHELL` in the persisted
+than path. `trees open` resolves the selected workspace and starts `$SHELL` in the persisted
 canonical workspace directory; `--program=<PROGRAM>` selects another executable
 without shell parsing. Automatic workspaces must already have an active claim,
 while manual workspaces do not require one. Open rejects removed workspaces

@@ -21,15 +21,15 @@
 
 ## 4. Expose Mutually Exclusive CLI Selectors
 
-- [ ] Add `cli::workspace_locator` with shared named arguments, typed explicit inputs, and an explicit-selection/default-current directory policy.
-- [ ] Centralize Clap group construction, including legacy positional membership and required selection; commands provide only their positional metadata and default policy.
-- [ ] Implement one conversion path for conflict validation, ID parsing, current directory fallback, and path normalization; reject conflicts before filesystem access, including outside Clap parsing.
-- [ ] Add thin typed adapters for legacy ID/path positional inputs and remove command-local selector branching and duplicate normalization.
-- [ ] Wire new status/open/release forms, preserving required explicit selection for open and current directory defaults for status/release.
-- [ ] Extend status human headings for path and claim selection without changing JSON or inventory behavior.
-- [ ] Test all pairwise selector conflicts, repeated named selectors, malformed IDs, defaults, explicit misses, and successful selection through each command.
-- [ ] Exercise shared conversion directly and verify parser/help construction uses the same selection policy; ensure explicit ID/claim selection never requires current directory resolution.
-- [ ] Update README examples and command specifications to match implemented syntax.
+- [x] Add `cli::workspace_locator` with shared named arguments, typed explicit inputs, and an explicit-selection/default-current directory policy.
+- [x] Centralize Clap group construction, including legacy positional membership and required selection; commands provide only their positional metadata and default policy.
+- [x] Implement one conversion path for conflict validation, ID parsing, current directory fallback, and path normalization; reject conflicts before filesystem access, including outside Clap parsing.
+- [x] Add thin typed adapters for legacy ID/path positional inputs and remove command-local selector branching and duplicate normalization.
+- [x] Wire new status/open/release forms, preserving required explicit selection for open and current directory defaults for status/release.
+- [x] Extend status human headings for path and claim selection without changing JSON or inventory behavior.
+- [x] Test all pairwise selector conflicts, repeated named selectors, malformed IDs, defaults, explicit misses, and successful selection through each command.
+- [x] Exercise shared conversion directly and verify parser/help construction uses the same selection policy; ensure explicit ID/claim selection never requires current directory resolution.
+- [x] Update README examples and command specifications to match implemented syntax.
 
 ## 5. Verify and Review
 
