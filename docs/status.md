@@ -210,13 +210,13 @@ exact registered root, and `--claim-id` for the workspace associated with an
 active claim. Named selectors and the positional ID are mutually exclusive,
 even if they identify the same workspace. Explicit missing targets fail. Open requires one explicit selector;
 status retains its current-directory default. All open selectors apply the same
-claim and operation checks.
+removal and operation checks.
 
 The human workspace view identifies each record by stable workspace ID rather
 than path. `trees open` resolves the selected workspace and starts `$SHELL` in the persisted
 canonical workspace directory; `--program=<PROGRAM>` selects another executable
-without shell parsing. Automatic workspaces must already have an active claim,
-while manual workspaces do not require one. Open rejects removed workspaces
+without shell parsing. Both manual and automatic workspaces can be opened
+without an active claim; opening does not acquire a claim. Open rejects removed workspaces
 and retained operation leases, closes its read-only database connection before
 handoff, and does not reconcile or mutate lifecycle state.
 
