@@ -1,8 +1,8 @@
 ## 1. Specify the Contract
 
-- [ ] Add the workspace-locator specification from the design decisions.
-- [ ] Add status, open, and workspace-reuse specification deltas for new named selectors, mutual exclusion, defaults, and error behavior.
-- [ ] Pin existing diagnostics, exact-path semantics, removed-boundary behavior, and release claim-race behavior in focused regression coverage.
+- [x] Add the workspace-locator specification from the design decisions.
+- [x] Add status, open, and workspace-reuse specification deltas for new named selectors, mutual exclusion, defaults, and error behavior.
+- [x] Pin existing diagnostics, exact-path semantics, removed-boundary behavior, and release claim-race behavior in focused regression coverage.
 
 ## 2. Implement Shared Lookup
 
