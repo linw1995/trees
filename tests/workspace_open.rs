@@ -89,7 +89,7 @@ mod unix {
     }
 
     #[test]
-    fn opens_manual_and_claimed_automatic_workspaces_by_id() {
+    fn opens_manual_and_automatic_workspaces_by_id_regardless_of_claim() {
         let root = test_root();
         let database_path = database_path(&root);
         fs::create_dir_all(database_path.parent().unwrap()).expect("state directory should exist");
@@ -120,6 +120,14 @@ mod unix {
             WorkspaceManagementMode::Automatic,
             Some(pool_id),
         );
+        let (unclaimed_id, unclaimed_path) = insert_workspace(
+            &mut connection,
+            &root,
+            "unclaimed",
+            WorkspaceState::Ready,
+            WorkspaceManagementMode::Automatic,
+            Some(pool_id),
+        );
         insert_workspace_claim(
             &mut connection,
             &NewWorkspaceClaim {
@@ -146,6 +154,13 @@ mod unix {
         assert!(automatic.status.success());
         assert_eq!(trim(&automatic.stdout), automatic_path.to_string());
 
+        let unclaimed = command(&root)
+            .args(["open", &unclaimed_id.to_string(), "--program=pwd"])
+            .output()
+            .expect("unclaimed workspace should open");
+        assert!(unclaimed.status.success());
+        assert_eq!(trim(&unclaimed.stdout), unclaimed_path.to_string());
+
         fs::remove_dir_all(root).expect("test root should be removable");
     }
 
@@ -165,14 +180,6 @@ mod unix {
             },
         )
         .expect("pool should be inserted");
-        let (unclaimed_id, _) = insert_workspace(
-            &mut connection,
-            &root,
-            "unclaimed",
-            WorkspaceState::Ready,
-            WorkspaceManagementMode::Automatic,
-            Some(pool_id),
-        );
         let (removed_id, _) = insert_workspace(
             &mut connection,
             &root,
@@ -203,7 +210,6 @@ mod unix {
         drop(connection);
 
         for (workspace_id, message) in [
-            (unclaimed_id, "automatic workspace is unclaimed"),
             (removed_id, "workspace has been removed"),
             (active_id, "workspace has an active operation"),
             (WorkspaceId::new(), "workspace not found"),
