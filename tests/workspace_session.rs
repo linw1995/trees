@@ -207,8 +207,10 @@ impl Drop for Terminal {
     fn drop(&mut self) {
         self.master.take();
         // Kill the isolated test group and reap even when an assertion fails.
-        unsafe { libc::kill(-(self.child.id() as libc::pid_t), libc::SIGKILL) };
-        let _ = self.child.wait();
+        if self.child.try_wait().ok().flatten().is_none() {
+            unsafe { libc::kill(-(self.child.id() as libc::pid_t), libc::SIGKILL) };
+            let _ = self.child.wait();
+        }
     }
 }
 
@@ -557,4 +559,213 @@ fn recovery_launch_failure_preserves_the_initial_nonzero_exit() {
     assert_eq!(terminal.finish().code(), Some(7), "{}", terminal.output);
     assert!(terminal.output.contains("recovery shell failed"));
     assert!(terminal.output.contains("Manual recovery"));
+}
+
+#[test]
+fn clean_sessions_reuse_the_same_workspace() {
+    let fixture = Fixture::new();
+    let mut paths = Vec::new();
+    for _ in 0..2 {
+        let output = fixture.create(Path::new("/bin/pwd")).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        paths.push(output.stdout);
+    }
+    assert_eq!(paths[0], paths[1]);
+    let mut connection = fixture.connection();
+    assert_eq!(
+        trees::storage::list_workspaces(&mut connection, false)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn running_children_keep_their_claim_without_holding_a_database_transaction() {
+    let fixture = Fixture::new();
+    let program = fixture.script(
+        "program",
+        "exec \"$SESSION_TEST_BINARY\" --exact process_helper --nocapture",
+    );
+    let mut command = fixture.create(&program);
+    command.env("SESSION_PROCESS_HELPER", "1");
+    let mut terminal = Terminal::spawn(command);
+    terminal.until("SESSION_CHILD_READY");
+    let mut connection = fixture.connection();
+    let workspace = trees::storage::list_workspaces(&mut connection, false)
+        .unwrap()
+        .remove(0);
+    connection
+        .immediate_transaction::<_, diesel::result::Error, _>(|connection| {
+            assert!(trees::storage::find_workspace_claim(connection, &workspace.id)?.is_some());
+            Ok(())
+        })
+        .unwrap();
+    drop(connection);
+    terminal.send(b"\n");
+    assert!(terminal.finish().success(), "{}", terminal.output);
+    let mut connection = fixture.connection();
+    assert!(
+        trees::storage::find_workspace_claim(&mut connection, &workspace.id)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn multi_repository_recovery_preserves_dirty_work_and_records_release_attempts() {
+    use diesel::prelude::*;
+    use trees::schema::lifecycle_events::dsl as events;
+    let fixture = Fixture::new();
+    let other = fixture.root.join("other");
+    let cloned = Command::new("git")
+        .args(["clone", "-q"])
+        .arg(&fixture.repo)
+        .arg(&other)
+        .output()
+        .unwrap();
+    assert!(cloned.status.success());
+    let program = fixture.script(
+        "program",
+        "printf dirty > source/unsaved; git -C other checkout -qb saved-branch",
+    );
+    let mut command = fixture.create(&program);
+    command
+        .arg("--repo")
+        .arg(&other)
+        .env("SHELL", "/bin/sh")
+        .env("PS1", "RECOVERY_READY> ");
+    let mut terminal = Terminal::spawn(command);
+    terminal.until("RECOVERY_READY>");
+    let mut connection = fixture.connection();
+    let workspace = trees::storage::list_workspaces(&mut connection, false)
+        .unwrap()
+        .remove(0);
+    let second = workspace.canonical_path.as_path().join("other");
+    let branch = Command::new("git")
+        .arg("-C")
+        .arg(&second)
+        .args(["symbolic-ref", "--short", "HEAD"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&branch.stdout).trim(),
+        "saved-branch"
+    );
+    assert!(workspace
+        .canonical_path
+        .as_path()
+        .join("source/unsaved")
+        .exists());
+    let rejected = events::lifecycle_events
+        .filter(events::entity_id.eq(workspace.id.to_string()))
+        .filter(events::event_type.eq("workspace_release_rejected"))
+        .count()
+        .get_result::<i64>(&mut connection)
+        .unwrap();
+    assert_eq!(rejected, 1);
+    drop(connection);
+    terminal.send(b"rm source/unsaved; exit 0\n");
+    assert!(terminal.finish().success(), "{}", terminal.output);
+    let mut connection = fixture.connection();
+    let released = events::lifecycle_events
+        .filter(events::entity_id.eq(workspace.id.to_string()))
+        .filter(events::event_type.eq("workspace_released"))
+        .count()
+        .get_result::<i64>(&mut connection)
+        .unwrap();
+    assert_eq!(released, 1);
+    assert!(
+        trees::storage::find_workspace_claim(&mut connection, &workspace.id)
+            .unwrap()
+            .is_none()
+    );
+    let branch = Command::new("git")
+        .arg("-C")
+        .arg(&second)
+        .args(["symbolic-ref", "--quiet", "HEAD"])
+        .output()
+        .unwrap();
+    assert!(!branch.status.success());
+}
+
+#[test]
+fn recovery_shell_supports_job_control() {
+    let fixture = Fixture::new();
+    let program = fixture.script("program", "printf dirty > unsaved; exit 7");
+    let mut command = fixture.create(&program);
+    command
+        .env("SHELL", "/bin/sh")
+        .env("PS1", "RECOVERY_READY> ")
+        .env("SESSION_PROCESS_HELPER", "1");
+    let mut terminal = Terminal::spawn(command);
+    terminal.until("RECOVERY_READY>");
+    terminal.send(b"\"$SESSION_TEST_BINARY\" --exact process_helper --nocapture\n");
+    terminal.until("SESSION_CHILD_READY");
+    terminal.output.clear();
+    terminal.send(&[26]);
+    terminal.until("RECOVERY_READY>");
+    terminal.send(b"fg\n\n");
+    terminal.until("SESSION_CHILD_FINISHED");
+    terminal.send(b"rm unsaved; exit 0\n");
+    assert_eq!(terminal.finish().code(), Some(7), "{}", terminal.output);
+}
+
+#[test]
+fn default_shell_supports_supervision_and_unflagged_create_retains_its_claim() {
+    for release in [false, true] {
+        let fixture = Fixture::new();
+        let mut command = fixture.command();
+        command
+            .args(["create", "--offline", "--repo"])
+            .arg(&fixture.repo)
+            .arg("--open")
+            .env("SHELL", "/usr/bin/true");
+        if release {
+            command.arg("--release-on-exit");
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let mut connection = fixture.connection();
+        let workspace = trees::storage::list_workspaces(&mut connection, false)
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            trees::storage::find_workspace_claim(&mut connection, &workspace.id)
+                .unwrap()
+                .is_none(),
+            release
+        );
+    }
+}
+
+#[test]
+fn invalid_session_arguments_fail_before_storage_or_workspace_mutation() {
+    let fixture = Fixture::new();
+    for extra in [
+        vec![],
+        vec!["--open", "--json"],
+        vec!["--open", "manual-workspace"],
+    ] {
+        let output = fixture
+            .command()
+            .current_dir(&fixture.root)
+            .args(["create", "--repo"])
+            .arg(&fixture.repo)
+            .arg("--release-on-exit")
+            .args(extra)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(!fixture.database_path().exists());
+        assert!(!fixture.root.join("manual-workspace").exists());
+    }
 }

@@ -99,12 +99,16 @@ pub fn run(
     if let Err(error) = &initial.0 {
         report(SessionEvent::InitialFailed(error));
     }
-    let cleanup = if initial.can_release() {
-        recover(identity, &supervisor, &mut report)
-    } else {
-        UnconfirmedChildSnafu.fail()
-    };
+    let cleanup = cleanup_after(&initial, || recover(identity, &supervisor, &mut report));
     SessionReport { initial, cleanup }
+}
+
+fn cleanup_after(
+    initial: &ProgramOutcome,
+    cleanup: impl FnOnce() -> Result<(), SessionError>,
+) -> Result<(), SessionError> {
+    ensure!(initial.can_release(), UnconfirmedChildSnafu);
+    cleanup()
 }
 
 fn recover(
@@ -278,6 +282,15 @@ mod tests {
         ));
         assert!(!wait.can_release());
         assert_eq!(wait.exit_code(true), 1);
+    }
+
+    #[test]
+    fn uncertain_child_state_never_invokes_release() {
+        let initial = ProgramOutcome(Err(
+            WaitSnafu { pid: 123_u32 }.into_error(io::ErrorKind::Other.into())
+        ));
+        let result = cleanup_after(&initial, || panic!("release must not run"));
+        assert!(matches!(result, Err(SessionError::UnconfirmedChild)));
     }
 
     #[cfg(unix)]
