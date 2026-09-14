@@ -36,6 +36,7 @@ fn run_create(arguments: trees::cli::CreateArgs) -> Result<ExitCode, CliError> {
         json,
         offline,
         open,
+        release_on_exit: _,
     } = arguments;
     let open = resolve_open_program(open)?;
     if let Some(path) = &workspace_path {

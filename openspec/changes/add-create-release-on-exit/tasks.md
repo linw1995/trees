@@ -1,6 +1,6 @@
 ## 1. CLI Contract
 
-- [ ] 1.1 Add `--release-on-exit` to create with required `--open` and conflicts for workspace path and JSON; verify parser tests cover explicit/default programs and rejection before mutation.
+- [x] 1.1 Add `--release-on-exit` to create with required `--open` and conflicts for workspace path and JSON; verify parser tests cover explicit/default programs and rejection before mutation.
 - [ ] 1.2 Route only opted-in automatic allocations into supervised execution and close the allocation connection first; verify existing create/open tests preserve exec and claim retention behavior.
 
 ## 2. Process Supervision
