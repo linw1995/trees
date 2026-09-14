@@ -199,15 +199,16 @@ only to the workspace view; repos has no hidden registration state.
 
 ```sh
 trees open WORKSPACE_ID
+trees open --workspace-id WORKSPACE_ID
 trees open --workspace-dir ./workspace
 trees open --claim-id CLAIM_ID
 trees open WORKSPACE_ID --program=codex
 ```
 
-Both commands also accept `--workspace-dir` for an exact registered root and
-`--claim-id` for the workspace associated with an active claim. Named selectors
-and the positional ID are mutually exclusive, even if they identify the same
-workspace. Explicit missing targets fail. Open requires one explicit selector;
+Both commands accept `--workspace-id` for a stored ID, `--workspace-dir` for an
+exact registered root, and `--claim-id` for the workspace associated with an
+active claim. Named selectors and the positional ID are mutually exclusive,
+even if they identify the same workspace. Explicit missing targets fail. Open requires one explicit selector;
 status retains its current-directory default. All open selectors apply the same
 claim and operation checks.
 
