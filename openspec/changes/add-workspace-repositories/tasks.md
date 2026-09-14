@@ -27,9 +27,9 @@
 
 ## 5. Output and Consumers
 
-- [ ] 5.1 Implement text and JSON schema version 1 results, unique repository outcomes, old/new paths and pool IDs, with diagnostics isolated to standard error.
-- [ ] 5.2 Verify status, release, reuse, removal, open, and project preparation consume committed expanded membership and relocated paths without resetting existing work during `add`.
-- [ ] 5.3 Document command examples, offline/idempotency rules, automatic claim requirements, pool changes, root promotion, running-tool limitations, retained clones, and repair/retry behavior.
+- [x] 5.1 Implement text and JSON schema version 1 results, unique repository outcomes, old/new paths and pool IDs, with diagnostics isolated to standard error.
+- [x] 5.2 Verify status, release, reuse, removal, open, and project preparation consume committed expanded membership and relocated paths without resetting existing work during `add`.
+- [x] 5.3 Document command examples, offline/idempotency rules, automatic claim requirements, pool changes, root promotion, running-tool limitations, retained clones, and repair/retry behavior.
 
 ## 6. Validation
 

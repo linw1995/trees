@@ -294,3 +294,185 @@ fn recovery_preserves_new_user_content_and_retry_uses_a_new_operation() {
         Some(trees::domain::OperationState::Failed)
     );
 }
+
+fn cli(root: &Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_trees"));
+    command
+        .current_dir(root)
+        .env("HOME", root.join("home"))
+        .env("XDG_STATE_HOME", root.join("state"))
+        .env("XDG_DATA_HOME", root.join("data"))
+        .env("XDG_CONFIG_HOME", root.join("config"))
+        .env("LOCALAPPDATA", root.join("local-app-data"))
+        .env("APPDATA", root.join("app-data"));
+    command
+}
+
+fn json_output(command: &mut Command) -> serde_json::Value {
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn cli_migrates_pool_and_release_reuses_the_expanded_workspace() {
+    let fixture = Fixture::new();
+    fs::create_dir_all(fixture.root.join("home")).unwrap();
+    let created =
+        json_output(cli(&fixture.root).args(["create", "--repo", "api", "--offline", "--json"]));
+    let workspace_path = created["workspace_path"].as_str().unwrap();
+    let claim = created["claim_id"].as_str().unwrap();
+    let added = json_output(cli(&fixture.root).args([
+        "add",
+        "--claim-id",
+        claim,
+        "--repo",
+        "web",
+        "--offline",
+        "--json",
+    ]));
+    assert_eq!(added["claim_id"], created["claim_id"]);
+    assert_eq!(added["previous_pool_id"], created["pool_id"]);
+    assert_ne!(added["pool_id"], created["pool_id"]);
+    assert_eq!(added["workspace_path"], created["workspace_path"]);
+    assert_eq!(added["schema_version"], 1);
+    let status = json_output(cli(&fixture.root).args([
+        "status",
+        "--workspace-dir",
+        workspace_path,
+        "--view",
+        "workspaces",
+        "--json",
+    ]));
+    assert!(status
+        .to_string()
+        .contains(added["pool_id"].as_str().unwrap()));
+    let released = cli(&fixture.root)
+        .args(["release", "--claim-id", claim])
+        .output()
+        .unwrap();
+    assert!(
+        released.status.success(),
+        "{}",
+        String::from_utf8_lossy(&released.stderr)
+    );
+    let idle = cli(&fixture.root)
+        .args([
+            "add",
+            "--workspace-dir",
+            workspace_path,
+            "--repo",
+            "web",
+            "--offline",
+        ])
+        .output()
+        .unwrap();
+    assert!(!idle.status.success());
+    let reused = json_output(cli(&fixture.root).args([
+        "create",
+        "--repo",
+        "api",
+        "--repo",
+        "web",
+        "--offline",
+        "--json",
+    ]));
+    assert_eq!(reused["workspace_path"], created["workspace_path"]);
+    assert_eq!(reused["pool_id"], added["pool_id"]);
+    assert_ne!(reused["claim_id"], created["claim_id"]);
+    let released = cli(&fixture.root)
+        .args([
+            "release",
+            "--claim-id",
+            reused["claim_id"].as_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        released.status.success(),
+        "{}",
+        String::from_utf8_lossy(&released.stderr)
+    );
+    let removed = cli(&fixture.root)
+        .args(["remove", added["workspace_id"].as_str().unwrap(), "--yes"])
+        .output()
+        .unwrap();
+    assert!(
+        removed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&removed.stderr)
+    );
+    assert!(!Path::new(workspace_path).exists());
+}
+
+#[test]
+fn cli_selectors_and_text_output_preserve_idempotency() {
+    let fixture = Fixture::new();
+    fs::create_dir_all(fixture.root.join("home")).unwrap();
+    let created = json_output(cli(&fixture.root).args([
+        "create",
+        "manual",
+        "--repo",
+        "api",
+        "--offline",
+        "--json",
+    ]));
+    let path = created["workspace_path"].as_str().unwrap();
+    let added =
+        json_output(cli(&fixture.root).args(["add", path, "--repo", "web", "--offline", "--json"]));
+    let id = added["workspace_id"].as_str().unwrap();
+    for selection in [
+        vec![path],
+        vec!["--workspace-id", id],
+        vec!["--workspace-dir", path],
+    ] {
+        let mut command = cli(&fixture.root);
+        command
+            .arg("add")
+            .args(selection)
+            .args(["--repo", "web", "--offline"]);
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("repo_result=already_present"));
+    }
+    let nested = Path::new(path).join("web");
+    let output = cli(&fixture.root)
+        .current_dir(nested)
+        .args(["add", "--repo", "web", "--offline", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()["workspace_id"],
+        id
+    );
+}
+
+#[test]
+fn consumers_read_committed_child_paths() {
+    let mut fixture = Fixture::new();
+    let request = fixture.request(vec![fixture.web.clone()]);
+    add::execute(&mut fixture.db, request).unwrap();
+    let opened =
+        trees::workspace_open::resolve_target(&mut fixture.db, &fixture.workspace).unwrap();
+    assert_eq!(opened, fixture.path);
+    let prepared =
+        trees::codex::workspace::prepare(&mut fixture.db, fixture.path.as_path()).unwrap();
+    assert_eq!(prepared.roots.len(), 2);
+    assert!(prepared.roots.contains(&fixture.path.as_path().join("api")));
+    assert!(prepared.roots.contains(&fixture.path.as_path().join("web")));
+}

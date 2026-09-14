@@ -29,6 +29,8 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     Create(CreateArgs),
+    #[command(about = "Add repositories to an existing workspace")]
+    Add(AddArgs),
     Release(ReleaseArgs),
     Config(ConfigArgs),
     Gc(GcArgs),
