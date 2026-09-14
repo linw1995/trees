@@ -11,6 +11,22 @@ pub fn resolve(
     offline: bool,
     workspace_path: Option<&Path>,
 ) -> Result<Vec<git::RepositoryInfo>, ResolveError> {
+    resolve_inputs(inputs, offline, workspace_path, false)
+}
+
+pub fn resolve_add(
+    inputs: &[PathBuf],
+    offline: bool,
+) -> Result<Vec<git::RepositoryInfo>, ResolveError> {
+    resolve_inputs(inputs, offline, None, true)
+}
+
+fn resolve_inputs(
+    inputs: &[PathBuf],
+    offline: bool,
+    workspace_path: Option<&Path>,
+    deduplicate: bool,
+) -> Result<Vec<git::RepositoryInfo>, ResolveError> {
     let parsed = inputs
         .iter()
         .map(|value| RepositoryInput::parse(value))
@@ -32,7 +48,10 @@ pub fn resolve(
                 Some(inspect_primary(&row.source_path)?)
             }
             RepositoryInput::Url(url) => {
-                ensure!(urls.insert(url.clone()), DuplicateSnafu);
+                if !urls.insert(url.clone()) {
+                    ensure!(deduplicate, DuplicateSnafu);
+                    continue;
+                }
                 let row = super::lookup::find_url(&catalog, &url)?;
                 if let Some(row) = row {
                     provision::validate_existing(&row)?;
@@ -46,6 +65,13 @@ pub fn resolve(
             }
         };
         if let Some(info) = info {
+            if deduplicate
+                && resolved
+                    .iter()
+                    .any(|existing: &git::RepositoryInfo| existing.common_dir == info.common_dir)
+            {
+                continue;
+            }
             ensure!(
                 names.insert(
                     info.root
@@ -84,6 +110,10 @@ pub fn resolve(
             );
             resolved.push(inspect_primary(&row.source_path)?);
         }
+    }
+    if deduplicate {
+        let mut seen = HashSet::new();
+        resolved.retain(|info| seen.insert(info.common_dir.clone()));
     }
     check_identities(&resolved)?;
     Ok(resolved)

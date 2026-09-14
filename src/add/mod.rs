@@ -1,4 +1,5 @@
 pub mod persistence;
+pub mod planning;
 
 use std::path::PathBuf;
 

@@ -13,10 +13,10 @@
 
 ## 3. Planning and Directory Structure
 
-- [ ] 3.1 Reuse origin resolution and separate identity lookup from revision fetching; deduplicate `add` inputs and skip fetch for existing identities.
-- [ ] 3.2 Validate existing associations while allowing dirty, branch-attached, or changed-HEAD worktrees; reject broken identities and unresolved additions.
-- [ ] 3.3 Plan final child names, collisions, containment, symlinks, nested workspaces, and operation-owned staging before workspace mutation.
-- [ ] 3.4 Add lease-aware Git move and filesystem compensation helpers for root promotion, preserving worktree IDs and local content without force.
+- [x] 3.1 Reuse origin resolution and separate identity lookup from revision fetching; deduplicate `add` inputs and skip fetch for existing identities.
+- [x] 3.2 Validate existing associations while allowing dirty, branch-attached, or changed-HEAD worktrees; reject broken identities and unresolved additions.
+- [x] 3.3 Plan final child names, collisions, containment, symlinks, nested workspaces, and operation-owned staging before workspace mutation.
+- [x] 3.4 Add lease-aware Git move and filesystem compensation helpers for root promotion, preserving worktree IDs and local content without force.
 
 ## 4. Execution and Recovery
 

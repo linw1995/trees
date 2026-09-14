@@ -150,8 +150,23 @@ pub fn inspect_upstream_repository(repository: &CanonicalPath) -> Result<Reposit
 pub fn inspect_fetched_upstream_repository(
     repository: &CanonicalPath,
 ) -> Result<RepositoryInfo, GitError> {
+    inspect_fetched_upstream_repository_with_heartbeat(repository, || Ok(()))
+}
+
+pub fn inspect_fetched_upstream_repository_with_heartbeat<F>(
+    repository: &CanonicalPath,
+    mut heartbeat: F,
+) -> Result<RepositoryInfo, GitError>
+where
+    F: FnMut() -> Result<(), GitError>,
+{
+    heartbeat()?;
     let mut info = inspect_upstream_repository(repository)?;
-    run_git(info.root.as_path(), &[arg("fetch"), arg("--quiet")])?;
+    run_git_with_heartbeat(
+        info.root.as_path(),
+        &[arg("fetch"), arg("--quiet")],
+        &mut heartbeat,
+    )?;
 
     let primary = list_worktrees(&info.root)?
         .into_iter()
@@ -419,6 +434,48 @@ where
         heartbeat,
     )?;
     Ok(output.trim().is_empty())
+}
+
+pub fn move_worktree_with_heartbeat<F>(
+    repository: &CanonicalPath,
+    from: &Path,
+    to: &Path,
+    mut heartbeat: F,
+) -> Result<(), GitError>
+where
+    F: FnMut() -> Result<(), GitError>,
+{
+    heartbeat()?;
+    run_git_with_heartbeat(
+        repository.as_path(),
+        &[
+            arg("worktree"),
+            arg("move"),
+            arg("--"),
+            from.as_os_str().to_owned(),
+            to.as_os_str().to_owned(),
+        ],
+        heartbeat,
+    )?;
+    Ok(())
+}
+
+pub fn has_ignored_files_with_heartbeat<F>(path: &Path, heartbeat: F) -> Result<bool, GitError>
+where
+    F: FnMut() -> Result<(), GitError>,
+{
+    Ok(!run_git_with_heartbeat(
+        path,
+        &[
+            arg("ls-files"),
+            arg("--others"),
+            arg("--ignored"),
+            arg("--exclude-standard"),
+        ],
+        heartbeat,
+    )?
+    .trim()
+    .is_empty())
 }
 
 pub fn checkout_detached_with_heartbeat<F>(
