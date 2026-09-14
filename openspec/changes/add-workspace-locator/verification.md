@@ -9,3 +9,10 @@
 
 Existing regression tests establish the compatibility baseline. New locator
 and CLI tests will cover added selection forms and direct-construction conflicts.
+
+## Shared Lookup
+
+- `cargo test --locked --lib workspace_locator`: four tests passed.
+- Coverage includes exact and ancestor boundaries, removed records, claim
+  identity, absent targets, source errors, symlinks, and missing final components.
+- Relative CLI path conversion will receive additional coverage in CLI integration.

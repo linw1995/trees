@@ -16,4 +16,5 @@ pub mod status;
 pub mod storage;
 pub mod validation;
 pub mod workspace;
+pub mod workspace_locator;
 pub mod workspace_open;

@@ -6,10 +6,10 @@
 
 ## 2. Implement Shared Lookup
 
-- [ ] Add and export `workspace_locator` with typed selectors, result provenance, and Snafu errors.
-- [ ] Implement ID, exact-path, nearest-ancestor, and claim lookup using existing storage queries without owning transactions.
-- [ ] Cover absent IDs/claims/paths, query failures, nearest nested boundaries, removed inner boundaries, and component-prefix collisions with in-memory storage tests.
-- [ ] Cover symlink normalization, relative exact paths, and supported missing final path components at the normalization boundary.
+- [x] Add and export `workspace_locator` with typed selectors, result provenance, and Snafu errors.
+- [x] Implement ID, exact-path, nearest-ancestor, and claim lookup using existing storage queries without owning transactions.
+- [x] Cover absent IDs/claims/paths, query failures, nearest nested boundaries, removed inner boundaries, and component-prefix collisions with in-memory storage tests.
+- [x] Cover symlink normalization, relative exact paths, and supported missing final path components at the normalization boundary.
 
 ## 3. Migrate Existing Behavior
 
