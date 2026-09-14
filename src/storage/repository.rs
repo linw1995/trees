@@ -1177,7 +1177,7 @@ pub(crate) fn list_status_operation_events_for_target(
 }
 
 /// Loads the current unexpired lease addressed by its lease token.
-fn operation_lease_for_mutation(
+pub(crate) fn operation_lease_for_mutation(
     connection: &mut SqliteConnection,
     lease_id: &LeaseId,
 ) -> QueryResult<OperationLeaseRow> {

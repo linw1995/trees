@@ -6,10 +6,10 @@
 
 ## 2. Operation Persistence and Admission
 
-- [ ] 2.1 Add one-shot lease admission with atomic claim validation and immutable `kind = add` request intent; reject idle automatic workspaces.
-- [ ] 2.2 Define versioned resolved-plan and step payloads, event details, no-op/rejection auditing, and lease renewal through source provisioning and external work.
-- [ ] 2.3 Add a short finalization transaction for associations, relocated paths, exact pool lookup/creation, observed health, terminal events, and lease removal.
-- [ ] 2.4 Add residual/compensation persistence and consistent active-membership filtering so failed or removed associations cannot produce false no-op success or pool matches.
+- [x] 2.1 Add one-shot lease admission with atomic claim validation and immutable `kind = add` request intent; reject idle automatic workspaces.
+- [x] 2.2 Define versioned resolved-plan and step payloads, event details, no-op/rejection auditing, and lease renewal through source provisioning and external work.
+- [x] 2.3 Add a short finalization transaction for associations, relocated paths, exact pool lookup/creation, observed health, terminal events, and lease removal.
+- [x] 2.4 Add residual/compensation persistence and consistent active-membership filtering so failed or removed associations cannot produce false no-op success or pool matches.
 
 ## 3. Planning and Directory Structure
 

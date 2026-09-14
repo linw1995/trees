@@ -175,8 +175,10 @@ Record the recovery linkage and resolution in immutable events; membership guard
 unresolved addition journals, not only workspace health. If compensation still cannot finish,
 release the recovery lease with failure and report the repair details. Explicit removal retains its
 existing safety policy. Exclude residual failed/removed associations from successful repository-set
-calculations. Removed compensation associations may be retained as tombstones, but must not prevent
-a later fresh `add` of the same origin.
+calculations. Successfully compensated residual rows are deleted only when they represent unpublished additions.
+Their identities, paths, and compensation history remain in immutable events. Successful membership
+and removal tombstones are never deleted. This respects existing unique membership constraints
+without introducing a migration.
 
 Source cloning retains the existing independent reservation and recovery mechanism. Published
 origins survive workspace compensation and are reported on standard error; fetch side effects are not

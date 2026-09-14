@@ -1,3 +1,5 @@
+pub mod persistence;
+
 use std::path::PathBuf;
 
 use diesel::{Connection, SqliteConnection};
@@ -163,6 +165,8 @@ pub enum AddError {
     Unclaimed,
     #[snafu(display("workspace claim changed before addition"))]
     ClaimChanged,
+    #[snafu(display("workspace has an unresolved addition; retry trees add to recover it"))]
+    Unresolved,
     #[snafu(display("workspace has an active operation"))]
     Busy,
     #[snafu(display("unsafe addition path or worktree: {}", path.display()))]
