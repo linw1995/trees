@@ -1,8 +1,8 @@
 ## 1. CLI and Target Contract
 
-- [ ] 1.1 Add `AddArgs` using mainline `WorkspaceLocatorArgs`, its shared exclusion group and current-directory default, optional positional directory, repeatable repo inputs, offline and JSON flags.
-- [ ] 1.2 Use existing typed selectors and `locate` in a caller-owned snapshot; preserve selected-claim provenance, capture active claims, and keep recovery/admission outside the locator.
-- [ ] 1.3 Define typed `add` request, execution plan, result, and Snafu error types in a dedicated `add` module.
+- [x] 1.1 Add `AddArgs` using mainline `WorkspaceLocatorArgs`, its shared exclusion group and current-directory default, optional positional directory, repeatable repo inputs, offline and JSON flags.
+- [x] 1.2 Use existing typed selectors and `locate` in a caller-owned snapshot; preserve selected-claim provenance, capture active claims, and keep recovery/admission outside the locator.
+- [x] 1.3 Define typed `add` request, execution plan, result, and Snafu error types in a dedicated `add` module.
 
 ## 2. Operation Persistence and Admission
 

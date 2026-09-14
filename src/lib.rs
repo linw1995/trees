@@ -1,3 +1,4 @@
+pub mod add;
 pub mod claim;
 pub mod cli;
 pub mod codex;

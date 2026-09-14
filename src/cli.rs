@@ -71,6 +71,38 @@ pub struct CreateArgs {
 
 #[derive(Debug, Args)]
 #[command(group(workspace_locator::group(Self::SELECTION_DEFAULT)))]
+pub struct AddArgs {
+    #[arg(id = "add_workspace_dir", group = workspace_locator::GROUP, value_name = "WORKSPACE_DIR")]
+    pub workspace_dir: Option<PathBuf>,
+
+    #[command(flatten)]
+    pub locator: WorkspaceLocatorArgs,
+
+    #[arg(long = "repo", required = true, value_name = "PATH|URL|NAME")]
+    pub repositories: Vec<PathBuf>,
+
+    #[arg(long)]
+    pub offline: bool,
+
+    #[arg(long)]
+    pub json: bool,
+}
+
+impl AddArgs {
+    const SELECTION_DEFAULT: SelectionDefault = SelectionDefault::CurrentDirectory;
+
+    pub fn selector(&self) -> Result<WorkspaceSelector, InputError> {
+        self.locator.resolve(
+            self.workspace_dir
+                .clone()
+                .map(WorkspaceLocatorInput::ExactPath),
+            Self::SELECTION_DEFAULT,
+        )
+    }
+}
+
+#[derive(Debug, Args)]
+#[command(group(workspace_locator::group(Self::SELECTION_DEFAULT)))]
 pub struct ReleaseArgs {
     #[arg(id = "legacy_workspace_dir", group = workspace_locator::GROUP, value_name = "WORKSPACE_DIR")]
     pub workspace_dir: Option<PathBuf>,
