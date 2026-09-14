@@ -69,6 +69,14 @@ pub struct CreateArgs {
         help = "Open a program in the workspace, defaulting to $SHELL"
     )]
     pub open: Option<Option<OsString>>,
+
+    #[arg(
+        long,
+        requires = "open",
+        conflicts_with_all = ["workspace_path", "json"],
+        help = "Release the automatic workspace after the program exits, opening a shell on failure"
+    )]
+    pub release_on_exit: bool,
 }
 
 #[derive(Debug, Args)]
@@ -391,6 +399,44 @@ mod tests {
             panic!("expected create command");
         };
         assert_eq!(arguments.open, Some(Some(OsString::from("/usr/bin/env"))));
+    }
+
+    #[test]
+    fn parses_release_on_exit_with_explicit_and_default_programs() {
+        for open in ["--open", "--open=/bin/sh"] {
+            let cli = Cli::try_parse_from([
+                "trees",
+                "create",
+                "--repo",
+                "/tmp/repo",
+                open,
+                "--release-on-exit",
+            ])
+            .unwrap();
+            let Command::Create(arguments) = cli.command else {
+                panic!("expected create")
+            };
+            assert!(arguments.release_on_exit);
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_release_on_exit_combinations() {
+        for extra in [
+            vec![],
+            vec!["--open", "/tmp/workspace"],
+            vec!["--open", "--json"],
+        ] {
+            let mut args = vec![
+                "trees",
+                "create",
+                "--repo",
+                "/tmp/repo",
+                "--release-on-exit",
+            ];
+            args.extend(extra);
+            assert!(Cli::try_parse_from(args).is_err());
+        }
     }
 
     #[test]

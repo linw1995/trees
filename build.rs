@@ -65,7 +65,14 @@ fn main() {
             value.parse().expect("SOURCE_DATE_EPOCH must be an integer"),
         )
         .expect("SOURCE_DATE_EPOCH must be a supported Unix timestamp"),
-        Err(env::VarError::NotPresent) => OffsetDateTime::now_utc(),
+        Err(env::VarError::NotPresent) => git(&["show", "-s", "--format=%ct", "HEAD"])
+            .map(|value| {
+                OffsetDateTime::from_unix_timestamp(
+                    value.parse().expect("Git commit time must be an integer"),
+                )
+                .expect("Git commit time must be a supported Unix timestamp")
+            })
+            .unwrap_or_else(OffsetDateTime::now_utc),
         Err(error) => panic!("Invalid SOURCE_DATE_EPOCH: {error}"),
     };
     let timestamp = timestamp

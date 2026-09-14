@@ -16,8 +16,11 @@ extract the archive, and copy `trees` to a directory on your `PATH`.
 ## Build Metadata
 
 `-V` prints the package version. `--version` also prints the embedded commit,
-tracked dirty status, and UTC build timestamp. Cargo uses the current time unless
-`SOURCE_DATE_EPOCH` is set; Nix and release builds use the source timestamp for
-reproducibility. `GIT_COMMIT_SHA` and `GIT_DIRTY` override Git detection for builds
+tracked dirty status, and UTC build timestamp. The timestamp uses
+`SOURCE_DATE_EPOCH` when set, otherwise the committer time of the current Git `HEAD`,
+falling back to the current time when Git metadata is unavailable. Local
+`cargo install --path .` builds use the same timestamp selection. Nix and release builds set
+`SOURCE_DATE_EPOCH` to the source timestamp for reproducibility.
+`GIT_COMMIT_SHA` and `GIT_DIRTY` override Git detection for builds
 without Git metadata. An optional `.packaged-commit` file takes precedence over
 `GIT_COMMIT_SHA`; unavailable Git metadata is reported as `unknown`.

@@ -140,17 +140,43 @@ fn named_selectors_reach_the_same_workspace_across_commands() {
             .unwrap();
         assert!(!missing.status.success());
         assert!(missing.stdout.is_empty());
-        for selector in [vec!["--workspace-id", id], vec!["--workspace-dir", path]] {
-            let rejected = command(&root)
-                .arg("open")
-                .args(selector)
-                .arg("--program=pwd")
+        let before_open = success(
+            command(&root)
+                .args(["status", "--workspace-id", id, "--json"])
                 .output()
-                .unwrap();
-            assert!(!rejected.status.success());
-            assert!(String::from_utf8_lossy(&rejected.stderr)
-                .contains("automatic workspace is unclaimed"));
+                .unwrap(),
+        );
+        for selector in [vec!["--workspace-id", id], vec!["--workspace-dir", path]] {
+            let opened = success(
+                command(&root)
+                    .arg("open")
+                    .args(selector)
+                    .arg("--program=pwd")
+                    .output()
+                    .unwrap(),
+            );
+            assert_eq!(String::from_utf8_lossy(&opened.stdout).trim(), path);
         }
+        let after_open = success(
+            command(&root)
+                .args(["status", "--workspace-id", id, "--json"])
+                .output()
+                .unwrap(),
+        );
+        let before_open: Value = serde_json::from_slice(&before_open.stdout).unwrap();
+        let after_open: Value = serde_json::from_slice(&after_open.stdout).unwrap();
+        assert!(after_open["target_workspace"]["claim"].is_null());
+        assert_eq!(
+            before_open["target_workspace"],
+            after_open["target_workspace"]
+        );
+        assert_eq!(before_open["pools"], after_open["pools"]);
+        let missing = command(&root)
+            .args(["open", "--claim-id", claim, "--program=pwd"])
+            .output()
+            .unwrap();
+        assert!(!missing.status.success());
+        assert!(String::from_utf8_lossy(&missing.stderr).contains("workspace claim not found"));
     }
     fs::remove_dir_all(root).unwrap();
 }

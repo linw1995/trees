@@ -82,6 +82,7 @@ fn run_create(arguments: trees::cli::CreateArgs) -> Result<ExitCode, CliError> {
         json,
         offline,
         open,
+        release_on_exit,
     } = arguments;
     let open = resolve_open_program(open)?;
     if let Some(path) = &workspace_path {
@@ -115,7 +116,14 @@ fn run_create(arguments: trees::cli::CreateArgs) -> Result<ExitCode, CliError> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        None => run_automatic_create(repositories, json, offline, open.as_deref(), &expected),
+        None => run_automatic_create(
+            repositories,
+            json,
+            offline,
+            open.as_deref(),
+            release_on_exit,
+            &expected,
+        ),
     }
 }
 
@@ -144,6 +152,7 @@ fn run_automatic_create(
     json: bool,
     offline: bool,
     open: Option<&OsStr>,
+    release_on_exit: bool,
     expected: &[trees::git::RepositoryInfo],
 ) -> Result<ExitCode, CliError> {
     let plan = trees::workspace::prepare_automatic_resolved(
@@ -154,17 +163,31 @@ fn run_automatic_create(
         expected,
     )?;
     let mut connection = trees::database::open_default()?;
-    run_automatic_allocation(&mut connection, &plan, json, open)
-}
-
-fn run_automatic_allocation(
-    connection: &mut diesel::sqlite::SqliteConnection,
-    plan: &trees::workspace::AutomaticAllocationPlan,
-    json: bool,
-    open: Option<&OsStr>,
-) -> Result<ExitCode, CliError> {
-    let result = trees::workspace::allocate_automatic_workspace(connection, plan)?;
+    let result = trees::workspace::allocate_automatic_workspace(&mut connection, &plan)?;
+    drop(connection);
     if let Some(program) = open {
+        if release_on_exit {
+            let identity = result.into();
+            let report = trees::workspace_session::run(&identity, program, |event| {
+                use trees::workspace_session::SessionEvent;
+                match event {
+                    SessionEvent::InitialFailed(error) => eprintln!("Error: {error}"),
+                    SessionEvent::ReleaseFailed(error) => eprintln!("Release failed: {error}"),
+                    SessionEvent::Recovering => eprintln!(
+                        "Opening $SHELL in {}. Exiting the shell will retry release.",
+                        identity.workspace_path
+                    ),
+                }
+            });
+            if let Err(error) = &report.cleanup {
+                eprintln!("Error: {error}");
+                eprintln!(
+                    "Workspace: {}\nClaim: {}\nManual recovery: trees release --claim-id {}",
+                    identity.workspace_path, identity.claim_id, identity.claim_id
+                );
+            }
+            return Ok(ExitCode::from(report.exit_code()));
+        }
         return open_workspace(program, result.workspace_path.as_path());
     }
     if json {

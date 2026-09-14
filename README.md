@@ -60,7 +60,17 @@ Omitting the workspace path allocates a reusable automatic workspace; `--open`
 starts a shell inside it. When finished, save your work on a branch or outside
 the workspace, leave the worktrees clean,
 then run `trees release` from that workspace to return it to the pool. Exiting
-the shell alone does not release the claim.
+the shell alone does not release the claim. To release automatically after the
+program exits and open a recovery shell if release fails, opt in with:
+
+```sh
+trees create --repo api --open --release-on-exit
+trees create --repo api --open=program --release-on-exit
+```
+
+In recovery, save your work and leave the worktrees clean; exiting the recovery
+shell retries release. See [automatic release](docs/workspaces.md#release-after-program-exit)
+for terminal requirements and exit behavior.
 
 With one repository, the workspace directory is the worktree root. With multiple
 repositories, it contains one direct child worktree per repository. Existing

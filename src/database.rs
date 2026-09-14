@@ -33,6 +33,21 @@ pub fn open_default() -> Result<SqliteConnection, DatabaseError> {
     connect(&path)
 }
 
+pub fn open_existing() -> Result<SqliteConnection, DatabaseError> {
+    let path = paths::database_path()?;
+    let path_text = path.to_str().context(PathNotUtf8Snafu { path: &path })?;
+    let mut connection = SqliteConnection::establish(&format!("sqlite://{path_text}?mode=rw"))
+        .context(ConnectionSnafu)?;
+    connection
+        .batch_execute(CONNECTION_PRAGMAS)
+        .context(ConfigurationSnafu)?;
+    let pending = connection
+        .has_pending_migration(MIGRATIONS)
+        .context(MigrationInspectionSnafu)?;
+    ensure!(!pending, SchemaUpgradeRequiredSnafu { path });
+    Ok(connection)
+}
+
 pub fn open_read_only() -> Result<SqliteConnection, DatabaseError> {
     let path = paths::database_path()?;
     if !path.exists() {

@@ -99,6 +99,54 @@ as `--open=codex`. The program inherits the terminal and environment and starts
 with the workspace as its current directory. `--open` and `--json` are mutually
 exclusive. If `$SHELL` is unset or empty, provide an explicit program.
 
+### Release After Program Exit
+
+```sh
+trees create --repo /path/to/api --open --release-on-exit
+trees create --repo /path/to/api --open=program --release-on-exit
+```
+
+`--release-on-exit` requires `--open` and automatic allocation; it cannot be
+combined with an explicit workspace path or `--json`. Trees remains as the
+parent process, waits for the selected program, and releases the original claim.
+A program that exits with a nonzero status or fails to start also triggers
+a release attempt.
+Without this flag, exiting the program retains the claim. Standalone
+`trees open` behavior is unchanged.
+
+If release fails, Trees prints the reason and opens `$SHELL -i` in the workspace.
+Save your work on a branch or outside the workspace and resolve the reported
+problem. Exiting the shell retries release; another failure opens another shell,
+including after a nonzero shell exit. Release uses the existing Git safety
+checks and never forces release or discards dirty files.
+
+You can run `trees release` inside the recovery shell. Once the original claim
+is gone, Trees finishes without releasing a replacement claim or opening another
+shell. Ownership is checked before every recovery launch and again during
+release admission. Another process can still explicitly release and reallocate
+the workspace while a recovery shell is running; the shell does not hold an
+exclusive lease.
+
+Recovery requires terminal input and output and a nonempty, executable `$SHELL`.
+If the terminal, shell, workspace directory, or ownership information is
+unavailable, Trees reports the original workspace path, claim ID, and a manual
+`trees release --claim-id CLAIM_ID` command. It does not loop through shells
+reading redirected input. An explicit program that releases successfully does
+not need `$SHELL` or an interactive terminal.
+
+Successful recovery preserves the original program's exit code, regardless of
+recovery shell exit codes. Unresolved recovery preserves an original nonzero
+code and otherwise returns failure. A program startup failure remains a failure
+even if release succeeds. Diagnostics go to standard error.
+
+On `UNIX`, terminal interrupts reach the foreground child while Trees waits for
+termination before releasing. A `SIGTERM` sent to Trees is forwarded to its
+active child; signal termination produces exit code `128 + signal`. If child
+termination cannot be confirmed, Trees retains the workspace. Killing Trees
+with `SIGKILL` or losing the supervisor cannot guarantee release. Only the
+launched process is tracked: use a program's foreground or wait mode when it
+would otherwise detach and continue working in the background.
+
 ## Add Repositories to a Workspace
 
 ```sh
