@@ -2,7 +2,7 @@ use diesel::sqlite::SqliteConnection;
 use diesel::Connection;
 use snafu::{OptionExt, Snafu};
 
-use crate::domain::{CanonicalPath, ClaimId, WorkspaceId, WorkspaceManagementMode, WorkspaceState};
+use crate::domain::{CanonicalPath, ClaimId, WorkspaceId, WorkspaceState};
 use crate::storage::find_workspace_open_snapshot;
 use crate::workspace_locator::{locate, LocateError, WorkspaceSelector};
 
@@ -47,13 +47,6 @@ pub fn resolve_selector(
                 workspace_id: *workspace_id,
             });
         }
-        if snapshot.workspace.management_mode == WorkspaceManagementMode::Automatic
-            && snapshot.claim.is_none()
-        {
-            return Err(WorkspaceOpenError::AutomaticUnclaimed {
-                workspace_id: *workspace_id,
-            });
-        }
         Ok(snapshot.workspace.canonical_path)
     })
 }
@@ -72,8 +65,6 @@ pub enum WorkspaceOpenError {
     Removed { workspace_id: WorkspaceId },
     #[snafu(display("workspace has an active operation: {workspace_id}"))]
     OperationActive { workspace_id: WorkspaceId },
-    #[snafu(display("automatic workspace is unclaimed: {workspace_id}"))]
-    AutomaticUnclaimed { workspace_id: WorkspaceId },
     #[snafu(context(false), display("failed to read workspace: {source}"))]
     Database { source: diesel::result::Error },
 }
