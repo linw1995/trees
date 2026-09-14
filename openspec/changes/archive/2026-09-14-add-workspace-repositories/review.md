@@ -19,3 +19,11 @@ failures, missing roots, directory collisions, and the normal consumers.
 Directory creation followed by a failed ownership record remains conservative:
 recovery preserves that directory for inspection. This follows the specification
 requirement to retain contents when ownership cannot be proven.
+
+## CI Findings
+
+The first Linux run passed lint, tests, coverage, and the Nix build. The CRAP
+metric check identified five functions above its threshold. The workflows were
+split into focused source resolution, planning, compensation, and recovery
+helpers without changing the lifecycle contract or metric threshold. All 343
+local tests and Clippy passed after this refactor.

@@ -29,6 +29,12 @@ pub fn resolve_add_with_progress(
     resolve_inputs(inputs, offline, None, true, published)
 }
 
+struct ResolvedInputs {
+    repositories: Vec<git::RepositoryInfo>,
+    pending: Vec<(usize, String)>,
+    input_order: HashMap<crate::domain::CanonicalPath, usize>,
+}
+
 fn resolve_inputs(
     inputs: &[PathBuf],
     offline: bool,
@@ -41,6 +47,29 @@ fn resolve_inputs(
         .map(|value| RepositoryInput::parse(value))
         .collect::<Result<Vec<_>, _>>()?;
     let catalog = load_catalog(&parsed)?;
+    let mut selected = resolve_known_inputs(parsed, &catalog, offline, deduplicate)?;
+    validate_target(workspace_path, &selected.repositories)?;
+    provision_inputs(&mut selected, published)?;
+    let ResolvedInputs {
+        mut repositories,
+        input_order,
+        ..
+    } = selected;
+    if deduplicate {
+        repositories.sort_by_key(|info| input_order[&info.common_dir]);
+        let mut seen = HashSet::new();
+        repositories.retain(|info| seen.insert(info.common_dir.clone()));
+    }
+    check_identities(&repositories)?;
+    Ok(repositories)
+}
+
+fn resolve_known_inputs(
+    parsed: Vec<RepositoryInput>,
+    catalog: &[storage::OriginRepositoryRow],
+    offline: bool,
+    deduplicate: bool,
+) -> Result<ResolvedInputs, ResolveError> {
     let mut resolved = Vec::new();
     let mut urls = HashSet::new();
     let mut pending = Vec::new();
@@ -53,7 +82,7 @@ fn resolve_inputs(
                 Some(inspect_primary(&paths[0])?)
             }
             RepositoryInput::Name(name) => {
-                let row = storage::origin::resolve_name_in(&catalog, &name)?;
+                let row = storage::origin::resolve_name_in(catalog, &name)?;
                 provision::validate_existing(&row)?;
                 Some(inspect_primary(&row.source_path)?)
             }
@@ -62,7 +91,7 @@ fn resolve_inputs(
                     ensure!(deduplicate, DuplicateSnafu);
                     continue;
                 }
-                let row = super::lookup::find_url(&catalog, &url)?;
+                let row = super::lookup::find_url(catalog, &url)?;
                 if let Some(row) = row {
                     provision::validate_existing(&row)?;
                     Some(inspect_primary(&row.source_path)?)
@@ -97,10 +126,21 @@ fn resolve_inputs(
             resolved.push(info);
         }
     }
-    check_identities(&resolved)?;
+    Ok(ResolvedInputs {
+        repositories: resolved,
+        pending,
+        input_order,
+    })
+}
+
+fn validate_target(
+    workspace_path: Option<&Path>,
+    resolved: &[git::RepositoryInfo],
+) -> Result<(), ResolveError> {
+    check_identities(resolved)?;
     if let Some(target) = workspace_path {
         let target = validation::resolve_workspace_path(target)?;
-        for info in &resolved {
+        for info in resolved {
             ensure!(
                 !target.as_path().starts_with(info.root.as_path()),
                 NestedWorkspaceSnafu {
@@ -109,11 +149,23 @@ fn resolve_inputs(
             );
         }
     }
+    Ok(())
+}
+
+fn provision_inputs(
+    selected: &mut ResolvedInputs,
+    published: &mut dyn FnMut(&storage::OriginRepositoryRow),
+) -> Result<(), ResolveError> {
+    let ResolvedInputs {
+        repositories: resolved,
+        pending,
+        input_order,
+    } = selected;
     if !pending.is_empty() {
         let root = crate::config::origins_directory()?;
         let locks = crate::paths::state_directory()?.join("origin-locks");
         let mut connection = database::open_default()?;
-        for (index, url) in pending {
+        for (index, url) in std::mem::take(pending) {
             let row = provision::provision(&mut connection, &url, &root, &locks)?;
             published(&row);
             eprintln!(
@@ -125,13 +177,7 @@ fn resolve_inputs(
             resolved.push(info);
         }
     }
-    if deduplicate {
-        resolved.sort_by_key(|info| input_order[&info.common_dir]);
-        let mut seen = HashSet::new();
-        resolved.retain(|info| seen.insert(info.common_dir.clone()));
-    }
-    check_identities(&resolved)?;
-    Ok(resolved)
+    Ok(())
 }
 
 fn inspect_primary(

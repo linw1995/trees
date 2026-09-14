@@ -141,6 +141,28 @@ pub fn prepare(
     ensure!(!request.repositories.is_empty(), EmptySnafu);
     persistence::ensure_resolved(db, &target.workspace.id)?;
     let root = &target.workspace.canonical_path;
+    let existing = inspect_existing(db, lease, target)?;
+    let selection = select_additions(db, lease, root, &existing, request)?;
+    let relocation = plan_relocation(db, lease, root, &existing, &selection.additions)?;
+    Ok(AddPlan {
+        version: 1,
+        workspace_id: target.workspace.id,
+        workspace_path: root.clone(),
+        claim_id: target.claim_id,
+        previous_pool_id: target.workspace.pool_id,
+        existing,
+        additions: selection.additions,
+        requested: selection.requested,
+        relocation,
+    })
+}
+
+fn inspect_existing(
+    db: &mut SqliteConnection,
+    lease: &LeaseId,
+    target: &AddTarget,
+) -> Result<Vec<RepositoryPlan>, AddError> {
+    let root = &target.workspace.canonical_path;
     ensure!(
         CanonicalPath::resolve(root.as_path())? == *root,
         UnsafeSnafu {
@@ -190,6 +212,21 @@ pub fn prepare(
         );
         existing.push(repo);
     }
+    Ok(existing)
+}
+
+struct RepositorySelection {
+    additions: Vec<RepositoryPlan>,
+    requested: Vec<OriginRepositoryId>,
+}
+
+fn select_additions(
+    db: &mut SqliteConnection,
+    lease: &LeaseId,
+    root: &CanonicalPath,
+    existing: &[RepositoryPlan],
+    request: &AddRequest,
+) -> Result<RepositorySelection, AddError> {
     let resolved = resolve_with_lease(db, lease, &request.repositories, request.offline)?;
     let mut additions = Vec::new();
     let mut requested = Vec::new();
@@ -252,10 +289,23 @@ pub fn prepare(
         });
         requested.push(origin.id);
     }
+    Ok(RepositorySelection {
+        additions,
+        requested,
+    })
+}
+
+fn plan_relocation(
+    db: &mut SqliteConnection,
+    lease: &LeaseId,
+    root: &CanonicalPath,
+    existing: &[RepositoryPlan],
+    additions: &[RepositoryPlan],
+) -> Result<Option<Relocation>, AddError> {
     let mut relocation = None;
     if !additions.is_empty() {
         let mut names = HashSet::new();
-        for repo in &existing {
+        for repo in existing {
             let name = if repo.worktree_path == *root {
                 ensure!(
                     existing.len() == 1,
@@ -297,7 +347,7 @@ pub fn prepare(
                 });
             }
         }
-        for repo in &additions {
+        for repo in additions {
             let name = repo
                 .worktree_path
                 .as_path()
@@ -322,17 +372,7 @@ pub fn prepare(
             );
         }
     }
-    Ok(AddPlan {
-        version: 1,
-        workspace_id: target.workspace.id,
-        workspace_path: root.clone(),
-        claim_id: target.claim_id,
-        previous_pool_id: target.workspace.pool_id,
-        existing,
-        additions,
-        requested,
-        relocation,
-    })
+    Ok(relocation)
 }
 
 use snafu::IntoError;

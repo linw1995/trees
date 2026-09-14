@@ -11,6 +11,16 @@ use crate::reconciliation::RecoveryOutcome;
 
 pub fn execute(db: &mut SqliteConnection, request: AddRequest) -> Result<AddResult, AddError> {
     ensure!(!request.repositories.is_empty(), EmptySnafu);
+    let target = recover_target(db, &request)?;
+    let operation = persistence::admit(db, &target, &request, None)?;
+    let plan = prepare_operation(db, &operation.lease_id, &target, &request)?;
+    match apply(db, &operation.lease_id, &plan) {
+        Ok(pool) => Ok(result(&plan, operation.id, pool)),
+        Err(error) => fail_execution(db, &operation, &plan, error),
+    }
+}
+
+fn recover_target(db: &mut SqliteConnection, request: &AddRequest) -> Result<AddTarget, AddError> {
     let target = locate_target(db, &request.selector)?;
     let outcome = crate::reconciliation::recover_expired_operation(db, &target.workspace.id)?;
     ensure!(!matches!(outcome, RecoveryOutcome::LeaseActive), BusySnafu);
@@ -20,74 +30,79 @@ pub fn execute(db: &mut SqliteConnection, request: AddRequest) -> Result<AddResu
         ClaimChangedSnafu
     );
     if let Some(original) = persistence::unresolved(db, &target.workspace.id)? {
-        let recovery = persistence::admit(db, &current, &request, Some(original))?;
-        let plan = persistence::load_plan(db, &original)?.ok_or_else(|| JournalSnafu.build())?;
-        persistence::event(
-            db,
-            &recovery.lease_id,
-            "workspace_add_planned",
-            document(&plan)?,
-        )?;
-        // Recovery events retain the original step ownership evidence.
-        persistence::event(
-            db,
-            &recovery.lease_id,
-            "workspace_add_recovery_source",
-            document(&json!({"operation_id": original}))?,
-        )?;
-        compensate_or_retain(db, &recovery.lease_id, &plan, &original)?;
+        recover_residual(db, &current, request, original)?;
     }
     // Keep the claim captured before recovery; never adopt a later allocation.
-    let target = current;
-    let operation = persistence::admit(db, &target, &request, None)?;
-    let plan = match planning::prepare(db, &operation.lease_id, &target, &request) {
-        Ok(plan) => plan,
-        Err(error) => {
-            persistence::terminal(
-                db,
-                &operation.lease_id,
-                OperationState::Failed,
-                Some(&error),
-            )?;
-            return Err(error);
-        }
-    };
-    if let Err(error) = persistence::event(
+    Ok(current)
+}
+
+fn recover_residual(
+    db: &mut SqliteConnection,
+    target: &AddTarget,
+    request: &AddRequest,
+    original: OperationId,
+) -> Result<(), AddError> {
+    let recovery = persistence::admit(db, target, request, Some(original))?;
+    let plan = persistence::load_plan(db, &original)?.ok_or_else(|| JournalSnafu.build())?;
+    persistence::event(
         db,
-        &operation.lease_id,
+        &recovery.lease_id,
         "workspace_add_planned",
         document(&plan)?,
-    ) {
-        persistence::terminal(
-            db,
-            &operation.lease_id,
-            OperationState::Failed,
-            Some(&error),
-        )?;
-        return Err(error);
-    }
-    match apply(db, &operation.lease_id, &plan) {
-        Ok(pool) => Ok(result(&plan, operation.id, pool)),
+    )?;
+    // Recovery events retain the original step ownership evidence.
+    persistence::event(
+        db,
+        &recovery.lease_id,
+        "workspace_add_recovery_source",
+        document(&json!({"operation_id": original}))?,
+    )?;
+    compensate_or_retain(db, &recovery.lease_id, &plan, &original)?;
+    Ok(())
+}
+
+fn prepare_operation(
+    db: &mut SqliteConnection,
+    lease: &LeaseId,
+    target: &AddTarget,
+    request: &AddRequest,
+) -> Result<AddPlan, AddError> {
+    let prepared = planning::prepare(db, lease, target, request).and_then(|plan| {
+        persistence::event(db, lease, "workspace_add_planned", document(&plan)?)?;
+        Ok(plan)
+    });
+    match prepared {
+        Ok(plan) => Ok(plan),
         Err(error) => {
-            // A lost acknowledgement must not compensate a committed addition.
-            if storage::operation_state(db, &operation.id)? == Some(OperationState::Succeeded) {
-                let pool = storage::find_workspace(db, &plan.workspace_id)?.pool_id;
-                return Ok(result(&plan, operation.id, pool));
-            }
-            persistence::event(
-                db,
-                &operation.lease_id,
-                "workspace_add_failure",
-                document(&json!({"error": error.to_string()}))?,
-            )?;
-            match compensate_or_retain(db, &operation.lease_id, &plan, &operation.id) {
-                Ok(()) => Err(error),
-                Err(cleanup) => Err(CompensationSnafu {
-                    cleanup: Box::new(cleanup),
-                }
-                .into_error(Box::new(error))),
-            }
+            persistence::terminal(db, lease, OperationState::Failed, Some(&error))?;
+            Err(error)
         }
+    }
+}
+
+fn fail_execution(
+    db: &mut SqliteConnection,
+    operation: &storage::OperationIntent,
+    plan: &AddPlan,
+    error: AddError,
+) -> Result<AddResult, AddError> {
+    // A lost acknowledgement must not compensate a committed addition.
+    if storage::operation_state(db, &operation.id)? == Some(OperationState::Succeeded) {
+        let pool = storage::find_workspace(db, &plan.workspace_id)?.pool_id;
+        return Ok(result(plan, operation.id, pool));
+    }
+    persistence::event(
+        db,
+        &operation.lease_id,
+        "workspace_add_failure",
+        document(&json!({"error": error.to_string()}))?,
+    )?;
+    match compensate_or_retain(db, &operation.lease_id, plan, &operation.id) {
+        Ok(()) => Err(error),
+        Err(cleanup) => Err(CompensationSnafu {
+            cleanup: Box::new(cleanup),
+        }
+        .into_error(Box::new(error))),
     }
 }
 
@@ -448,60 +463,79 @@ pub fn compensate(
         .is_some_and(|relocation| relocation.staging_path.as_path().exists());
     persistence::event(db, lease, "workspace_add_rollback", document(plan)?)?;
     for repo in plan.additions.iter().rev() {
-        if !intended(db, &evidence, repo)? {
-            continue;
-        }
-        if !repo.worktree_path.as_path().exists() {
-            let found = git::list_worktrees_with_heartbeat(&repo.source_path, || {
-                persistence::renew(db, lease)
-            })?;
-            ensure!(
-                !found.iter().any(|tree| tree.path == repo.worktree_path),
-                UnsafeSnafu {
-                    path: repo.worktree_path.as_path()
-                }
-            );
-            continue;
-        }
-        ensure!(
-            owns_directory(db, &evidence, repo)?,
-            UnsafeSnafu {
-                path: repo.worktree_path.as_path()
-            }
-        );
-        let trees = git::list_worktrees_with_heartbeat(&repo.source_path, || {
+        remove_addition(db, lease, &evidence, repo)?;
+    }
+    restore_original(db, lease, &evidence, plan)?;
+    record_restoration(db, lease, plan, mutated)
+}
+
+fn remove_addition(
+    db: &mut SqliteConnection,
+    lease: &LeaseId,
+    evidence: &OperationId,
+    repo: &RepositoryPlan,
+) -> Result<(), AddError> {
+    if !intended(db, evidence, repo)? {
+        return Ok(());
+    }
+    if !repo.worktree_path.as_path().exists() {
+        let found = git::list_worktrees_with_heartbeat(&repo.source_path, || {
             persistence::renew(db, lease)
         })?;
-        if !trees.iter().any(|tree| tree.path == repo.worktree_path) {
-            persistence::step(db, lease, "remove empty new directory", document(repo)?)?;
-            std::fs::remove_dir(repo.worktree_path.as_path()).context(IoSnafu {
-                path: repo.worktree_path.as_path(),
-            })?;
-            persistence::event(db, lease, "worktree_directory_removed", document(repo)?)?;
-            continue;
-        }
         ensure!(
-            planning::observe(db, lease, repo, &repo.worktree_path)? == RepoWorktreeState::Attached,
+            !found.iter().any(|tree| tree.path == repo.worktree_path),
             UnsafeSnafu {
                 path: repo.worktree_path.as_path()
             }
         );
-        ensure!(
-            !git::has_ignored_files_with_heartbeat(repo.worktree_path.as_path(), || {
-                persistence::renew(db, lease)
-            })?,
-            UnsafeSnafu {
-                path: repo.worktree_path.as_path()
-            }
-        );
-        persistence::step(db, lease, "remove new worktree", document(repo)?)?;
-        git::remove_clean_worktree_with_heartbeat(
-            &repo.source_path,
-            repo.worktree_path.as_path(),
-            || persistence::renew(db, lease),
-        )?;
-        persistence::event(db, lease, "worktree_add_rolled_back", document(repo)?)?;
+        return Ok(());
     }
+    ensure!(
+        owns_directory(db, evidence, repo)?,
+        UnsafeSnafu {
+            path: repo.worktree_path.as_path()
+        }
+    );
+    let trees =
+        git::list_worktrees_with_heartbeat(&repo.source_path, || persistence::renew(db, lease))?;
+    if !trees.iter().any(|tree| tree.path == repo.worktree_path) {
+        persistence::step(db, lease, "remove empty new directory", document(repo)?)?;
+        std::fs::remove_dir(repo.worktree_path.as_path()).context(IoSnafu {
+            path: repo.worktree_path.as_path(),
+        })?;
+        persistence::event(db, lease, "worktree_directory_removed", document(repo)?)?;
+        return Ok(());
+    }
+    ensure!(
+        planning::observe(db, lease, repo, &repo.worktree_path)? == RepoWorktreeState::Attached,
+        UnsafeSnafu {
+            path: repo.worktree_path.as_path()
+        }
+    );
+    ensure!(
+        !git::has_ignored_files_with_heartbeat(repo.worktree_path.as_path(), || {
+            persistence::renew(db, lease)
+        })?,
+        UnsafeSnafu {
+            path: repo.worktree_path.as_path()
+        }
+    );
+    persistence::step(db, lease, "remove new worktree", document(repo)?)?;
+    git::remove_clean_worktree_with_heartbeat(
+        &repo.source_path,
+        repo.worktree_path.as_path(),
+        || persistence::renew(db, lease),
+    )?;
+    persistence::event(db, lease, "worktree_add_rolled_back", document(repo)?)?;
+    Ok(())
+}
+
+fn restore_original(
+    db: &mut SqliteConnection,
+    lease: &LeaseId,
+    evidence: &OperationId,
+    plan: &AddPlan,
+) -> Result<(), AddError> {
     if let Some(move_) = &plan.relocation {
         let repo = plan
             .existing
@@ -525,10 +559,19 @@ pub fn compensate(
                 move_original(db, lease, repo, &move_.worktree_path, &move_.staging_path)?;
             }
             planning::observe(db, lease, repo, &move_.staging_path)?;
-            remove_container(db, lease, &evidence, plan)?;
+            remove_container(db, lease, evidence, plan)?;
             move_original(db, lease, repo, &move_.staging_path, &move_.previous_path)?;
         }
     }
+    Ok(())
+}
+
+fn record_restoration(
+    db: &mut SqliteConnection,
+    lease: &LeaseId,
+    plan: &AddPlan,
+    mutated: bool,
+) -> Result<(), AddError> {
     let owned = storage::repository::operation_lease_for_mutation(db, lease)?;
     let mut health = WorkspaceState::Ready;
     for repo in &plan.existing {
@@ -620,20 +663,8 @@ pub fn recover(
         return Ok(RecoveryOutcome::Failed);
     };
     ensure!(plan.workspace_id == operation.workspace_id, JournalSnafu);
-    let rollback = persistence::has_event(db, &operation.id, "workspace_add_rollback")?
-        || persistence::request_intent(db, &operation.id)?
-            .recovery_of
-            .is_some();
-    let evidence = evidence_operation(db, &operation.id)?;
-    let mut owns_additions = true;
-    for repo in &plan.additions {
-        owns_additions &= intended(db, &evidence, repo)?;
-    }
-    if !rollback && owns_additions {
-        if let Ok(observed) = final_observations(db, lease, &plan) {
-            persistence::finish(db, lease, &plan, &observed, true)?;
-            return Ok(RecoveryOutcome::Succeeded);
-        }
+    if can_publish_recovery(db, operation, lease, &plan)? {
+        return Ok(RecoveryOutcome::Succeeded);
     }
     persistence::event(
         db,
@@ -657,6 +688,31 @@ pub fn recover(
             }
         }
     }
+}
+
+fn can_publish_recovery(
+    db: &mut SqliteConnection,
+    operation: &storage::OperationRow,
+    lease: &LeaseId,
+    plan: &AddPlan,
+) -> Result<bool, AddError> {
+    let rollback = persistence::has_event(db, &operation.id, "workspace_add_rollback")?
+        || persistence::request_intent(db, &operation.id)?
+            .recovery_of
+            .is_some();
+    let evidence = evidence_operation(db, &operation.id)?;
+    let mut owns_additions = true;
+    for repo in &plan.additions {
+        owns_additions &= intended(db, &evidence, repo)?;
+    }
+    if rollback || !owns_additions {
+        return Ok(false);
+    }
+    let Ok(observed) = final_observations(db, lease, plan) else {
+        return Ok(false);
+    };
+    persistence::finish(db, lease, plan, &observed, true)?;
+    Ok(true)
 }
 
 use snafu::IntoError;
