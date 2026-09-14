@@ -37,8 +37,7 @@ Primary code: `src/cli.rs`, `src/main.rs`, `src/workspace.rs`,
 `src/workspace_open.rs`, `src/status/target.rs`, `src/status/combined.rs`,
 `src/status/report.rs`, `src/status/summary.rs`, and `src/codex/workspace.rs`.
 Reuse storage queries and existing domain types. No schema migration or new
-dependency is required. This change is currently a plan; implementation and
-command specification deltas remain scheduled in the task list.
+dependency is required. Implementation and command specification deltas are tracked in the task list.
 
 ## Non-Goals
 

@@ -33,9 +33,9 @@
 
 ## 5. Verify and Review
 
-- [ ] Run formatting, focused locator/CLI/status/open/reuse/session/removal tests, then the repository's required Rust checks and full test suite.
-- [ ] Verify release rejects a claim replaced between lookup and admission and never acts on an outer workspace after an inner-boundary rejection.
-- [ ] Verify status/open snapshot consistency and that read-only selection neither creates storage nor writes lifecycle data.
-- [ ] Verify remove still rejects cross-table ID collisions and session forwarding arguments retain their current interpretation.
-- [ ] Review the final diff for duplicate lookup implementations, unintended error-text changes, and unnecessary database/API changes.
-- [ ] Validate the completed OpenSpec change with the available project tooling and record actual verification results.
+- [x] Run formatting, focused locator/CLI/status/open/reuse/session/removal tests, then the repository's required Rust checks and full test suite.
+- [x] Verify release rejects a claim replaced between lookup and admission and never acts on an outer workspace after an inner-boundary rejection.
+- [x] Verify status/open snapshot consistency and that read-only selection neither creates storage nor writes lifecycle data.
+- [x] Verify remove still rejects cross-table ID collisions and session forwarding arguments retain their current interpretation.
+- [x] Review the final diff for duplicate lookup implementations, unintended error-text changes, and unnecessary database/API changes.
+- [x] Validate the completed OpenSpec change with the available project tooling and record actual verification results.

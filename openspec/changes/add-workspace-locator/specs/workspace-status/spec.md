@@ -37,7 +37,7 @@ SHALL silently omit the human summary and leave the selected inventory intact.
 
 #### Scenario: Stay Silent Outside a Workspace
 
-- **WHEN** no ID is supplied and no stored workspace contains current directory
+- **WHEN** no explicit selector is supplied and no stored workspace contains current directory
 - **THEN** no summary, no summary placeholder, no extra blank line, and no
   diagnostic is emitted; only the existing selected inventory is rendered
 

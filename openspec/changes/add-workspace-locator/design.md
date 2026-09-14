@@ -116,9 +116,9 @@ logic, rather than only flattening three fields into each command.
 - `WorkspaceLocatorArgs` owns the three named options, their value names, help,
   and shared parsing behavior.
 - A shared group constructor owns the mutually exclusive argument membership.
-  It accepts the command's legacy positional argument ID and explicit-selection
-  policy. Commands supply these differences instead of copying option lists or
-  pairwise conflict declarations. Wire this through the parser construction path
+  It accepts the command's explicit-selection policy. Both shared named fields
+  and command-local legacy positional fields declare membership in the shared
+  group, avoiding copied option lists or pairwise conflict declarations. Wire this through the parser construction path
   used by both production and parser tests, including generated help.
 - `WorkspaceLocatorInput` represents one explicit, raw input as
   `Id(WorkspaceId)`, `ExactPath(PathBuf)`, or `ClaimId(ClaimId)`. A command's

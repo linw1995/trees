@@ -35,3 +35,23 @@ and CLI tests will cover added selection forms and direct-construction conflicts
   release cycles, missing claims, and automatic-workspace eligibility.
 - Direct conversion tests reject conflicts before path access and verify that
   explicit identifiers do not resolve the current directory.
+
+## Final Verification
+
+- `cargo test --locked --all-targets --all-features`: 308 tests passed on macOS.
+- Extended the status concurrency test to release a selected claim between
+  target lookup and inventory loading; both sections retain the original snapshot.
+- Added release regression tests for replacement claims and removed inner
+  boundaries, and verified explicit missing CLI targets never fall back to a
+  valid current workspace.
+- Reviewed open's transaction: locator lookup and ownership snapshot remain in
+  the same read-only transaction, with the connection closed before launch.
+- Existing removal collision and session forwarding tests passed.
+- `openspec validate add-workspace-locator --strict --no-interactive`: passed.
+- `git diff --check`: passed. Only the shared locator retains ancestor traversal.
+- Commit hooks verify formatting, Clippy with warnings denied, all-target
+  compilation, rust-analyzer diagnostics, Markdown, notices, and SQL boundaries.
+
+No database migration or new dependency was introduced. The existing ID-only
+open API remains a delegating compatibility wrapper. CLI claim text is parsed
+in shared conversion to preserve the existing invalid-claim diagnostic.

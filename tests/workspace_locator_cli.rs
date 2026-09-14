@@ -104,6 +104,24 @@ fn named_selectors_reach_the_same_workspace_across_commands() {
             );
             assert_eq!(String::from_utf8_lossy(&opened.stdout).trim(), path);
         }
+        fs::create_dir_all(Path::new(path).join("child")).unwrap();
+        let missing_id = WorkspaceId::new().to_string();
+        for command_name in ["status", "open", "release"] {
+            for selector in [
+                vec!["--workspace-id", missing_id.as_str()],
+                vec!["--claim-id", missing_id.as_str()],
+                vec!["--workspace-dir", "child"],
+            ] {
+                let mut cmd = command(&root);
+                cmd.current_dir(path).arg(command_name).args(selector);
+                if command_name == "open" {
+                    cmd.arg("--program=pwd");
+                }
+                let output = cmd.output().unwrap();
+                assert!(!output.status.success());
+                assert!(output.stdout.is_empty());
+            }
+        }
         let selected = match release_option {
             "--workspace-id" => id,
             "--workspace-dir" => path,

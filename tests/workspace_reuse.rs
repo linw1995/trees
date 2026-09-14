@@ -901,3 +901,94 @@ fn records_a_partial_gc_failure_without_reporting_removal() {
     fs::remove_file(fixture.database_path).expect("database should be removable");
     fs::remove_dir_all(fixture.root).expect("test root should be removable");
 }
+
+#[test]
+fn selected_claim_cannot_adopt_a_replacement_before_release_admission() {
+    use trees::claim::WorkspaceClaim;
+    use trees::storage::{insert_workspace_claim, release_workspace_claim, NewWorkspaceClaim};
+    use trees::workspace_locator::{locate, WorkspaceSelector};
+
+    let mut fixture = automatic_fixture();
+    let acquired = allocate_automatic_workspace(&mut fixture.connection, &fixture.plan).unwrap();
+    let selected = locate(
+        &mut fixture.connection,
+        &WorkspaceSelector::ClaimId(acquired.claim_id),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(release_workspace_claim(
+        &mut fixture.connection,
+        &fixture.workspace.id,
+        &acquired.claim_id
+    )
+    .unwrap());
+    let replacement = WorkspaceClaim::new(fixture.workspace.id);
+    insert_workspace_claim(
+        &mut fixture.connection,
+        &NewWorkspaceClaim::from(&replacement),
+    )
+    .unwrap();
+
+    let result = release_automatic_workspace(
+        &mut fixture.connection,
+        &selected.workspace.canonical_path,
+        selected.selected_claim_id.unwrap(),
+    );
+    assert!(
+        matches!(result, Err(WorkspaceError::ClaimNotFound { claim_id }) if claim_id == acquired.claim_id)
+    );
+    assert_eq!(
+        find_workspace_claim(&mut fixture.connection, &fixture.workspace.id)
+            .unwrap()
+            .unwrap()
+            .id,
+        replacement.id
+    );
+    assert!(locate(
+        &mut fixture.connection,
+        &WorkspaceSelector::ClaimId(acquired.claim_id)
+    )
+    .unwrap()
+    .is_none());
+    cleanup_fixture(fixture);
+}
+
+#[test]
+fn release_rejects_an_inner_boundary_without_releasing_the_outer_claim() {
+    use trees::domain::WorkspaceId;
+    use trees::storage::{insert_workspace, NewWorkspace};
+    use trees::workspace::release_automatic_workspace_by_target;
+    use trees::workspace_locator::WorkspaceSelector;
+
+    let mut fixture = automatic_fixture();
+    let acquired = allocate_automatic_workspace(&mut fixture.connection, &fixture.plan).unwrap();
+    let inner = fixture.workspace.canonical_path.as_path().join("nested");
+    fs::create_dir_all(inner.join("child")).unwrap();
+    let inner = CanonicalPath::resolve(inner).unwrap();
+    insert_workspace(
+        &mut fixture.connection,
+        &NewWorkspace {
+            id: WorkspaceId::new(),
+            canonical_path: inner.clone(),
+            state: WorkspaceState::Removed,
+            created_at: Timestamp::now(),
+            updated_at: Timestamp::now(),
+            last_reconciled_at: None,
+        },
+    )
+    .unwrap();
+    let directory = CanonicalPath::resolve(inner.as_path().join("child")).unwrap();
+    let result = release_automatic_workspace_by_target(
+        &mut fixture.connection,
+        WorkspaceSelector::ContainingDirectory(directory),
+    );
+    assert!(matches!(result, Err(WorkspaceError::NotAutomatic { path }) if path == inner));
+    assert_eq!(
+        find_workspace_claim(&mut fixture.connection, &fixture.workspace.id)
+            .unwrap()
+            .unwrap()
+            .id,
+        acquired.claim_id
+    );
+    cleanup_fixture(fixture);
+}

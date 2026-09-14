@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use diesel::sqlite::SqliteConnection;
 use serde::Serialize;
-use snafu::{ResultExt, Snafu};
+use snafu::{OptionExt, ResultExt, Snafu};
 
 use crate::claim::WorkspaceClaim;
 use crate::domain::{
@@ -473,36 +473,25 @@ pub fn release_automatic_workspace_by_target(
             WorkspaceSelector::ClaimId(claim_id) => ClaimNotFoundSnafu { claim_id }.fail(),
         };
     };
-    let (workspace_path, claim_id) = match located.selected_claim_id {
-        Some(claim_id) => {
-            snafu::ensure!(
-                located.workspace.management_mode == WorkspaceManagementMode::Automatic,
-                NotAutomaticSnafu {
-                    path: located.workspace.canonical_path.clone()
-                }
-            );
-            (located.workspace.canonical_path, claim_id)
+    let workspace = located.workspace;
+    snafu::ensure!(
+        workspace.management_mode == WorkspaceManagementMode::Automatic,
+        NotAutomaticSnafu {
+            path: workspace.canonical_path.clone()
         }
-        None => release_identity_for_workspace(connection, located.workspace)?,
+    );
+    let claim_id = match located.selected_claim_id {
+        Some(claim_id) => claim_id,
+        None => {
+            find_workspace_claim(connection, &workspace.id)
+                .context(DatabaseSnafu)?
+                .context(WorkspaceUnclaimedSnafu {
+                    path: workspace.canonical_path.clone(),
+                })?
+                .id
+        }
     };
-    release_automatic_workspace(connection, &workspace_path, claim_id)
-}
-
-fn release_identity_for_workspace(
-    connection: &mut SqliteConnection,
-    workspace: WorkspaceRow,
-) -> Result<(CanonicalPath, ClaimId), WorkspaceError> {
-    if workspace.management_mode != WorkspaceManagementMode::Automatic {
-        return Err(WorkspaceError::NotAutomatic {
-            path: workspace.canonical_path,
-        });
-    }
-    let claim = find_workspace_claim(connection, &workspace.id)
-        .context(DatabaseSnafu)?
-        .ok_or_else(|| WorkspaceError::WorkspaceUnclaimed {
-            path: workspace.canonical_path.clone(),
-        })?;
-    Ok((workspace.canonical_path, claim.id))
+    release_automatic_workspace(connection, &workspace.canonical_path, claim_id)
 }
 
 pub fn release_automatic_workspace(

@@ -183,7 +183,26 @@ mod tests {
             panic!("expected pools")
         };
         assert_eq!(after.pools[0].available, 0);
-        assert!(after.target_workspace.unwrap().claim.is_some());
+        let claim_id = after.target_workspace.unwrap().claim.unwrap().claim_id;
+        let by_claim = WorkspaceSelector::ClaimId(claim_id);
+        let snapshot = load_with_observer(&mut reader, &by_claim, StatusView::Pools, false, || {
+            assert!(release_workspace_claim(&mut writer, &id, &claim_id).unwrap());
+        })
+        .unwrap();
+        let Snapshot::Pools(before_release) = snapshot else {
+            panic!("expected pools")
+        };
+        assert_eq!(before_release.pools[0].available, 0);
+        assert_eq!(
+            before_release
+                .target_workspace
+                .unwrap()
+                .claim
+                .unwrap()
+                .claim_id,
+            claim_id
+        );
+        assert!(load(Some(&mut reader), &by_claim, StatusView::Pools, false).is_err());
         drop(reader);
         drop(writer);
         std::fs::remove_file(path).unwrap();
