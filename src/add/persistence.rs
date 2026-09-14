@@ -9,16 +9,16 @@ use crate::schema::{lifecycle_events, operations, repo_worktrees, workspaces};
 use crate::storage::{EventDraft, OperationIntent, TransitionMetadata};
 
 #[derive(Debug, Serialize, Deserialize)]
-pub(super) struct RequestIntent {
+pub struct RequestIntent {
     version: u32,
     repositories: Vec<PathBuf>,
     offline: bool,
     claim_id: Option<ClaimId>,
     previous_pool_id: Option<PoolId>,
-    pub(super) recovery_of: Option<OperationId>,
+    pub recovery_of: Option<OperationId>,
 }
 
-pub(super) fn admit(
+pub fn admit(
     db: &mut SqliteConnection,
     target: &AddTarget,
     request: &AddRequest,
@@ -65,10 +65,7 @@ pub(super) fn admit(
     }
 }
 
-pub(super) fn renew(
-    db: &mut SqliteConnection,
-    lease: &LeaseId,
-) -> Result<(), crate::git::GitError> {
+pub fn renew(db: &mut SqliteConnection, lease: &LeaseId) -> Result<(), crate::git::GitError> {
     match storage::renew_operation_lease(db, lease)
         .map_err(crate::git::GitError::from_heartbeat_source)?
     {
@@ -79,14 +76,14 @@ pub(super) fn renew(
     }
 }
 
-pub(super) fn event(
+pub fn event(
     db: &mut SqliteConnection,
     lease: &LeaseId,
     kind: &str,
     details: JsonDocument,
 ) -> Result<(), AddError> {
     storage::with_short_transaction(db, |db| {
-        let owned = storage::repository::operation_lease_for_mutation(db, lease)?;
+        let owned = storage::operation_lease_for_mutation(db, lease)?;
         storage::append_event(
             db,
             &EventDraft {
@@ -107,7 +104,7 @@ pub(super) fn event(
     Ok(())
 }
 
-pub(super) fn step(
+pub fn step(
     db: &mut SqliteConnection,
     lease: &LeaseId,
     name: &str,
@@ -117,7 +114,7 @@ pub(super) fn step(
     Ok(())
 }
 
-pub(super) fn load_plan(
+pub fn load_plan(
     db: &mut SqliteConnection,
     operation: &OperationId,
 ) -> Result<Option<AddPlan>, AddError> {
@@ -137,7 +134,7 @@ pub(super) fn load_plan(
     .transpose()
 }
 
-pub(super) fn has_event(
+pub fn has_event(
     db: &mut SqliteConnection,
     operation: &OperationId,
     kind: &str,
@@ -147,7 +144,7 @@ pub(super) fn has_event(
         .any(|event| event.event_type == kind))
 }
 
-pub(crate) fn unresolved(
+pub fn unresolved(
     db: &mut SqliteConnection,
     workspace: &WorkspaceId,
 ) -> Result<Option<OperationId>, AddError> {
@@ -167,15 +164,12 @@ pub(crate) fn unresolved(
     Ok(latest.and_then(|(id, kind)| (kind == "workspace_add_unresolved").then_some(id)))
 }
 
-pub(crate) fn ensure_resolved(
-    db: &mut SqliteConnection,
-    workspace: &WorkspaceId,
-) -> Result<(), AddError> {
+pub fn ensure_resolved(db: &mut SqliteConnection, workspace: &WorkspaceId) -> Result<(), AddError> {
     ensure!(unresolved(db, workspace)?.is_none(), UnresolvedSnafu);
     Ok(())
 }
 
-pub(super) fn active_repositories(
+pub fn active_repositories(
     db: &mut SqliteConnection,
     workspace: &WorkspaceId,
 ) -> Result<Vec<storage::RepoWorktreeRow>, AddError> {
@@ -185,7 +179,7 @@ pub(super) fn active_repositories(
         .collect())
 }
 
-pub(super) fn finish(
+pub fn finish(
     db: &mut SqliteConnection,
     lease: &LeaseId,
     plan: &AddPlan,
@@ -193,7 +187,7 @@ pub(super) fn finish(
     recovered: bool,
 ) -> Result<Option<PoolId>, AddError> {
     db.immediate_transaction(|db| {
-        let owned = storage::repository::operation_lease_for_mutation(db, lease)?;
+        let owned = storage::operation_lease_for_mutation(db, lease)?;
         ensure!(owned.workspace_id == plan.workspace_id, JournalSnafu);
         let workspace = storage::find_workspace(db, &plan.workspace_id)?;
         ensure!(
@@ -318,7 +312,7 @@ pub(super) fn finish(
     })
 }
 
-pub(super) fn terminal(
+pub fn terminal(
     db: &mut SqliteConnection,
     lease: &LeaseId,
     state: OperationState,
@@ -339,7 +333,7 @@ pub(super) fn terminal(
     Ok(())
 }
 
-pub(super) fn retain_residuals(
+pub fn retain_residuals(
     db: &mut SqliteConnection,
     lease: &LeaseId,
     plan: &AddPlan,
@@ -347,7 +341,7 @@ pub(super) fn retain_residuals(
     error: &AddError,
 ) -> Result<(), AddError> {
     db.immediate_transaction(|db| {
-        let owned = storage::repository::operation_lease_for_mutation(db, lease)?;
+        let owned = storage::operation_lease_for_mutation(db, lease)?;
         for repo in remaining {
             diesel::insert_into(repo_worktrees::table)
                 .values(&storage::NewRepoWorktree {
@@ -377,7 +371,7 @@ pub(super) fn retain_residuals(
     })
 }
 
-pub(super) fn compensated(
+pub fn compensated(
     db: &mut SqliteConnection,
     lease: &LeaseId,
     plan: &AddPlan,
@@ -398,7 +392,7 @@ pub(super) fn compensated(
     })
 }
 
-pub(super) fn request_intent(
+pub fn request_intent(
     db: &mut SqliteConnection,
     id: &OperationId,
 ) -> Result<RequestIntent, AddError> {

@@ -197,7 +197,7 @@ fn apply(
 }
 
 fn verify_plan(db: &mut SqliteConnection, lease: &LeaseId, plan: &AddPlan) -> Result<(), AddError> {
-    let operation = storage::repository::operation_lease_for_mutation(db, lease)?;
+    let operation = storage::operation_lease_for_mutation(db, lease)?;
     let persisted =
         persistence::load_plan(db, &operation.operation_id)?.ok_or_else(|| JournalSnafu.build())?;
     ensure!(
@@ -207,7 +207,11 @@ fn verify_plan(db: &mut SqliteConnection, lease: &LeaseId, plan: &AddPlan) -> Re
     Ok(())
 }
 
-fn provision(db: &mut SqliteConnection, lease: &LeaseId, plan: &AddPlan) -> Result<(), AddError> {
+pub fn provision(
+    db: &mut SqliteConnection,
+    lease: &LeaseId,
+    plan: &AddPlan,
+) -> Result<(), AddError> {
     verify_plan(db, lease, plan)?;
     if let Some(move_) = &plan.relocation {
         let original = plan
@@ -308,7 +312,7 @@ fn final_observations(
             planning::observe(db, lease, repo, final_path(plan, repo))?,
         ));
     }
-    let operation = storage::repository::operation_lease_for_mutation(db, lease)?.operation_id;
+    let operation = storage::operation_lease_for_mutation(db, lease)?.operation_id;
     let evidence = evidence_operation(db, &operation)?;
     for repo in &plan.additions {
         ensure!(
@@ -568,7 +572,7 @@ fn record_restoration(
     plan: &AddPlan,
     mutated: bool,
 ) -> Result<(), AddError> {
-    let owned = storage::repository::operation_lease_for_mutation(db, lease)?;
+    let owned = storage::operation_lease_for_mutation(db, lease)?;
     let mut health = WorkspaceState::Ready;
     for repo in &plan.existing {
         let state = planning::observe(db, lease, repo, &repo.worktree_path)?;
@@ -643,7 +647,7 @@ fn compensate_or_retain(
     }
 }
 
-pub(crate) fn recover(
+pub fn recover(
     db: &mut SqliteConnection,
     operation: &storage::OperationRow,
     lease: &LeaseId,
@@ -712,7 +716,3 @@ fn can_publish_recovery(
 }
 
 use snafu::IntoError;
-
-#[cfg(test)]
-#[path = "tests.rs"]
-mod tests;

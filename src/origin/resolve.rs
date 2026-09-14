@@ -14,7 +14,7 @@ pub fn resolve(
     resolve_inputs(inputs, offline, workspace_path, false, &mut |_| {})
 }
 
-pub(crate) fn resolve_add_with_progress(
+pub fn resolve_add_with_progress(
     inputs: &[PathBuf],
     offline: bool,
     published: &mut dyn FnMut(&storage::OriginRepositoryRow),

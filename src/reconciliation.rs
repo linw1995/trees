@@ -81,7 +81,7 @@ fn reconcile_workspace_inner(
             workspace_state: WorkspaceState::Removed,
         });
     }
-    if crate::add::unresolved(connection, workspace_id)?.is_some() {
+    if crate::add::persistence::unresolved(connection, workspace_id)?.is_some() {
         return Ok(ReconciliationSummary {
             changed_worktrees: 0,
             workspace_state: WorkspaceState::Degraded,
@@ -347,7 +347,7 @@ pub fn recover_expired_operation(
     let operation = find_operation(connection, &operation.id).context(DatabaseSnafu)?;
 
     if operation.kind == "add" {
-        return Ok(crate::add::recover(
+        return Ok(crate::add::workflow::recover(
             connection,
             &operation,
             &recovery_lease_id,

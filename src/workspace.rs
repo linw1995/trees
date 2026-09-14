@@ -514,7 +514,7 @@ pub fn release_automatic_workspace(
     );
     let lease_id = intent.lease_id;
     let operation = try_begin_operation(connection, &intent).map_err(map_operation_error)?;
-    if let Err(source) = crate::add::ensure_resolved(connection, &workspace.id) {
+    if let Err(source) = crate::add::persistence::ensure_resolved(connection, &workspace.id) {
         let primary = WorkspaceError::Addition { source };
         fail_operation(connection, &lease_id, &primary);
         return Err(primary);

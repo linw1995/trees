@@ -30,11 +30,13 @@ local tests and Clippy passed after this refactor.
 
 ## Visibility Review
 
-The addition submodules, plan types, target lookup, and execution helpers are
-private. Only the request, result, error types, and execution entry point form
-the external API. Internal callers use restricted crate or parent visibility;
-Snafu selectors remain private. Unused source resolution API was removed.
+Visibility follows the existing workspace and storage patterns. Module entry
+points expose submodules and shared symbols use plain `pub`. Helpers used only
+within their defining module remain private. Snafu selectors remain private.
+The project guidance in `AGENTS.md` makes this policy explicit.
 
-Tests that require internal steps now live inside the workflow module. Public
-behavior remains covered by integration tests, using shared test fixtures.
-The full suite still contains 343 tests, with no scenarios removed.
+The earlier visibility-only encapsulation and test relocation were reversed.
+No additional facade modules or implementation files are needed for visibility.
+All 29 workspace scenarios remain in the integration suite, and the complete
+suite still contains 343 tests. The functional fixes and complexity refactor
+remain intact.
