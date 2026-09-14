@@ -13,11 +13,11 @@
 
 ## 3. Migrate Existing Behavior
 
-- [ ] Replace status target lookup while retaining no-database behavior, one snapshot, existing headings, and post-connection process observation.
-- [ ] Replace release identity lookup while preserving claim provenance, active-claim snapshotting, and fail-fast transactional validation.
-- [ ] Route open's ID selection through the locator within its existing snapshot and preserve all eligibility checks.
-- [ ] Replace managed-session preparation's initial exact-path lookup without changing argument forwarding or reconciliation.
-- [ ] Delete duplicated ancestor algorithms and obsolete selector types; keep storage-level collision checks and admission rereads.
+- [x] Replace status target lookup while retaining no-database behavior, one snapshot, existing headings, and post-connection process observation.
+- [x] Replace release identity lookup while preserving claim provenance, active-claim snapshotting, and fail-fast transactional validation.
+- [x] Route open's ID selection through the locator within its existing snapshot and preserve all eligibility checks.
+- [x] Replace managed-session preparation's initial exact-path lookup without changing argument forwarding or reconciliation.
+- [x] Delete duplicated ancestor algorithms and obsolete selector types; keep storage-level collision checks and admission rereads.
 
 ## 4. Expose Mutually Exclusive CLI Selectors
 

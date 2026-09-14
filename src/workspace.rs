@@ -17,17 +17,17 @@ use crate::reconciliation::{self, ReconciliationError};
 use crate::storage::{
     append_event, begin_operation, ensure_origin_repository, finalize_automatic_creation,
     finalize_creation as finalize_persisted_creation, find_workspace, find_workspace_by_path,
-    find_workspace_claim, find_workspace_claim_by_id, find_workspace_pool,
-    insert_managed_workspace, insert_repo_worktree, insert_workspace_claim,
-    insert_workspace_pool_repositories, persist_operation_intent, persist_operation_step_intent,
-    record_operation_transition, record_repo_worktree_transition, record_workspace_acquire,
-    record_workspace_acquire_failure, record_workspace_release, record_workspace_release_rejection,
-    record_workspace_transition, record_worktree_step_result, release_workspace_claim,
-    try_begin_operation, with_retrying_short_transaction, EventDraft, NewManagedWorkspace,
-    NewRepoWorktree, NewWorkspacePoolRepository, OperationIntent, OperationIntentError,
-    RepoWorktreeRow, TransitionMetadata, WorkspaceRow,
+    find_workspace_claim, find_workspace_pool, insert_managed_workspace, insert_repo_worktree,
+    insert_workspace_claim, insert_workspace_pool_repositories, persist_operation_intent,
+    persist_operation_step_intent, record_operation_transition, record_repo_worktree_transition,
+    record_workspace_acquire, record_workspace_acquire_failure, record_workspace_release,
+    record_workspace_release_rejection, record_workspace_transition, record_worktree_step_result,
+    release_workspace_claim, try_begin_operation, with_retrying_short_transaction, EventDraft,
+    NewManagedWorkspace, NewRepoWorktree, NewWorkspacePoolRepository, OperationIntent,
+    OperationIntentError, RepoWorktreeRow, TransitionMetadata, WorkspaceRow,
 };
 use crate::validation::{self, ValidationError};
+use crate::workspace_locator::{locate, LocateError, WorkspaceSelector};
 
 #[derive(Debug, Clone)]
 pub struct CreateRequest {
@@ -68,13 +68,6 @@ pub struct ReleaseResult {
     pub workspace_path: CanonicalPath,
     pub claim_id: ClaimId,
     pub released_at: Timestamp,
-}
-
-#[derive(Debug, Clone)]
-pub enum ReleaseTarget {
-    WorkspacePath(CanonicalPath),
-    CurrentDirectory(CanonicalPath),
-    ClaimId(ClaimId),
 }
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
@@ -465,66 +458,34 @@ fn fail_acquire(
 
 pub fn release_automatic_workspace_by_target(
     connection: &mut SqliteConnection,
-    target: ReleaseTarget,
+    target: WorkspaceSelector,
 ) -> Result<ReleaseResult, WorkspaceError> {
-    let (workspace_path, claim_id) = match target {
-        ReleaseTarget::WorkspacePath(path) => {
-            release_identity_for_workspace_path(connection, &path)?
+    let located = locate(connection, &target).map_err(|error| match error {
+        LocateError::Database { source } => WorkspaceError::Database { source },
+        error => WorkspaceError::from(error),
+    })?;
+    let Some(located) = located else {
+        return match target {
+            WorkspaceSelector::Id(workspace_id) => UnknownWorkspaceSnafu { workspace_id }.fail(),
+            WorkspaceSelector::ExactPath(path) | WorkspaceSelector::ContainingDirectory(path) => {
+                WorkspaceNotFoundSnafu { path }.fail()
+            }
+            WorkspaceSelector::ClaimId(claim_id) => ClaimNotFoundSnafu { claim_id }.fail(),
+        };
+    };
+    let (workspace_path, claim_id) = match located.selected_claim_id {
+        Some(claim_id) => {
+            snafu::ensure!(
+                located.workspace.management_mode == WorkspaceManagementMode::Automatic,
+                NotAutomaticSnafu {
+                    path: located.workspace.canonical_path.clone()
+                }
+            );
+            (located.workspace.canonical_path, claim_id)
         }
-        ReleaseTarget::CurrentDirectory(path) => {
-            release_identity_for_current_directory(connection, &path)?
-        }
-        ReleaseTarget::ClaimId(claim_id) => release_identity_for_claim(connection, claim_id)?,
+        None => release_identity_for_workspace(connection, located.workspace)?,
     };
     release_automatic_workspace(connection, &workspace_path, claim_id)
-}
-
-fn release_identity_for_workspace_path(
-    connection: &mut SqliteConnection,
-    workspace_path: &CanonicalPath,
-) -> Result<(CanonicalPath, ClaimId), WorkspaceError> {
-    let workspace = find_workspace_by_path(connection, workspace_path)
-        .context(DatabaseSnafu)?
-        .ok_or_else(|| WorkspaceError::WorkspaceNotFound {
-            path: workspace_path.clone(),
-        })?;
-    release_identity_for_workspace(connection, workspace)
-}
-
-fn release_identity_for_current_directory(
-    connection: &mut SqliteConnection,
-    current_directory: &CanonicalPath,
-) -> Result<(CanonicalPath, ClaimId), WorkspaceError> {
-    for ancestor in current_directory.as_path().ancestors() {
-        let path = CanonicalPath::from_absolute(ancestor)
-            .expect("an ancestor of an absolute path should be absolute");
-        if let Some(workspace) = find_workspace_by_path(connection, &path).context(DatabaseSnafu)? {
-            return release_identity_for_workspace(connection, workspace);
-        }
-    }
-    Err(WorkspaceError::WorkspaceNotFound {
-        path: current_directory.clone(),
-    })
-}
-
-fn release_identity_for_claim(
-    connection: &mut SqliteConnection,
-    claim_id: ClaimId,
-) -> Result<(CanonicalPath, ClaimId), WorkspaceError> {
-    let claim = match find_workspace_claim_by_id(connection, &claim_id) {
-        Ok(claim) => claim,
-        Err(diesel::result::Error::NotFound) => {
-            return Err(WorkspaceError::ClaimNotFound { claim_id });
-        }
-        Err(error) => return Err(WorkspaceError::Database { source: error }),
-    };
-    let workspace = find_workspace(connection, &claim.workspace_id).context(DatabaseSnafu)?;
-    if workspace.management_mode != WorkspaceManagementMode::Automatic {
-        return Err(WorkspaceError::NotAutomatic {
-            path: workspace.canonical_path,
-        });
-    }
-    Ok((workspace.canonical_path, claim.id))
 }
 
 fn release_identity_for_workspace(
@@ -1594,6 +1555,10 @@ fn error_document(error: &WorkspaceError) -> JsonDocument {
 
 #[derive(Debug, Snafu)]
 pub enum WorkspaceError {
+    #[snafu(transparent)]
+    Locate { source: LocateError },
+    #[snafu(display("workspace not found: {workspace_id}"))]
+    UnknownWorkspace { workspace_id: WorkspaceId },
     #[snafu(display("source repository identity changed before creation: {path}"))]
     SourceChanged { path: CanonicalPath },
     #[snafu(transparent)]
@@ -2203,7 +2168,7 @@ mod tests {
             .expect("path-targeted acquire should succeed");
         let path_result = release_automatic_workspace_by_target(
             &mut connection,
-            ReleaseTarget::WorkspacePath(candidate.canonical_path.clone()),
+            WorkspaceSelector::ExactPath(candidate.canonical_path.clone()),
         )
         .expect("path-targeted release should succeed");
         assert_eq!(path_result.claim_id, path_claim.claim_id);
@@ -2212,7 +2177,7 @@ mod tests {
             .expect("claim-targeted acquire should succeed");
         let id_result = release_automatic_workspace_by_target(
             &mut connection,
-            ReleaseTarget::ClaimId(id_claim.claim_id),
+            WorkspaceSelector::ClaimId(id_claim.claim_id),
         )
         .expect("claim-targeted release should succeed");
         assert_eq!(id_result.claim_id, id_claim.claim_id);
@@ -2226,13 +2191,13 @@ mod tests {
         assert!(matches!(
             release_automatic_workspace_by_target(
                 &mut connection,
-                ReleaseTarget::WorkspacePath(nested_directory.clone()),
+                WorkspaceSelector::ExactPath(nested_directory.clone()),
             ),
             Err(WorkspaceError::WorkspaceNotFound { path }) if path == nested_directory
         ));
         let cwd_result = release_automatic_workspace_by_target(
             &mut connection,
-            ReleaseTarget::CurrentDirectory(nested_directory),
+            WorkspaceSelector::ContainingDirectory(nested_directory),
         )
         .expect("current-directory-targeted release should succeed");
         assert_eq!(cwd_result.claim_id, cwd_claim.claim_id);
@@ -2240,14 +2205,14 @@ mod tests {
         assert!(matches!(
             release_automatic_workspace_by_target(
                 &mut connection,
-                ReleaseTarget::WorkspacePath(candidate.canonical_path.clone()),
+                WorkspaceSelector::ExactPath(candidate.canonical_path.clone()),
             ),
             Err(WorkspaceError::WorkspaceUnclaimed { path }) if path == candidate.canonical_path
         ));
         assert!(matches!(
             release_automatic_workspace_by_target(
                 &mut connection,
-                ReleaseTarget::ClaimId(cwd_claim.claim_id),
+                WorkspaceSelector::ClaimId(cwd_claim.claim_id),
             ),
             Err(WorkspaceError::ClaimNotFound { claim_id }) if claim_id == cwd_claim.claim_id
         ));
@@ -2278,7 +2243,7 @@ mod tests {
 
         let error = release_automatic_workspace_by_target(
             &mut connection,
-            ReleaseTarget::WorkspacePath(candidate.canonical_path.clone()),
+            WorkspaceSelector::ExactPath(candidate.canonical_path.clone()),
         )
         .expect_err("second release should exit busy");
         assert!(matches!(

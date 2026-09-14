@@ -10,11 +10,12 @@ use crate::domain::{
 };
 use crate::reconciliation::{self, ReconciliationError, RecoveryOutcome};
 use crate::storage::{
-    find_workspace_by_path, list_repo_worktrees, persist_operation_intent,
-    record_operation_transition, with_short_transaction, OperationIntent, OperationIntentError,
-    RepoWorktreeRow, TransitionMetadata,
+    list_repo_worktrees, persist_operation_intent, record_operation_transition,
+    with_short_transaction, OperationIntent, OperationIntentError, RepoWorktreeRow,
+    TransitionMetadata,
 };
 use crate::validation::{self, ValidationError};
+use crate::workspace_locator::{locate, LocateError, WorkspaceSelector};
 
 #[derive(Debug, Clone)]
 pub struct PreparedWorkspace {
@@ -29,9 +30,13 @@ pub fn prepare(
     workspace_path: &Path,
 ) -> Result<PreparedWorkspace, WorkspacePreparationError> {
     let path = validation::resolve_workspace_path(workspace_path)?;
-    let workspace = find_workspace_by_path(connection, &path)
-        .context(DatabaseSnafu)?
-        .ok_or_else(|| WorkspacePreparationError::NotManaged { path: path.clone() })?;
+    let workspace = locate(connection, &WorkspaceSelector::ExactPath(path.clone()))
+        .map_err(|error| match error {
+            LocateError::Database { source } => WorkspacePreparationError::Database { source },
+            error => WorkspacePreparationError::from(error),
+        })?
+        .ok_or_else(|| WorkspacePreparationError::NotManaged { path: path.clone() })?
+        .workspace;
 
     match reconciliation::recover_expired_operation(connection, &workspace.id)
         .context(ReconciliationSnafu)?
@@ -156,6 +161,8 @@ fn validate_worktree_roots(
 
 #[derive(Debug, Snafu)]
 pub enum WorkspacePreparationError {
+    #[snafu(transparent)]
+    Locate { source: LocateError },
     #[snafu(transparent)]
     Validation { source: ValidationError },
     #[snafu(display("database operation failed: {source}"))]

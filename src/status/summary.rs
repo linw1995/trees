@@ -2,13 +2,13 @@ use time::{OffsetDateTime, UtcOffset};
 
 use super::combined::Snapshot;
 use super::processes::{Completeness, Observation};
-use super::target::TargetSelector;
 use super::{repos, LeaseStatus, WorkspaceStatus};
 use crate::domain::Timestamp;
+use crate::workspace_locator::WorkspaceSelector;
 
 pub fn render(
     snapshot: &Snapshot,
-    selector: &TargetSelector,
+    selector: &WorkspaceSelector,
     color: bool,
     processes: Option<&Observation>,
 ) -> String {
@@ -31,7 +31,7 @@ pub fn render(
 
 fn render_target(
     target: &WorkspaceStatus,
-    selector: &TargetSelector,
+    selector: &WorkspaceSelector,
     color: bool,
     processes: Option<&Observation>,
 ) -> String {
@@ -42,14 +42,16 @@ fn render_target(
 
 fn render_target_with_offset(
     target: &WorkspaceStatus,
-    selector: &TargetSelector,
+    selector: &WorkspaceSelector,
     color: bool,
     processes: Option<&Observation>,
     offset_at: impl FnOnce(OffsetDateTime) -> Option<UtcOffset>,
 ) -> String {
     let heading = match selector {
-        TargetSelector::Id(_) => "Workspace (selected by ID)",
-        TargetSelector::Directory(_) => "Workspace (current directory)",
+        WorkspaceSelector::ExactPath(_) => "Workspace (selected by path)",
+        WorkspaceSelector::ClaimId(_) => "Workspace (selected by claim)",
+        WorkspaceSelector::Id(_) => "Workspace (selected by ID)",
+        WorkspaceSelector::ContainingDirectory(_) => "Workspace (current directory)",
     };
     let mut rows = vec![
         ("ID", target.workspace_id.to_string()),
@@ -215,7 +217,7 @@ mod tests {
     #[test]
     fn renders_compact_summary_and_all_operation_leases() {
         let mut target = target();
-        let selector = TargetSelector::Id(target.workspace_id);
+        let selector = WorkspaceSelector::Id(target.workspace_id);
         let render = |target: &WorkspaceStatus| {
             render_target_with_offset(target, &selector, false, None, |_| {
                 UtcOffset::from_hms(8, 0, 0).ok()
@@ -253,7 +255,7 @@ mod tests {
     fn documentation_example_matches_the_rendered_summary() {
         let mut target = target();
         target.workspace_id = "01990000-0000-7000-8000-000000000001".parse().unwrap();
-        let selector = TargetSelector::Directory(target.path.clone());
+        let selector = WorkspaceSelector::ContainingDirectory(target.path.clone());
         let summary = render_target_with_offset(
             &target,
             &selector,
@@ -269,7 +271,7 @@ mod tests {
     fn renders_process_lists_completeness_and_escaped_text() {
         use super::super::processes::{Issue, IssueCode, Process};
         let target = target();
-        let selector = TargetSelector::Id(target.workspace_id);
+        let selector = WorkspaceSelector::Id(target.workspace_id);
         let mut observation = empty_observation();
         observation.processes = vec![
             Process {
@@ -385,7 +387,7 @@ mod tests {
             "/origin/api",
             RepoWorktreeState::Dirty,
         ));
-        let selector = TargetSelector::Id(target.workspace_id);
+        let selector = WorkspaceSelector::Id(target.workspace_id);
         let plain = render_target(&target, &selector, false, None);
         assert_eq!(plain.lines().count(), 8);
         assert!(!plain.contains('\u{1b}'));
@@ -405,7 +407,7 @@ mod tests {
     #[test]
     fn composes_every_inventory_and_preserves_no_target_output_exactly() {
         let target = target();
-        let selector = TargetSelector::Directory(target.path.clone());
+        let selector = WorkspaceSelector::ContainingDirectory(target.path.clone());
         for (mut snapshot, heading, empty) in [
             (
                 Snapshot::Pools(super::super::PoolStatusSnapshot::empty()),

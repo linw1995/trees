@@ -193,7 +193,7 @@ fn release_automatic(
 
 fn release_target(
     arguments: &trees::cli::ReleaseArgs,
-) -> Result<trees::workspace::ReleaseTarget, CliError> {
+) -> Result<trees::workspace_locator::WorkspaceSelector, CliError> {
     match arguments.workspace_dir.as_ref() {
         Some(path) => workspace_path_release_target(path),
         None => match arguments.claim_id.as_deref() {
@@ -205,20 +205,25 @@ fn release_target(
 
 fn workspace_path_release_target(
     path: &std::path::Path,
-) -> Result<trees::workspace::ReleaseTarget, CliError> {
-    Ok(trees::workspace::ReleaseTarget::WorkspacePath(
+) -> Result<trees::workspace_locator::WorkspaceSelector, CliError> {
+    Ok(trees::workspace_locator::WorkspaceSelector::ExactPath(
         trees::validation::resolve_workspace_path(path)?,
     ))
 }
 
-fn current_directory_release_target() -> Result<trees::workspace::ReleaseTarget, CliError> {
-    Ok(trees::workspace::ReleaseTarget::CurrentDirectory(
-        trees::domain::CanonicalPath::resolve(".")?,
-    ))
+fn current_directory_release_target(
+) -> Result<trees::workspace_locator::WorkspaceSelector, CliError> {
+    Ok(
+        trees::workspace_locator::WorkspaceSelector::ContainingDirectory(
+            trees::domain::CanonicalPath::resolve(".")?,
+        ),
+    )
 }
 
-fn claim_release_target(claim_id: &str) -> Result<trees::workspace::ReleaseTarget, CliError> {
-    Ok(trees::workspace::ReleaseTarget::ClaimId(
+fn claim_release_target(
+    claim_id: &str,
+) -> Result<trees::workspace_locator::WorkspaceSelector, CliError> {
+    Ok(trees::workspace_locator::WorkspaceSelector::ClaimId(
         claim_id
             .parse::<trees::domain::ClaimId>()
             .context(ClaimIdSnafu)?,
@@ -493,7 +498,7 @@ fn run_status(arguments: trees::cli::StatusArgs) -> Result<ExitCode, CliError> {
     if arguments.all && arguments.view != trees::cli::StatusView::Workspaces {
         return InvalidStatusArgumentsSnafu.fail();
     }
-    let selector = trees::status::target::TargetSelector::resolve(arguments.workspace_id)?;
+    let selector = trees::status::target::resolve(arguments.workspace_id)?;
     let view = match arguments.view {
         trees::cli::StatusView::Pools => trees::status::StatusView::Pools,
         trees::cli::StatusView::Workspaces => trees::status::StatusView::Workspaces,
@@ -792,7 +797,7 @@ mod tests {
             claim_id: None,
         };
         let path = match release_target(&path_arguments) {
-            Ok(trees::workspace::ReleaseTarget::WorkspacePath(path)) => path,
+            Ok(trees::workspace_locator::WorkspaceSelector::ExactPath(path)) => path,
             _ => panic!("expected a workspace path target"),
         };
         assert_eq!(
@@ -806,7 +811,7 @@ mod tests {
         };
         assert!(matches!(
             release_target(&cwd_arguments),
-            Ok(trees::workspace::ReleaseTarget::CurrentDirectory(_))
+            Ok(trees::workspace_locator::WorkspaceSelector::ContainingDirectory(_))
         ));
 
         let claim_id = trees::domain::ClaimId::new();
@@ -816,7 +821,7 @@ mod tests {
         };
         assert!(matches!(
             release_target(&claim_arguments),
-            Ok(trees::workspace::ReleaseTarget::ClaimId(value)) if value == claim_id
+            Ok(trees::workspace_locator::WorkspaceSelector::ClaimId(value)) if value == claim_id
         ));
     }
 

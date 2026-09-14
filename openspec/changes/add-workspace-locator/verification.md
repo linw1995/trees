@@ -16,3 +16,11 @@ and CLI tests will cover added selection forms and direct-construction conflicts
 - Coverage includes exact and ancestor boundaries, removed records, claim
   identity, absent targets, source errors, symlinks, and missing final components.
 - Relative CLI path conversion will receive additional coverage in CLI integration.
+
+## Consumer Migration
+
+- `cargo test --locked --lib`: 212 tests passed.
+- Selected binary and integration suites: 44 tests passed across command helpers,
+  status, open, managed-session preparation, forwarding, and workspace reuse.
+- Removed the release and status selector enums and both old ancestor algorithms.
+  Transaction admission and removal dispatch retain their existing storage reads.

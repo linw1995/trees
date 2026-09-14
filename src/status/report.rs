@@ -4,9 +4,9 @@ use snafu::ResultExt;
 
 use super::combined::{self, Snapshot, SnapshotError};
 use super::processes::{self, Boundary, Observation};
-use super::target::TargetSelector;
 use super::{StatusView, WorkspaceStatus};
 use crate::storage::repository;
+use crate::workspace_locator::WorkspaceSelector;
 
 #[derive(Debug, Serialize)]
 pub struct Report {
@@ -17,7 +17,7 @@ pub struct Report {
 
 pub fn load(
     connection: Option<SqliteConnection>,
-    selector: &TargetSelector,
+    selector: &WorkspaceSelector,
     view: StatusView,
     include_removed: bool,
 ) -> Result<Report, SnapshotError> {
@@ -32,7 +32,7 @@ pub fn load(
 
 fn load_with_observer(
     mut connection: Option<SqliteConnection>,
-    selector: &TargetSelector,
+    selector: &WorkspaceSelector,
     view: StatusView,
     include_removed: bool,
     observer: impl FnOnce(&WorkspaceStatus, &[Boundary]) -> Observation,
@@ -51,7 +51,7 @@ fn load_with_observer(
 
 fn load_persisted(
     connection: Option<&mut SqliteConnection>,
-    selector: &TargetSelector,
+    selector: &WorkspaceSelector,
     view: StatusView,
     include_removed: bool,
     after_snapshot: impl FnOnce(),
@@ -106,7 +106,7 @@ mod tests {
             let observation_time = Timestamp::parse("2000-01-01T00:00:00Z").unwrap();
             let report = load_with_observer(
                 Some(database::connect_read_only(&path).unwrap()),
-                &TargetSelector::Id(target),
+                &WorkspaceSelector::Id(target),
                 view,
                 false,
                 |workspace, boundaries| {
@@ -142,7 +142,9 @@ mod tests {
 
     #[test]
     fn skips_observation_without_a_target_and_on_load_errors() {
-        let outside = TargetSelector::Directory(CanonicalPath::from_absolute("/outside").unwrap());
+        let outside = WorkspaceSelector::ContainingDirectory(
+            CanonicalPath::from_absolute("/outside").unwrap(),
+        );
         for view in [StatusView::Pools, StatusView::Workspaces, StatusView::Repos] {
             for connection in [
                 None,
@@ -158,7 +160,7 @@ mod tests {
             }
             assert!(load_with_observer(
                 None,
-                &TargetSelector::Id(WorkspaceId::new()),
+                &WorkspaceSelector::Id(WorkspaceId::new()),
                 view,
                 false,
                 |_, _| panic!("unknown target must not trigger observation")
@@ -186,7 +188,7 @@ mod tests {
         let mut reader = database::connect_read_only(&path).unwrap();
         let (snapshot, boundaries) = load_persisted(
             Some(&mut reader),
-            &TargetSelector::Id(id),
+            &WorkspaceSelector::Id(id),
             StatusView::Workspaces,
             false,
             || {
@@ -198,7 +200,7 @@ mod tests {
         assert_eq!(boundaries.len(), 1);
         let (_, boundaries) = load_persisted(
             Some(&mut reader),
-            &TargetSelector::Id(id),
+            &WorkspaceSelector::Id(id),
             StatusView::Workspaces,
             false,
             || {},
@@ -216,7 +218,7 @@ mod tests {
         let target = insert_workspace(&mut connection, "/missing", WorkspaceState::Removed);
         let report = load_with_observer(
             Some(connection),
-            &TargetSelector::Id(target),
+            &WorkspaceSelector::Id(target),
             StatusView::Workspaces,
             false,
             |_, _| Observation {

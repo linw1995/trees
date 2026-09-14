@@ -2,10 +2,11 @@ use diesel::prelude::*;
 use serde::Serialize;
 use snafu::{ResultExt, Snafu};
 
-use super::target::{TargetError, TargetSelector};
+use super::target::{self, TargetError};
 use super::{repos, PoolStatusSnapshot, StatusSnapshot, StatusView, WorkspaceStatus};
 use crate::domain::Timestamp;
 use crate::storage::{repository, WorkspaceRow};
+use crate::workspace_locator::WorkspaceSelector;
 
 #[derive(Debug, Snafu)]
 pub enum SnapshotError {
@@ -43,12 +44,12 @@ impl Snapshot {
 
 pub fn load(
     connection: Option<&mut SqliteConnection>,
-    selector: &TargetSelector,
+    selector: &WorkspaceSelector,
     view: StatusView,
     include_removed: bool,
 ) -> Result<Snapshot, SnapshotError> {
     let Some(connection) = connection else {
-        selector.select(None)?;
+        target::select(selector, None)?;
         return Ok(match view {
             StatusView::Pools => Snapshot::Pools(PoolStatusSnapshot::empty()),
             StatusView::Workspaces => Snapshot::Workspaces(StatusSnapshot::empty()),
@@ -60,14 +61,14 @@ pub fn load(
 
 fn load_with_observer(
     connection: &mut SqliteConnection,
-    selector: &TargetSelector,
+    selector: &WorkspaceSelector,
     view: StatusView,
     include_removed: bool,
     after_selection: impl FnOnce(),
 ) -> Result<Snapshot, SnapshotError> {
     connection.transaction(|connection| {
         let snapshot_at = Timestamp::now();
-        let target = selector.select(Some(connection))?;
+        let target = target::select(selector, Some(connection))?;
         after_selection();
         match view {
             StatusView::Pools => {
@@ -158,7 +159,7 @@ mod tests {
             pool_id,
         );
         let mut reader = database::connect_read_only(&path).unwrap();
-        let selector = TargetSelector::Id(id);
+        let selector = WorkspaceSelector::Id(id);
         let snapshot = load_with_observer(&mut reader, &selector, StatusView::Pools, false, || {
             insert_workspace_claim(
                 &mut writer,
@@ -239,7 +240,7 @@ mod tests {
             (StatusView::Workspaces, "workspaces"),
             (StatusView::Repos, "repos"),
         ] {
-            let snapshot = load(Some(&mut db), &TargetSelector::Id(id), view, false).unwrap();
+            let snapshot = load(Some(&mut db), &WorkspaceSelector::Id(id), view, false).unwrap();
             assert_eq!(snapshot.target(), Some(&expected));
             let json = serde_json::to_value(&snapshot).unwrap();
             assert_eq!(json["schema_version"], 2);
@@ -254,8 +255,9 @@ mod tests {
                 assert_eq!(json[key].as_array().unwrap().len(), 1);
                 assert_eq!(json[key][0]["workspace_id"], other.to_string());
             }
-            let outside =
-                TargetSelector::Directory(CanonicalPath::from_absolute("/outside").unwrap());
+            let outside = WorkspaceSelector::ContainingDirectory(
+                CanonicalPath::from_absolute("/outside").unwrap(),
+            );
             let json =
                 serde_json::to_value(load(Some(&mut db), &outside, view, false).unwrap()).unwrap();
             assert_eq!(json["target_workspace"], serde_json::Value::Null);
@@ -263,7 +265,7 @@ mod tests {
         }
         let snapshot = load(
             Some(&mut db),
-            &TargetSelector::Id(other),
+            &WorkspaceSelector::Id(other),
             StatusView::Workspaces,
             false,
         )

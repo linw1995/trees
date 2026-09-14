@@ -1,8 +1,9 @@
-use diesel::prelude::*;
-use snafu::{OptionExt, ResultExt, Snafu};
+use diesel::SqliteConnection;
+use snafu::{ResultExt, Snafu};
 
-use crate::domain::{CanonicalPath, CanonicalPathError, WorkspaceId};
-use crate::storage::{find_workspace, list_workspaces, WorkspaceRow};
+use crate::domain::{CanonicalPath, CanonicalPathError, ClaimId, WorkspaceId};
+use crate::storage::WorkspaceRow;
+use crate::workspace_locator::{locate, LocateError, WorkspaceSelector};
 
 #[derive(Debug, Snafu)]
 pub enum TargetError {
@@ -12,112 +13,61 @@ pub enum TargetError {
     Query { source: diesel::result::Error },
     #[snafu(display("unknown workspace: {workspace_id}"))]
     Unknown { workspace_id: WorkspaceId },
+    #[snafu(display("workspace not found: {path}"))]
+    UnknownPath { path: CanonicalPath },
+    #[snafu(display("workspace claim not found: {claim_id}"))]
+    UnknownClaim { claim_id: ClaimId },
+    #[snafu(transparent)]
+    Locate { source: LocateError },
 }
 
-#[derive(Debug)]
-pub enum TargetSelector {
-    Id(WorkspaceId),
-    Directory(CanonicalPath),
-}
-
-impl TargetSelector {
-    pub fn resolve(workspace_id: Option<WorkspaceId>) -> Result<Self, TargetError> {
-        match workspace_id {
-            Some(id) => Ok(Self::Id(id)),
-            None => Ok(Self::Directory(
-                CanonicalPath::resolve(".").context(DirectorySnafu)?,
-            )),
-        }
+pub fn resolve(workspace_id: Option<WorkspaceId>) -> Result<WorkspaceSelector, TargetError> {
+    match workspace_id {
+        Some(id) => Ok(WorkspaceSelector::Id(id)),
+        None => Ok(WorkspaceSelector::ContainingDirectory(
+            CanonicalPath::resolve(".").context(DirectorySnafu)?,
+        )),
     }
+}
 
-    pub fn select(
-        &self,
-        connection: Option<&mut SqliteConnection>,
-    ) -> Result<Option<WorkspaceRow>, TargetError> {
-        match self {
-            Self::Id(workspace_id) => {
-                let workspace = match connection {
-                    Some(connection) => find_workspace(connection, workspace_id)
-                        .optional()
-                        .context(QuerySnafu)?,
-                    None => None,
-                };
-                Ok(Some(workspace.context(UnknownSnafu {
-                    workspace_id: *workspace_id,
-                })?))
-            }
-            Self::Directory(directory) => {
-                let Some(connection) = connection else {
-                    return Ok(None);
-                };
-                Ok(list_workspaces(connection, true)
-                    .context(QuerySnafu)?
-                    .into_iter()
-                    .filter(|row| {
-                        directory
-                            .as_path()
-                            .starts_with(row.canonical_path.as_path())
-                    })
-                    .max_by_key(|row| row.canonical_path.as_path().components().count()))
-            }
-        }
+pub fn select(
+    selector: &WorkspaceSelector,
+    connection: Option<&mut SqliteConnection>,
+) -> Result<Option<WorkspaceRow>, TargetError> {
+    let located = match connection {
+        Some(connection) => locate(connection, selector).map_err(|error| match error {
+            LocateError::Database { source } => TargetError::Query { source },
+            error => TargetError::from(error),
+        })?,
+        None => None,
+    };
+    match located {
+        Some(located) => Ok(Some(located.workspace)),
+        None => match selector {
+            WorkspaceSelector::Id(id) => UnknownSnafu { workspace_id: *id }.fail(),
+            WorkspaceSelector::ExactPath(path) => UnknownPathSnafu { path: path.clone() }.fail(),
+            WorkspaceSelector::ClaimId(id) => UnknownClaimSnafu { claim_id: *id }.fail(),
+            WorkspaceSelector::ContainingDirectory(_) => Ok(None),
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::WorkspaceState;
-    use crate::status::tests::insert_workspace;
 
     #[test]
-    fn selects_nearest_registered_boundary_including_removed() {
-        let mut db = crate::database::connect(std::path::Path::new(":memory:")).unwrap();
-        let outer = insert_workspace(&mut db, "/work/api", WorkspaceState::Ready);
-        let inner = insert_workspace(&mut db, "/work/api/nested", WorkspaceState::Removed);
-        for (directory, expected) in [
-            ("/work/api/repo/src", Some(outer)),
-            ("/work/api/nested/repo", Some(inner)),
-            ("/work/api-extra", None),
-            ("/elsewhere", None),
+    fn missing_storage_only_allows_implicit_directory_selection() {
+        for selector in [
+            WorkspaceSelector::Id(WorkspaceId::new()),
+            WorkspaceSelector::ExactPath(CanonicalPath::from_absolute("/missing").unwrap()),
+            WorkspaceSelector::ClaimId(ClaimId::new()),
         ] {
-            let selector =
-                TargetSelector::Directory(CanonicalPath::from_absolute(directory).unwrap());
-            assert_eq!(
-                selector.select(Some(&mut db)).unwrap().map(|row| row.id),
-                expected
-            );
+            assert!(select(&selector, None).is_err());
         }
-        assert_eq!(
-            TargetSelector::Id(inner)
-                .select(Some(&mut db))
-                .unwrap()
-                .unwrap()
-                .id,
-            inner
+        let directory = WorkspaceSelector::ContainingDirectory(
+            CanonicalPath::from_absolute("/missing").unwrap(),
         );
-        assert!(matches!(
-            TargetSelector::Id(WorkspaceId::new()).select(Some(&mut db)),
-            Err(TargetError::Unknown { .. })
-        ));
-        assert!(matches!(
-            TargetSelector::Id(outer).select(None),
-            Err(TargetError::Unknown { .. })
-        ));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn canonicalizes_symlinked_directories() {
-        let root = std::env::temp_dir().join(format!("trees-target-{}", WorkspaceId::new()));
-        std::fs::create_dir_all(root.join("workspace/repo")).unwrap();
-        std::os::unix::fs::symlink(root.join("workspace"), root.join("alias")).unwrap();
-        let canonical = CanonicalPath::resolve(root.join("workspace")).unwrap();
-        let mut db = crate::database::connect(std::path::Path::new(":memory:")).unwrap();
-        let id = insert_workspace(&mut db, &canonical.to_string(), WorkspaceState::Ready);
-        let selector =
-            TargetSelector::Directory(CanonicalPath::resolve(root.join("alias/repo")).unwrap());
-        assert_eq!(selector.select(Some(&mut db)).unwrap().unwrap().id, id);
-        std::fs::remove_dir_all(root).unwrap();
+        assert!(select(&directory, None).unwrap().is_none());
     }
 }
