@@ -63,3 +63,12 @@ or detached descendants remains outside the guarantee. Recovery shells do not
 hold exclusive workspace leases; an external manual release can change ownership
 while a shell is running, and subsequent attempts always retain the original
 claim identity. These limits are documented in `docs/workspaces.md`.
+
+## Review Follow-Up
+
+The specification review found and fixed inherited signal blocking that could
+prevent release after child termination. After merging the latest main branch,
+full native suites passed with 337 tests on macOS and 337 tests on Linux.
+The session suite now contains 20 integration tests, including the regression.
+A unit test verifies that supervision restores the caller's signal mask.
+See [review findings](review.md) for the requirement mapping and resolution.
