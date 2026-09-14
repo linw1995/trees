@@ -121,14 +121,8 @@ fn run_automatic_create(
     drop(connection);
     if let Some(program) = open {
         if release_on_exit {
-            let status = std::process::Command::new(program)
-                .current_dir(result.workspace_path.as_path())
-                .status()
-                .context(OpenWorkspaceSnafu {
-                    program: PathBuf::from(program),
-                    workspace_path: result.workspace_path.as_path().to_owned(),
-                })?;
-            return Ok(exit_code(status));
+            let outcome = trees::workspace_session::run_program(&result.into(), program);
+            return Ok(exit_code(outcome.0?));
         }
         return open_workspace(program, result.workspace_path.as_path());
     }
@@ -574,6 +568,10 @@ fn exit_code(status: ExitStatus) -> ExitCode {
 
 #[derive(Debug, Snafu)]
 enum CliError {
+    #[snafu(transparent)]
+    SessionProcess {
+        source: trees::workspace_session::ProcessError,
+    },
     #[snafu(transparent)]
     RemovalTarget {
         source: trees::storage::removal::TargetError,

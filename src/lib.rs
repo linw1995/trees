@@ -18,3 +18,4 @@ pub mod validation;
 pub mod workspace;
 pub mod workspace_locator;
 pub mod workspace_open;
+pub mod workspace_session;
