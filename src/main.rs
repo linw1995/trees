@@ -122,7 +122,9 @@ fn run_automatic_create(
     if let Some(program) = open {
         if release_on_exit {
             let outcome = trees::workspace_session::run_program(&result.into(), program);
-            return Ok(exit_code(outcome.0?));
+            let code = outcome.exit_code(true);
+            outcome.0?;
+            return Ok(ExitCode::from(code));
         }
         return open_workspace(program, result.workspace_path.as_path());
     }

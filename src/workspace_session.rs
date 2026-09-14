@@ -1,3 +1,6 @@
+#[cfg(unix)]
+mod signals;
+
 use std::ffi::OsStr;
 use std::io;
 use std::path::PathBuf;
@@ -69,13 +72,20 @@ fn run_child(
     identity: &SessionIdentity,
     program: &OsStr,
 ) -> Result<ExitStatus, ProcessError> {
+    #[cfg(unix)]
+    let supervisor = signals::Supervisor::new().context(SupervisionSnafu)?;
     let mut child = command.spawn().context(StartSnafu {
         program: PathBuf::from(program),
         workspace_path: identity.workspace_path.as_path(),
     })?;
-    wait_for_exit(|| child.wait()).context(WaitSnafu { pid: child.id() })
+    #[cfg(unix)]
+    let result = supervisor.wait(&mut child);
+    #[cfg(not(unix))]
+    let result = wait_for_exit(|| child.wait());
+    result.context(WaitSnafu { pid: child.id() })
 }
 
+#[cfg(any(not(unix), test))]
 fn wait_for_exit(mut wait: impl FnMut() -> io::Result<ExitStatus>) -> io::Result<ExitStatus> {
     loop {
         match wait() {
@@ -87,6 +97,8 @@ fn wait_for_exit(mut wait: impl FnMut() -> io::Result<ExitStatus>) -> io::Result
 
 #[derive(Debug, Snafu)]
 pub enum ProcessError {
+    #[snafu(display("failed to install process supervision: {source}"))]
+    Supervision { source: io::Error },
     #[snafu(display("failed to start {} in {}: {source}", program.display(), workspace_path.display()))]
     Start {
         program: PathBuf,
