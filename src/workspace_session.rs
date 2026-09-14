@@ -2,12 +2,12 @@
 mod signals;
 
 use std::ffi::OsStr;
-use std::io;
+use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus};
 
 use diesel::{Connection, OptionalExtension};
-use snafu::{ResultExt, Snafu};
+use snafu::{ensure, OptionExt, ResultExt, Snafu};
 
 use crate::domain::{CanonicalPath, ClaimId};
 use crate::workspace::AutomaticClaimResult;
@@ -68,38 +68,79 @@ pub struct SessionReport {
     pub cleanup: Result<(), SessionError>,
 }
 
-pub fn run(identity: &SessionIdentity, program: &OsStr) -> SessionReport {
-    let initial = run_program(identity, program);
+pub enum SessionEvent<'a> {
+    InitialFailed(&'a ProcessError),
+    ReleaseFailed(&'a SessionError),
+    Recovering,
+}
+
+pub fn run(
+    identity: &SessionIdentity,
+    program: &OsStr,
+    mut report: impl FnMut(SessionEvent<'_>),
+) -> SessionReport {
+    let supervisor = match ProcessSupervisor::new() {
+        Ok(supervisor) => supervisor,
+        Err(error) => {
+            report(SessionEvent::InitialFailed(&error));
+            return SessionReport {
+                initial: ProgramOutcome(Err(error)),
+                cleanup: release_original(identity),
+            };
+        }
+    };
+    let initial = ProgramOutcome(supervisor.run(identity, program, false));
+    if let Err(error) = &initial.0 {
+        report(SessionEvent::InitialFailed(error));
+    }
     let cleanup = if initial.can_release() {
-        release_original(identity)
+        recover(identity, &supervisor, &mut report)
     } else {
         UnconfirmedChildSnafu.fail()
     };
     SessionReport { initial, cleanup }
 }
 
-fn release_original(identity: &SessionIdentity) -> Result<(), SessionError> {
-    let result = (|| {
-        let mut connection = crate::database::open_existing()?;
-        crate::workspace::release_automatic_workspace(
-            &mut connection,
-            &identity.workspace_path,
-            identity.claim_id,
-        )
-        .context(ReleaseSnafu)?;
-        Ok(())
-    })();
-    match result {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            let mut connection = crate::database::open_read_only()?;
-            if original_claim_active(&mut connection, identity)? {
-                Err(error)
-            } else {
-                Ok(())
-            }
+fn recover(
+    identity: &SessionIdentity,
+    supervisor: &ProcessSupervisor,
+    report: &mut impl FnMut(SessionEvent<'_>),
+) -> Result<(), SessionError> {
+    loop {
+        match release_original(identity) {
+            Ok(()) => return Ok(()),
+            Err(error) => report(SessionEvent::ReleaseFailed(&error)),
         }
+        let active = {
+            let mut connection = crate::database::open_read_only()?;
+            original_claim_active(&mut connection, identity)?
+        };
+        if !active {
+            return Ok(());
+        }
+        ensure!(
+            io::stdin().is_terminal() && io::stdout().is_terminal(),
+            NoninteractiveSnafu
+        );
+        let shell = std::env::var_os("SHELL")
+            .filter(|value| !value.is_empty())
+            .context(RecoveryShellSnafu)?;
+        report(SessionEvent::Recovering);
+        supervisor
+            .run(identity, &shell, true)
+            .context(RecoveryProcessSnafu)?;
     }
+}
+
+fn release_original(identity: &SessionIdentity) -> Result<(), SessionError> {
+    let mut connection = crate::database::open_existing()?;
+    crate::workspace::release_automatic_workspace(
+        &mut connection,
+        &identity.workspace_path,
+        identity.claim_id,
+    )
+    .context(ReleaseSnafu)?;
+    Ok(())
 }
 
 fn original_claim_active(
@@ -121,6 +162,12 @@ fn original_claim_active(
 
 #[derive(Debug, Snafu)]
 pub enum SessionError {
+    #[snafu(display("interactive recovery requires terminal input and output"))]
+    Noninteractive,
+    #[snafu(display("$SHELL is unset or empty; cannot open a recovery shell"))]
+    RecoveryShell,
+    #[snafu(display("recovery shell failed: {source}"))]
+    RecoveryProcess { source: ProcessError },
     #[snafu(transparent)]
     Database {
         source: crate::database::DatabaseError,
@@ -135,28 +182,49 @@ pub enum SessionError {
     UnconfirmedChild,
 }
 
-pub fn run_program(identity: &SessionIdentity, program: &OsStr) -> ProgramOutcome {
-    let mut command = Command::new(program);
-    command.current_dir(identity.workspace_path.as_path());
-    ProgramOutcome(run_child(&mut command, identity, program))
+struct ProcessSupervisor {
+    #[cfg(unix)]
+    signals: signals::Supervisor,
 }
 
-fn run_child(
-    command: &mut Command,
-    identity: &SessionIdentity,
-    program: &OsStr,
-) -> Result<ExitStatus, ProcessError> {
-    #[cfg(unix)]
-    let supervisor = signals::Supervisor::new().context(SupervisionSnafu)?;
-    let mut child = command.spawn().context(StartSnafu {
-        program: PathBuf::from(program),
-        workspace_path: identity.workspace_path.as_path(),
-    })?;
-    #[cfg(unix)]
-    let result = supervisor.wait(&mut child);
-    #[cfg(not(unix))]
-    let result = wait_for_exit(|| child.wait());
-    result.context(WaitSnafu { pid: child.id() })
+impl ProcessSupervisor {
+    fn new() -> Result<Self, ProcessError> {
+        Ok(Self {
+            #[cfg(unix)]
+            signals: signals::Supervisor::new().context(SupervisionSnafu)?,
+        })
+    }
+
+    fn run(
+        &self,
+        identity: &SessionIdentity,
+        program: &OsStr,
+        interactive: bool,
+    ) -> Result<ExitStatus, ProcessError> {
+        let mut command = Command::new(program);
+        command.current_dir(identity.workspace_path.as_path());
+        if interactive {
+            command.arg("-i");
+        }
+        self.run_child(&mut command, identity, program)
+    }
+
+    fn run_child(
+        &self,
+        command: &mut Command,
+        identity: &SessionIdentity,
+        program: &OsStr,
+    ) -> Result<ExitStatus, ProcessError> {
+        let mut child = command.spawn().context(StartSnafu {
+            program: PathBuf::from(program),
+            workspace_path: identity.workspace_path.as_path(),
+        })?;
+        #[cfg(unix)]
+        let result = self.signals.wait(&mut child);
+        #[cfg(not(unix))]
+        let result = wait_for_exit(|| child.wait());
+        result.context(WaitSnafu { pid: child.id() })
+    }
 }
 
 #[cfg(any(not(unix), test))]
@@ -233,17 +301,24 @@ mod tests {
             workspace_path: CanonicalPath::resolve(std::env::temp_dir()).unwrap(),
             claim_id: ClaimId::new(),
         };
+        let supervisor = ProcessSupervisor::new().unwrap();
         assert_eq!(
-            run_program(&identity, OsStr::new("/usr/bin/true")).exit_code(true),
+            ProgramOutcome(supervisor.run(&identity, OsStr::new("/usr/bin/true"), false))
+                .exit_code(true),
             0
         );
-        let missing = run_program(&identity, OsStr::new("/nonexistent/trees-program"));
+        let missing = ProgramOutcome(supervisor.run(
+            &identity,
+            OsStr::new("/nonexistent/trees-program"),
+            false,
+        ));
         assert!(matches!(missing.0, Err(ProcessError::Start { .. })));
         assert!(missing.can_release());
         let mut command = Command::new("/bin/sh");
         command.args(["-c", "exit 7"]);
         assert_eq!(
-            run_child(&mut command, &identity, OsStr::new("/bin/sh"))
+            supervisor
+                .run_child(&mut command, &identity, OsStr::new("/bin/sh"))
                 .unwrap()
                 .code(),
             Some(7)

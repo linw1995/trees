@@ -12,7 +12,7 @@
 ## 3. Release and Recovery
 
 - [x] 3.1 Implement release retries using the captured path and claim with fresh short-lived connections and typed ownership classification; verify clean release, dirty rejection, stale claim, replacement during admission, and database read failure.
-- [ ] 3.2 Implement `$SHELL -i` recovery, `stderr` explanation, and retry after every shell exit; verify repair success, repeated dirty exits, nonzero shell exit, and manual release inside the shell.
+- [x] 3.2 Implement `$SHELL -i` recovery, `stderr` explanation, and retry after every shell exit; verify repair success, repeated dirty exits, nonzero shell exit, and manual release inside the shell.
 - [ ] 3.3 Handle unavailable shell, shell launch failure, missing `cwd`, noninteractive streams, and unverifiable ownership; verify termination without repeated launches or forced cleanup and diagnostics containing path, claim ID, and manual release command.
 - [ ] 3.4 Preserve the initial program outcome through all recovery paths; verify exit-code and signal mapping, initial launch failure after successful cleanup, and cleanup failure after both successful and failed programs.
 

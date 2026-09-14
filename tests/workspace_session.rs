@@ -378,3 +378,40 @@ fn missing_database_does_not_recreate_storage_or_imply_released_ownership() {
             .is_some()
     );
 }
+
+#[test]
+fn recovery_shell_retries_after_each_exit_and_allows_manual_release() {
+    for manual_release in [false, true] {
+        let fixture = Fixture::new();
+        let program = fixture.script("program", "printf dirty > unsaved; exit 7");
+        let mut command = fixture.create(&program);
+        command
+            .env("SHELL", "/bin/sh")
+            .env("PS1", "RECOVERY_READY> ")
+            .env("TREES_BINARY", env!("CARGO_BIN_EXE_trees"));
+        let mut terminal = Terminal::spawn(command);
+        terminal.until("RECOVERY_READY>");
+        assert!(terminal
+            .output
+            .contains("Exiting the shell will retry release"));
+        terminal.output.clear();
+        terminal.send(b"exit 9\n");
+        terminal.until("RECOVERY_READY>");
+        assert!(terminal.output.contains("Release failed"));
+        if manual_release {
+            terminal.send(b"rm unsaved; \"$TREES_BINARY\" release; exit 0\n");
+        } else {
+            terminal.send(b"rm unsaved; exit 0\n");
+        }
+        assert_eq!(terminal.finish().code(), Some(7), "{}", terminal.output);
+        let mut connection = fixture.connection();
+        let workspace = trees::storage::list_workspaces(&mut connection, false)
+            .unwrap()
+            .remove(0);
+        assert!(
+            trees::storage::find_workspace_claim(&mut connection, &workspace.id)
+                .unwrap()
+                .is_none()
+        );
+    }
+}

@@ -122,10 +122,17 @@ fn run_automatic_create(
     if let Some(program) = open {
         if release_on_exit {
             let identity = result.into();
-            let report = trees::workspace_session::run(&identity, program);
-            if let Err(error) = &report.initial.0 {
-                eprintln!("Error: {error}");
-            }
+            let report = trees::workspace_session::run(&identity, program, |event| {
+                use trees::workspace_session::SessionEvent;
+                match event {
+                    SessionEvent::InitialFailed(error) => eprintln!("Error: {error}"),
+                    SessionEvent::ReleaseFailed(error) => eprintln!("Release failed: {error}"),
+                    SessionEvent::Recovering => eprintln!(
+                        "Opening $SHELL in {}. Exiting the shell will retry release.",
+                        identity.workspace_path
+                    ),
+                }
+            });
             if let Err(error) = &report.cleanup {
                 eprintln!("Error: {error}");
             }
