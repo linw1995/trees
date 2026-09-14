@@ -37,4 +37,4 @@ removal tombstones remain intact.
 ## Platform Scope
 
 Tests ran on macOS. Linux and Windows were not executed in this workspace.
-No branch was pushed and no remote checks were requested.
+Pull request checks provide the separate Linux validation.
