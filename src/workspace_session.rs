@@ -59,15 +59,30 @@ fn status_code(status: ExitStatus) -> u8 {
 }
 
 pub fn run_program(identity: &SessionIdentity, program: &OsStr) -> ProgramOutcome {
-    ProgramOutcome(
-        Command::new(program)
-            .current_dir(identity.workspace_path.as_path())
-            .status()
-            .context(StartSnafu {
-                program: PathBuf::from(program),
-                workspace_path: identity.workspace_path.as_path(),
-            }),
-    )
+    let mut command = Command::new(program);
+    command.current_dir(identity.workspace_path.as_path());
+    ProgramOutcome(run_child(&mut command, identity, program))
+}
+
+fn run_child(
+    command: &mut Command,
+    identity: &SessionIdentity,
+    program: &OsStr,
+) -> Result<ExitStatus, ProcessError> {
+    let mut child = command.spawn().context(StartSnafu {
+        program: PathBuf::from(program),
+        workspace_path: identity.workspace_path.as_path(),
+    })?;
+    wait_for_exit(|| child.wait()).context(WaitSnafu { pid: child.id() })
+}
+
+fn wait_for_exit(mut wait: impl FnMut() -> io::Result<ExitStatus>) -> io::Result<ExitStatus> {
+    loop {
+        match wait() {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => return result,
+        }
+    }
 }
 
 #[derive(Debug, Snafu)]
@@ -103,6 +118,50 @@ mod tests {
         ));
         assert!(!wait.can_release());
         assert_eq!(wait.exit_code(true), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn waits_through_interruptions_and_preserves_wait_errors() {
+        use std::os::unix::process::ExitStatusExt;
+        let mut calls = 0;
+        let status = wait_for_exit(|| {
+            calls += 1;
+            if calls == 1 {
+                Err(io::ErrorKind::Interrupted.into())
+            } else {
+                Ok(ExitStatus::from_raw(7 << 8))
+            }
+        })
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!(status.code(), Some(7));
+        let error = wait_for_exit(|| Err(io::ErrorKind::Other.into())).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn launches_direct_children_and_classifies_missing_programs() {
+        let identity = SessionIdentity {
+            workspace_path: CanonicalPath::resolve(std::env::temp_dir()).unwrap(),
+            claim_id: ClaimId::new(),
+        };
+        assert_eq!(
+            run_program(&identity, OsStr::new("/usr/bin/true")).exit_code(true),
+            0
+        );
+        let missing = run_program(&identity, OsStr::new("/nonexistent/trees-program"));
+        assert!(matches!(missing.0, Err(ProcessError::Start { .. })));
+        assert!(missing.can_release());
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "exit 7"]);
+        assert_eq!(
+            run_child(&mut command, &identity, OsStr::new("/bin/sh"))
+                .unwrap()
+                .code(),
+            Some(7)
+        );
     }
 
     #[cfg(unix)]

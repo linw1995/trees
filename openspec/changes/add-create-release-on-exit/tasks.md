@@ -6,7 +6,7 @@
 ## 2. Process Supervision
 
 - [x] 2.1 Add typed session identity, initial outcome, and Snafu launch/wait errors in a focused module; verify unit tests preserve source chains and outcome precedence.
-- [ ] 2.2 Implement child execution with canonical `cwd`, inherited streams/environment, direct executable invocation, reaping, and interrupted-wait handling; verify controlled child tests cover exit 0, exit 7, launch failure, and uncertain wait failure without release.
+- [x] 2.2 Implement child execution with canonical `cwd`, inherited streams/environment, direct executable invocation, reaping, and interrupted-wait handling; verify controlled child tests cover exit 0, exit 7, launch failure, and uncertain wait failure without release.
 - [ ] 2.3 Implement scoped `UNIX` signal handling and `SIGTERM` forwarding while preserving foreground terminal behavior; verify `PTY` tests cover `Ctrl-C`, `SIGQUIT`, `Ctrl-Z/resume`, recovery shell job control, and no cleanup before child termination on Linux and macOS.
 
 ## 3. Release and Recovery
