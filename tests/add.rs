@@ -151,3 +151,146 @@ fn planning_and_git_moves_preserve_original_work() {
         "unstaged\n"
     );
 }
+
+#[test]
+fn execute_promotes_dirty_workspace_and_retries_without_duplicate_membership() {
+    let mut fixture = Fixture::new();
+    fs::write(fixture.path.as_path().join("README"), "changes\n").unwrap();
+    let original = storage::list_repo_worktrees(&mut fixture.db, &fixture.workspace).unwrap()[0].id;
+    let request = fixture.request(vec![fixture.web.clone()]);
+    let result = add::execute(&mut fixture.db, request).unwrap();
+    assert_eq!(result.relocated.len(), 1);
+    assert_eq!(result.relocated[0].worktree_id, original);
+    assert_eq!(
+        fs::read_to_string(fixture.path.as_path().join("api/README")).unwrap(),
+        "changes\n"
+    );
+    let request = fixture.request(vec![fixture.web.clone()]);
+    let again = add::execute(&mut fixture.db, request).unwrap();
+    assert!(matches!(
+        again.repositories[0].result,
+        add::RepositoryOutcome::AlreadyPresent
+    ));
+    assert_eq!(
+        storage::list_repo_worktrees(&mut fixture.db, &fixture.workspace)
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+fn expire(db: &mut diesel::SqliteConnection, lease: trees::domain::LeaseId) {
+    use diesel::prelude::*;
+    use trees::schema::operation_leases;
+    diesel::update(operation_leases::table.find(lease))
+        .set(
+            operation_leases::lease_expires_at.eq("2000-01-01T00:00:00Z"
+                .parse::<trees::domain::Timestamp>()
+                .unwrap()),
+        )
+        .execute(db)
+        .unwrap();
+}
+
+#[test]
+fn recovery_restores_original_worktree_when_workspace_root_is_absent() {
+    let mut fixture = Fixture::new();
+    let request = fixture.request(vec![fixture.web.clone()]);
+    let (intent, plan) = fixture.plan(&request);
+    persistence::event(
+        &mut fixture.db,
+        &intent.lease_id,
+        "workspace_add_planned",
+        add::document(&plan).unwrap(),
+    )
+    .unwrap();
+    let relocation = plan.relocation.as_ref().unwrap();
+    trees::git::move_worktree_with_heartbeat(
+        &plan.existing[0].source_path,
+        fixture.path.as_path(),
+        relocation.staging_path.as_path(),
+        || Ok(()),
+    )
+    .unwrap();
+    expire(&mut fixture.db, intent.lease_id);
+    let outcome =
+        trees::reconciliation::recover_expired_operation(&mut fixture.db, &fixture.workspace)
+            .unwrap();
+    assert!(matches!(
+        outcome,
+        trees::reconciliation::RecoveryOutcome::RolledBack
+    ));
+    assert!(fixture.path.as_path().join(".git").is_file());
+    assert!(!relocation.staging_path.as_path().exists());
+}
+
+#[test]
+fn recovery_publishes_complete_layout_after_interruption() {
+    let mut fixture = Fixture::new();
+    let request = fixture.request(vec![fixture.web.clone()]);
+    let (intent, plan) = fixture.plan(&request);
+    persistence::event(
+        &mut fixture.db,
+        &intent.lease_id,
+        "workspace_add_planned",
+        add::document(&plan).unwrap(),
+    )
+    .unwrap();
+    add::workflow::provision(&mut fixture.db, &intent.lease_id, &plan).unwrap();
+    assert_eq!(
+        storage::list_repo_worktrees(&mut fixture.db, &fixture.workspace)
+            .unwrap()
+            .len(),
+        1
+    );
+    expire(&mut fixture.db, intent.lease_id);
+    assert!(matches!(
+        trees::reconciliation::recover_expired_operation(&mut fixture.db, &fixture.workspace)
+            .unwrap(),
+        trees::reconciliation::RecoveryOutcome::Succeeded
+    ));
+    assert_eq!(
+        storage::list_repo_worktrees(&mut fixture.db, &fixture.workspace)
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn recovery_preserves_new_user_content_and_retry_uses_a_new_operation() {
+    let mut fixture = Fixture::new();
+    let request = fixture.request(vec![fixture.web.clone()]);
+    let (intent, plan) = fixture.plan(&request);
+    persistence::event(
+        &mut fixture.db,
+        &intent.lease_id,
+        "workspace_add_planned",
+        add::document(&plan).unwrap(),
+    )
+    .unwrap();
+    add::workflow::provision(&mut fixture.db, &intent.lease_id, &plan).unwrap();
+    let local = fixture.path.as_path().join("web/local");
+    fs::write(&local, "keep me").unwrap();
+    expire(&mut fixture.db, intent.lease_id);
+    assert!(matches!(
+        trees::reconciliation::recover_expired_operation(&mut fixture.db, &fixture.workspace)
+            .unwrap(),
+        trees::reconciliation::RecoveryOutcome::Failed
+    ));
+    assert_eq!(fs::read_to_string(&local).unwrap(), "keep me");
+    assert!(persistence::unresolved(&mut fixture.db, &fixture.workspace)
+        .unwrap()
+        .is_some());
+    fs::remove_file(&local).unwrap();
+    let request = fixture.request(vec![fixture.web.clone()]);
+    let result = add::execute(&mut fixture.db, request).unwrap();
+    assert_ne!(result.operation_id, intent.id);
+    assert!(persistence::unresolved(&mut fixture.db, &fixture.workspace)
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        storage::operation_state(&mut fixture.db, &intent.id).unwrap(),
+        Some(trees::domain::OperationState::Failed)
+    );
+}

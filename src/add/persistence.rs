@@ -247,10 +247,18 @@ pub fn finish(
                 .chain(&plan.additions)
                 .map(|repo| repo.origin_repository_id)
                 .collect::<Vec<_>>();
-            let pool = storage::ensure_workspace_pool(
-                db,
-                &crate::pool::RepositorySetKey::from_repository_ids(&ids),
-            )?;
+            let key = crate::pool::RepositorySetKey::from_repository_ids(&ids);
+            let pool = match storage::find_workspace_pool(db, &key)? {
+                Some(pool) => pool,
+                None => storage::insert_workspace_pool(
+                    db,
+                    &storage::NewWorkspacePool {
+                        id: PoolId::new(),
+                        hash_key: key.hash_key().to_owned(),
+                        repository_ids: key.repository_ids().to_owned(),
+                    },
+                )?,
+            };
             storage::insert_workspace_pool_repositories(
                 db,
                 &ids.into_iter()

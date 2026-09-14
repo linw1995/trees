@@ -20,10 +20,10 @@
 
 ## 4. Execution and Recovery
 
-- [ ] 4.1 Implement recorded promotion and new worktree creation, final physical validation, and atomic publication; retain source provisioning diagnostics.
-- [ ] 4.2 Implement recorded reverse compensation, safe ownership checks, restoration of the original root, and terminal compensation/failure reporting.
-- [ ] 4.3 Amend the non-create recovery specification exception and `add` explicit addition recovery dispatch before generic non-create recovery; reconstruct the plan and resume publication or compensation after lease takeover.
-- [ ] 4.4 Handle unsafe residuals using a new recovery operation linked to a terminal failed `add`, and temporarily absent roots using existing shared selectors; prevent inconsistent `add`/release/reuse while preserving existing removal safety rules.
+- [x] 4.1 Implement recorded promotion and new worktree creation, final physical validation, and atomic publication; retain source provisioning diagnostics.
+- [x] 4.2 Implement recorded reverse compensation, safe ownership checks, restoration of the original root, and terminal compensation/failure reporting.
+- [x] 4.3 Amend the non-create recovery specification exception and `add` explicit addition recovery dispatch before generic non-create recovery; reconstruct the plan and resume publication or compensation after lease takeover.
+- [x] 4.4 Handle unsafe residuals using a new recovery operation linked to a terminal failed `add`, and temporarily absent roots using existing shared selectors; prevent inconsistent `add`/release/reuse while preserving existing removal safety rules.
 
 ## 5. Output and Consumers
 

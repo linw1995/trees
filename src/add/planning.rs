@@ -59,6 +59,16 @@ pub fn observe(
             path: path.as_path()
         }
     );
+    if let Some(expected) = &repository.git_file {
+        let file = path.as_path().join(".git");
+        let actual = std::fs::read_to_string(&file).context(IoSnafu { path: &file })?;
+        ensure!(
+            &actual == expected,
+            UnsafeSnafu {
+                path: path.as_path()
+            }
+        );
+    }
     let identity =
         git::inspect_repository_identity_with_heartbeat(&repository.source_path, || {
             persistence::renew(db, lease)
@@ -142,6 +152,13 @@ pub fn prepare(
             worktree_id: row.id,
             source_path: row.source_path,
             repository_identity: row.repository_identity,
+            git_file: Some(
+                std::fs::read_to_string(row.worktree_path.as_path().join(".git")).context(
+                    IoSnafu {
+                        path: row.worktree_path.as_path(),
+                    },
+                )?,
+            ),
             worktree_path: row.worktree_path,
             head: row.last_head.ok_or_else(|| JournalSnafu.build())?,
         };
@@ -205,6 +222,7 @@ pub fn prepare(
             repository_identity: info.common_dir,
             worktree_path: path,
             head: revision.head,
+            git_file: None,
         });
         requested.push(origin.id);
     }

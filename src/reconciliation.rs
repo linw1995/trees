@@ -81,6 +81,12 @@ fn reconcile_workspace_inner(
             workspace_state: WorkspaceState::Removed,
         });
     }
+    if crate::add::persistence::unresolved(connection, workspace_id)?.is_some() {
+        return Ok(ReconciliationSummary {
+            changed_worktrees: 0,
+            workspace_state: WorkspaceState::Degraded,
+        });
+    }
     let repositories = list_repo_worktrees(connection, workspace_id).context(DatabaseSnafu)?;
     let mut changed_worktrees = 0;
     let mut observed_states = Vec::with_capacity(repositories.len());
@@ -340,6 +346,13 @@ pub fn recover_expired_operation(
     }
     let operation = find_operation(connection, &operation.id).context(DatabaseSnafu)?;
 
+    if operation.kind == "add" {
+        return Ok(crate::add::workflow::recover(
+            connection,
+            &operation,
+            &recovery_lease_id,
+        )?);
+    }
     let workspace = find_workspace(connection, workspace_id).context(DatabaseSnafu)?;
     let repositories = list_repo_worktrees(connection, workspace_id).context(DatabaseSnafu)?;
     if operation.kind != "create" {
@@ -747,6 +760,11 @@ fn recovery_error(errors: &[String]) -> JsonDocument {
 
 #[derive(Debug, Snafu)]
 pub enum ReconciliationError {
+    #[snafu(context(false), display("{source}"))]
+    Addition {
+        #[snafu(source(from(crate::add::AddError, Box::new)))]
+        source: Box<crate::add::AddError>,
+    },
     #[snafu(display("reconciliation database operation failed: {source}"))]
     Database { source: diesel::result::Error },
     #[snafu(transparent)]

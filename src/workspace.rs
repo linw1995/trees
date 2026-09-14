@@ -514,6 +514,11 @@ pub fn release_automatic_workspace(
     );
     let lease_id = intent.lease_id;
     let operation = try_begin_operation(connection, &intent).map_err(map_operation_error)?;
+    if let Err(source) = crate::add::persistence::ensure_resolved(connection, &workspace.id) {
+        let primary = WorkspaceError::Addition { source };
+        fail_operation(connection, &lease_id, &primary);
+        return Err(primary);
+    }
     let boundary = match reconciliation::reconcile_workspace_for_access_with_lease(
         connection,
         &workspace.id,
@@ -1544,6 +1549,8 @@ fn error_document(error: &WorkspaceError) -> JsonDocument {
 
 #[derive(Debug, Snafu)]
 pub enum WorkspaceError {
+    #[snafu(transparent)]
+    Addition { source: crate::add::AddError },
     #[snafu(transparent)]
     Locate { source: LocateError },
     #[snafu(display("workspace not found: {workspace_id}"))]

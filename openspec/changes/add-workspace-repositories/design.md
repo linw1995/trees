@@ -93,8 +93,8 @@ source containment.
 For root promotion, use an operation-owned unique sibling staging path on the same filesystem: move
 the existing linked worktree from `W` to staging with Git, create an empty container at `W`, then
 move staging to `W/<source-name>` with Git. Persist each move/`mkdir` intent and result; use exclusive
-path creation and record ownership evidence. Change the command process directory to a stable parent
-before moving its original directory. Do not move a primary worktree, bypass worktree locks, or copy
+path creation and record ownership evidence. Resolve inputs before moving the original directory. Use absolute filesystem paths and run Git
+from the source repository, without changing the process directory. Do not move a primary worktree, bypass worktree locks, or copy
 worktree contents. If Git cannot safely move the worktree, including unsupported submodule directory structures,
 fail without forcing it.
 

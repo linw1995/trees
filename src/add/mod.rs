@@ -1,5 +1,7 @@
 pub mod persistence;
 pub mod planning;
+pub mod workflow;
+pub use workflow::execute;
 
 use std::path::PathBuf;
 
@@ -64,6 +66,7 @@ pub struct RepositoryPlan {
     pub repository_identity: CanonicalPath,
     pub worktree_path: CanonicalPath,
     pub head: String,
+    pub git_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,6 +127,10 @@ pub struct AddResult {
 
 #[derive(Debug, Snafu)]
 pub enum AddError {
+    #[snafu(transparent)]
+    Reconcile {
+        source: crate::reconciliation::ReconciliationError,
+    },
     #[snafu(transparent)]
     Locate {
         source: workspace_locator::LocateError,
