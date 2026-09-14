@@ -144,10 +144,10 @@ fn open_workspace(program: &OsStr, workspace_path: &Path) -> Result<ExitCode, Cl
 }
 
 fn run_open(arguments: trees::cli::OpenArgs) -> Result<ExitCode, CliError> {
+    let selector = arguments.selector()?;
     let program = resolve_required_program(arguments.program, "--program")?;
     let mut connection = trees::database::open_read_only()?;
-    let workspace_path =
-        trees::workspace_open::resolve_target(&mut connection, &arguments.workspace_id)?;
+    let workspace_path = trees::workspace_open::resolve_selector(&mut connection, &selector)?;
     drop(connection);
     open_workspace(&program, workspace_path.as_path())
 }
@@ -183,46 +183,12 @@ fn release_output(result: &trees::workspace::ReleaseResult) -> String {
 fn release_automatic(
     arguments: &trees::cli::ReleaseArgs,
 ) -> Result<trees::workspace::ReleaseResult, CliError> {
-    let target = release_target(arguments)?;
+    let target = arguments.selector()?;
     let mut connection = trees::database::open_default()?;
     Ok(trees::workspace::release_automatic_workspace_by_target(
         &mut connection,
         target,
     )?)
-}
-
-fn release_target(
-    arguments: &trees::cli::ReleaseArgs,
-) -> Result<trees::workspace::ReleaseTarget, CliError> {
-    match arguments.workspace_dir.as_ref() {
-        Some(path) => workspace_path_release_target(path),
-        None => match arguments.claim_id.as_deref() {
-            Some(claim_id) => claim_release_target(claim_id),
-            None => current_directory_release_target(),
-        },
-    }
-}
-
-fn workspace_path_release_target(
-    path: &std::path::Path,
-) -> Result<trees::workspace::ReleaseTarget, CliError> {
-    Ok(trees::workspace::ReleaseTarget::WorkspacePath(
-        trees::validation::resolve_workspace_path(path)?,
-    ))
-}
-
-fn current_directory_release_target() -> Result<trees::workspace::ReleaseTarget, CliError> {
-    Ok(trees::workspace::ReleaseTarget::CurrentDirectory(
-        trees::domain::CanonicalPath::resolve(".")?,
-    ))
-}
-
-fn claim_release_target(claim_id: &str) -> Result<trees::workspace::ReleaseTarget, CliError> {
-    Ok(trees::workspace::ReleaseTarget::ClaimId(
-        claim_id
-            .parse::<trees::domain::ClaimId>()
-            .context(ClaimIdSnafu)?,
-    ))
 }
 
 fn run_config(arguments: trees::cli::ConfigArgs) -> Result<ExitCode, CliError> {
@@ -493,7 +459,12 @@ fn run_status(arguments: trees::cli::StatusArgs) -> Result<ExitCode, CliError> {
     if arguments.all && arguments.view != trees::cli::StatusView::Workspaces {
         return InvalidStatusArgumentsSnafu.fail();
     }
-    let selector = trees::status::target::TargetSelector::resolve(arguments.workspace_id)?;
+    let selector = arguments.selector().map_err(|error| match error {
+        trees::cli::workspace_locator::InputError::Directory { source } => {
+            CliError::from(trees::status::target::TargetError::Directory { source })
+        }
+        error => CliError::from(error),
+    })?;
     let view = match arguments.view {
         trees::cli::StatusView::Pools => trees::status::StatusView::Pools,
         trees::cli::StatusView::Workspaces => trees::status::StatusView::Workspaces,
@@ -630,9 +601,9 @@ enum CliError {
     CanonicalPath {
         source: trees::domain::CanonicalPathError,
     },
-    #[snafu(display("invalid claim ID: {source}"))]
-    ClaimId {
-        source: trees::domain::IdentifierError,
+    #[snafu(transparent)]
+    WorkspaceInput {
+        source: trees::cli::workspace_locator::InputError,
     },
     #[snafu(transparent)]
     Config { source: trees::config::ConfigError },
@@ -783,56 +754,6 @@ mod tests {
             .expect("pool ID should be a string");
         assert!(pool_id.parse::<trees::domain::PoolId>().is_ok());
         assert!(value["claim_id"].is_string());
-    }
-
-    #[test]
-    fn resolves_each_release_target() {
-        let path_arguments = trees::cli::ReleaseArgs {
-            workspace_dir: Some(std::path::PathBuf::from(".")),
-            claim_id: None,
-        };
-        let path = match release_target(&path_arguments) {
-            Ok(trees::workspace::ReleaseTarget::WorkspacePath(path)) => path,
-            _ => panic!("expected a workspace path target"),
-        };
-        assert_eq!(
-            path,
-            trees::domain::CanonicalPath::resolve(".").expect("current directory should resolve")
-        );
-
-        let cwd_arguments = trees::cli::ReleaseArgs {
-            workspace_dir: None,
-            claim_id: None,
-        };
-        assert!(matches!(
-            release_target(&cwd_arguments),
-            Ok(trees::workspace::ReleaseTarget::CurrentDirectory(_))
-        ));
-
-        let claim_id = trees::domain::ClaimId::new();
-        let claim_arguments = trees::cli::ReleaseArgs {
-            workspace_dir: None,
-            claim_id: Some(claim_id.to_string()),
-        };
-        assert!(matches!(
-            release_target(&claim_arguments),
-            Ok(trees::workspace::ReleaseTarget::ClaimId(value)) if value == claim_id
-        ));
-    }
-
-    #[test]
-    fn rejects_an_invalid_claim_release_target() {
-        let invalid_claim = trees::cli::ReleaseArgs {
-            workspace_dir: None,
-            claim_id: Some("invalid".to_owned()),
-        };
-        assert!(claim_release_target(
-            invalid_claim
-                .claim_id
-                .as_deref()
-                .expect("claim ID should exist")
-        )
-        .is_err());
     }
 
     #[test]

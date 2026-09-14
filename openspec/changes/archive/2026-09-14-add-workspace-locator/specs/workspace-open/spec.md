@@ -1,12 +1,4 @@
-# Workspace Open Specification
-
-## Purpose
-
-This capability defines how callers safely launch a program in an existing
-managed workspace selected by stable ID without bypassing workspace ownership
-or operation boundaries.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Open a Managed Workspace Using an Identifier
 
@@ -52,32 +44,3 @@ associated workspace. All existing ownership checks SHALL apply to every form.
 
 - **WHEN** one explicit path or claim identifies an eligible workspace
 - **THEN** open launches the selected program in that workspace
-
-### Requirement: Preserve Workspace Ownership Boundaries
-
-Open SHALL reject an unknown or removed workspace. It SHALL reject a
-workspace with a retained operation lease. An automatic workspace SHALL require
-an active claim; a manual workspace SHALL not require one. These checks SHALL
-come from one consistent read-only database transaction. Open SHALL NOT create
-or release a claim. It SHALL NOT start or recover an operation, reconcile Git
-state, inspect repo-worktree contents, or append a lifecycle event.
-
-#### Scenario: Open a Claimed Automatic Workspace
-
-- **WHEN** an automatic workspace has an active claim and no operation lease
-- **THEN** open resolves its canonical path and starts the selected program
-
-#### Scenario: Reject an Unclaimed Automatic Workspace
-
-- **WHEN** an automatic workspace has no active claim
-- **THEN** open fails without claiming or modifying that workspace
-
-#### Scenario: Open a Manual Workspace
-
-- **WHEN** a non-removed manual workspace has no operation lease
-- **THEN** open starts the selected program without requiring a claim
-
-#### Scenario: Reject an Active or Interrupted Mutation
-
-- **WHEN** the workspace has any retained operation lease
-- **THEN** open fails without recovering or taking over the operation
