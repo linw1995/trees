@@ -121,10 +121,17 @@ fn run_automatic_create(
     drop(connection);
     if let Some(program) = open {
         if release_on_exit {
-            let outcome = trees::workspace_session::run_program(&result.into(), program);
-            let code = outcome.exit_code(true);
-            outcome.0?;
-            return Ok(ExitCode::from(code));
+            let identity = result.into();
+            let report = trees::workspace_session::run(&identity, program);
+            if let Err(error) = &report.initial.0 {
+                eprintln!("Error: {error}");
+            }
+            if let Err(error) = &report.cleanup {
+                eprintln!("Error: {error}");
+            }
+            return Ok(ExitCode::from(
+                report.initial.exit_code(report.cleanup.is_ok()),
+            ));
         }
         return open_workspace(program, result.workspace_path.as_path());
     }
@@ -570,10 +577,6 @@ fn exit_code(status: ExitStatus) -> ExitCode {
 
 #[derive(Debug, Snafu)]
 enum CliError {
-    #[snafu(transparent)]
-    SessionProcess {
-        source: trees::workspace_session::ProcessError,
-    },
     #[snafu(transparent)]
     RemovalTarget {
         source: trees::storage::removal::TargetError,

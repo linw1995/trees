@@ -29,7 +29,9 @@ change established behavior.
 ### 2. A Small Supervised Session Orchestrator
 
 Add a focused module, such as `src/workspace_session.rs`, with typed session
-identity and initial process outcome. Main validates options, allocates, closes
+identity and initial process outcome. The globally unique claim ID and canonical
+path identify the session; the workspace ID is obtained from the claim when
+checking ownership, avoiding an additional allocation lookup. Main validates options, allocates, closes
 the allocation connection, and hands the captured identity to the orchestrator.
 Leave the existing execution path for calls without the flag.
 
@@ -48,7 +50,9 @@ Allocate -> RunInitial -> ReleaseOriginal -> Done
                            ReleaseOriginal
 ```
 
-Release and ownership reads use fresh, short-lived connections. Neither initial
+Release and ownership reads use fresh, short-lived connections. Release opens
+the existing database with `mode=rw`, so a missing database cannot be silently
+recreated and mistaken for an ended claim. Neither initial
 program execution nor recovery holds a connection, transaction, or operation
 lease from the supervisor. Represent launch, wait, ownership, and recovery
 errors with Snafu source chains; stringify only at the CLI boundary. Preserve

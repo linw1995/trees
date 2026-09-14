@@ -43,6 +43,22 @@ impl Fixture {
         command
     }
 
+    fn database_path(&self) -> PathBuf {
+        #[cfg(target_os = "macos")]
+        {
+            self.root
+                .join("home/Library/Application Support/trees/db.sqlite")
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.root.join("state/trees/db.sqlite")
+        }
+    }
+
+    fn connection(&self) -> diesel::sqlite::SqliteConnection {
+        trees::database::connect(&self.database_path()).unwrap()
+    }
+
     fn script(&self, name: &str, body: &str) -> PathBuf {
         let path = self.root.join(name);
         fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
@@ -286,4 +302,79 @@ fn terminal_job_can_be_suspended_and_resumed() {
     terminal.until("SESSION_CHILD_FINISHED");
     terminal.send(b"exit 0\n");
     assert!(terminal.finish().success(), "{}", terminal.output);
+}
+
+#[test]
+fn releases_clean_workspaces_and_retains_dirty_claims() {
+    for (body, released) in [
+        ("exit 0", true),
+        ("exit 7", true),
+        ("printf dirty > unsaved", false),
+    ] {
+        let fixture = Fixture::new();
+        let program = fixture.script("program", body);
+        let output = fixture.create(&program).output().unwrap();
+        let mut connection = fixture.connection();
+        let workspaces = trees::storage::list_workspaces(&mut connection, false).unwrap();
+        assert_eq!(workspaces.len(), 1);
+        let workspace = &workspaces[0];
+        let claim = trees::storage::find_workspace_claim(&mut connection, &workspace.id).unwrap();
+        assert_eq!(
+            claim.is_none(),
+            released,
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if !released {
+            assert!(workspace.canonical_path.as_path().join("unsaved").exists());
+        }
+    }
+}
+
+#[test]
+fn ends_cleanup_after_manual_release_without_adopting_a_replacement_claim() {
+    let fixture = Fixture::new();
+    let program = fixture.script("program", "\"$TREES_BINARY\" release && \"$TREES_BINARY\" create --repo \"$SESSION_SOURCE\" --offline --json");
+    let output = fixture
+        .create(&program)
+        .env("TREES_BINARY", env!("CARGO_BIN_EXE_trees"))
+        .env("SESSION_SOURCE", &fixture.repo)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut connection = fixture.connection();
+    let workspaces = trees::storage::list_workspaces(&mut connection, false).unwrap();
+    assert_eq!(workspaces.len(), 1);
+    assert!(
+        trees::storage::find_workspace_claim(&mut connection, &workspaces[0].id)
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn missing_database_does_not_recreate_storage_or_imply_released_ownership() {
+    let fixture = Fixture::new();
+    let program = fixture.script("program", "mv \"$SESSION_DB\" \"$SESSION_DB.saved\"");
+    let output = fixture
+        .create(&program)
+        .env("SESSION_DB", fixture.database_path())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(!fixture.database_path().exists());
+    let mut connection =
+        trees::database::connect(&fixture.database_path().with_extension("sqlite.saved")).unwrap();
+    let workspace = trees::storage::list_workspaces(&mut connection, false)
+        .unwrap()
+        .remove(0);
+    assert!(
+        trees::storage::find_workspace_claim(&mut connection, &workspace.id)
+            .unwrap()
+            .is_some()
+    );
 }

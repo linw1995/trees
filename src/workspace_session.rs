@@ -6,6 +6,7 @@ use std::io;
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus};
 
+use diesel::{Connection, OptionalExtension};
 use snafu::{ResultExt, Snafu};
 
 use crate::domain::{CanonicalPath, ClaimId};
@@ -59,6 +60,79 @@ fn status_code(status: ExitStatus) -> u8 {
         .code()
         .and_then(|code| u8::try_from(code).ok())
         .unwrap_or(1)
+}
+
+#[derive(Debug)]
+pub struct SessionReport {
+    pub initial: ProgramOutcome,
+    pub cleanup: Result<(), SessionError>,
+}
+
+pub fn run(identity: &SessionIdentity, program: &OsStr) -> SessionReport {
+    let initial = run_program(identity, program);
+    let cleanup = if initial.can_release() {
+        release_original(identity)
+    } else {
+        UnconfirmedChildSnafu.fail()
+    };
+    SessionReport { initial, cleanup }
+}
+
+fn release_original(identity: &SessionIdentity) -> Result<(), SessionError> {
+    let result = (|| {
+        let mut connection = crate::database::open_existing()?;
+        crate::workspace::release_automatic_workspace(
+            &mut connection,
+            &identity.workspace_path,
+            identity.claim_id,
+        )
+        .context(ReleaseSnafu)?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let mut connection = crate::database::open_read_only()?;
+            if original_claim_active(&mut connection, identity)? {
+                Err(error)
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
+
+fn original_claim_active(
+    connection: &mut diesel::sqlite::SqliteConnection,
+    identity: &SessionIdentity,
+) -> Result<bool, SessionError> {
+    connection
+        .transaction::<_, diesel::result::Error, _>(|connection| {
+            let claim = crate::storage::find_workspace_claim_by_id(connection, &identity.claim_id)
+                .optional()?;
+            let Some(claim) = claim else {
+                return Ok(false);
+            };
+            let workspace = crate::storage::find_workspace(connection, &claim.workspace_id)?;
+            Ok(workspace.canonical_path == identity.workspace_path)
+        })
+        .context(OwnershipSnafu)
+}
+
+#[derive(Debug, Snafu)]
+pub enum SessionError {
+    #[snafu(transparent)]
+    Database {
+        source: crate::database::DatabaseError,
+    },
+    #[snafu(display("failed to release workspace: {source}"))]
+    Release {
+        source: crate::workspace::WorkspaceError,
+    },
+    #[snafu(display("failed to verify workspace ownership: {source}"))]
+    Ownership { source: diesel::result::Error },
+    #[snafu(display("workspace retained because child termination is unconfirmed"))]
+    UnconfirmedChild,
 }
 
 pub fn run_program(identity: &SessionIdentity, program: &OsStr) -> ProgramOutcome {
