@@ -1,5 +1,6 @@
 use diesel::result::QueryResult;
 use diesel::sqlite::SqliteConnection;
+use diesel::{connection::TransactionManager, Connection};
 use std::thread;
 use std::time::Duration;
 
@@ -17,7 +18,16 @@ pub fn with_short_transaction<T, F>(
 where
     F: FnOnce(&mut SqliteConnection) -> QueryResult<T>,
 {
-    connection.immediate_transaction(operation)
+    let depth =
+        <SqliteConnection as Connection>::TransactionManager::transaction_manager_status_mut(
+            connection,
+        )
+        .transaction_depth()?;
+    if depth.is_some() {
+        connection.transaction(operation)
+    } else {
+        connection.immediate_transaction(operation)
+    }
 }
 
 /// Attempts one immediate transaction without waiting for another SQLite writer.
@@ -101,6 +111,34 @@ mod tests {
     use crate::domain::{CanonicalPath, Timestamp, WorkspaceId, WorkspaceState};
     use crate::storage::repository::insert_workspace;
     use crate::storage::NewWorkspace;
+
+    #[test]
+    fn nested_metadata_writes_remain_inside_the_outer_transaction() {
+        let mut db = database::connect(std::path::Path::new(":memory:")).unwrap();
+        let id = WorkspaceId::new();
+        let outcome: Result<(), diesel::result::Error> = db.immediate_transaction(|db| {
+            with_short_transaction(db, |db| {
+                insert_workspace(
+                    db,
+                    &NewWorkspace {
+                        id,
+                        canonical_path: CanonicalPath::from_absolute("/nested").unwrap(),
+                        state: WorkspaceState::Ready,
+                        created_at: Timestamp::now(),
+                        updated_at: Timestamp::now(),
+                        last_reconciled_at: None,
+                    },
+                )?;
+                Ok(())
+            })?;
+            Err(diesel::result::Error::RollbackTransaction)
+        });
+        assert!(outcome.is_err());
+        assert!(crate::storage::find_workspace(&mut db, &id)
+            .optional()
+            .unwrap()
+            .is_none());
+    }
 
     #[test]
     fn failed_short_transaction_rolls_back_all_database_work() {

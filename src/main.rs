@@ -19,6 +19,7 @@ fn main() -> ExitCode {
 fn run(cli: trees::cli::Cli) -> Result<ExitCode, CliError> {
     match cli.command {
         trees::cli::Command::Create(arguments) => run_create(arguments),
+        trees::cli::Command::Add(arguments) => run_add(arguments),
         trees::cli::Command::Release(arguments) => run_release(arguments),
         trees::cli::Command::Config(arguments) => run_config(arguments),
         trees::cli::Command::Gc(arguments) => run_gc(arguments),
@@ -27,6 +28,51 @@ fn run(cli: trees::cli::Cli) -> Result<ExitCode, CliError> {
         trees::cli::Command::Open(arguments) => run_open(arguments),
         trees::cli::Command::Codex(arguments) => run_codex(arguments),
     }
+}
+
+fn run_add(arguments: trees::cli::AddArgs) -> Result<ExitCode, CliError> {
+    let selector = arguments.selector()?;
+    let mut connection = trees::database::open_default()?;
+    let result = trees::add::execute(
+        &mut connection,
+        trees::add::AddRequest {
+            selector,
+            repositories: arguments.repositories,
+            offline: arguments.offline,
+        },
+    )?;
+    if arguments.json {
+        return print_json(&result);
+    }
+    println!("operation_id={}", result.operation_id);
+    println!("workspace_id={}", result.workspace_id);
+    println!("workspace_path={}", result.workspace_path);
+    if let Some(claim) = result.claim_id {
+        println!("claim_id={claim}");
+    }
+    if let Some(pool) = result.previous_pool_id {
+        println!("previous_pool_id={pool}");
+    }
+    if let Some(pool) = result.pool_id {
+        println!("pool_id={pool}");
+    }
+    for repo in result.repositories {
+        let outcome = match repo.result {
+            trees::add::RepositoryOutcome::Added => "added",
+            trees::add::RepositoryOutcome::AlreadyPresent => "already_present",
+        };
+        println!(
+            "repo_result={outcome} origin_repository_id={} worktree_id={} worktree_path={}",
+            repo.origin_repository_id, repo.worktree_id, repo.worktree_path
+        );
+    }
+    for moved in result.relocated {
+        println!(
+            "relocated_worktree_id={} previous_path={} worktree_path={}",
+            moved.worktree_id, moved.previous_path, moved.worktree_path
+        );
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn run_create(arguments: trees::cli::CreateArgs) -> Result<ExitCode, CliError> {
@@ -586,6 +632,8 @@ fn exit_code(status: ExitStatus) -> ExitCode {
 
 #[derive(Debug, Snafu)]
 enum CliError {
+    #[snafu(transparent)]
+    Addition { source: trees::add::AddError },
     #[snafu(transparent)]
     RemovalTarget {
         source: trees::storage::removal::TargetError,
