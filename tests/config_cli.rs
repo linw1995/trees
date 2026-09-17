@@ -251,3 +251,105 @@ fn show_reflects_both_set_commands() {
         assert!(!expected.exists());
     }
 }
+
+#[test]
+fn path_locates_missing_and_invalid_configuration_without_reading_it() {
+    let fixture = Fixture::new();
+    let check = || {
+        let output = fixture.command().args(["config", "path"]).output().unwrap();
+        assert_eq!(
+            success(output),
+            format!("{}\n", fixture.config_path().display())
+        );
+    };
+    check();
+    assert_eq!(fs::read_dir(&fixture.root).unwrap().count(), 0);
+    fixture.write_config("[");
+    check();
+    assert_eq!(fs::read_to_string(fixture.config_path()).unwrap(), "[");
+    fs::remove_file(fixture.config_path()).unwrap();
+    fs::create_dir(fixture.config_path()).unwrap();
+    check();
+    assert_eq!(fs::read_dir(fixture.config_path()).unwrap().count(), 0);
+    assert_eq!(
+        fs::read_dir(fixture.config_path().parent().unwrap())
+            .unwrap()
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn path_rejects_arguments_and_json() {
+    let fixture = Fixture::new();
+    for argument in ["--json", "workspaces-dir"] {
+        let output = fixture
+            .command()
+            .args(["config", "path", argument])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+    }
+    let help = success(
+        fixture
+            .command()
+            .args(["config", "--help"])
+            .output()
+            .unwrap(),
+    );
+    assert!(help.contains("show"));
+    assert!(help.contains("path"));
+}
+
+#[test]
+fn configuration_commands_report_path_resolution_failure() {
+    let fixture = Fixture::new();
+    for args in [
+        vec!["config", "path"],
+        vec!["config", "show"],
+        vec!["config", "show", "--json"],
+    ] {
+        let mut command = fixture.command();
+        for name in [
+            "HOME",
+            "USERPROFILE",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_STATE_HOME",
+            "APPDATA",
+            "LOCALAPPDATA",
+        ] {
+            command.env_remove(name);
+        }
+        let output = command.args(args).output().unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("home directory is unavailable"));
+    }
+    assert_eq!(fs::read_dir(&fixture.root).unwrap().count(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn path_preserves_spaces_and_does_not_follow_configuration_symlinks() {
+    let fixture = Fixture::new();
+    let base = fixture.root.join("home with spaces");
+    let mut command = fixture.command();
+    command.env("HOME", &base).env("XDG_CONFIG_HOME", &base);
+    #[cfg(target_os = "macos")]
+    let config = base.join("Library/Application Support/trees/config.toml");
+    #[cfg(target_os = "linux")]
+    let config = base.join("trees/config.toml");
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let config = base.join(".config/trees/config.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(fixture.root.join("absent.toml"), &config).unwrap();
+    let output = command.args(["config", "path"]).output().unwrap();
+    assert_eq!(success(output), format!("{}\n", config.display()));
+    assert!(fs::symlink_metadata(config)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert!(!fixture.root.join("absent.toml").exists());
+}

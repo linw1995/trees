@@ -262,6 +262,11 @@ fn release_automatic(
 
 fn run_config(arguments: trees::cli::ConfigArgs) -> Result<ExitCode, CliError> {
     match arguments.command {
+        trees::cli::ConfigCommand::Path => {
+            let path = trees::paths::configuration_path()?;
+            println!("{}", path.display());
+            Ok(ExitCode::SUCCESS)
+        }
         trees::cli::ConfigCommand::Show(arguments) => {
             let config = trees::config::effective_configuration()?;
             if arguments.json {
@@ -696,6 +701,8 @@ enum CliError {
     },
     #[snafu(transparent)]
     Config { source: trees::config::ConfigError },
+    #[snafu(transparent)]
+    Path { source: trees::paths::PathError },
     #[snafu(transparent)]
     WorkspaceOpen {
         source: trees::workspace_open::WorkspaceOpenError,
