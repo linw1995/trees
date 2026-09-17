@@ -10,8 +10,8 @@
 
 ## 3. Subprocess Execution
 
-- [ ] 3.1 Implement direct executable invocation without additional command-line arguments with inherited environment, configuration-directory working directory, concurrent pipe servicing, and typed Snafu errors. Verify executable paths containing spaces, no extra arguments, executable shebang scripts, one batch request, standard input EOF, and missing or non-executable files using fake providers.
-- [ ] 3.2 Implement total deadline, output limits, bounded standard error capture, child cleanup, and `Unix` process-group termination. Verify blocked standard input, noisy standard error, standard output overflow, nonzero exit, timeout, and descendants retaining pipe handles without hanging the test suite.
+- [x] 3.1 Implement direct executable invocation without additional command-line arguments with inherited environment, configuration-directory working directory, concurrent pipe servicing, and typed Snafu errors. Verify executable paths containing spaces, no extra arguments, executable shebang scripts, one batch request, standard input EOF, and missing or non-executable files using fake providers.
+- [x] 3.2 Implement total deadline, output limits, bounded standard error capture, child cleanup, and `Unix` process-group termination. Verify blocked standard input, noisy standard error, standard output overflow, nonzero exit, timeout, and descendants retaining pipe handles without hanging the test suite.
 
 ## 4. Report and Rendering Integration
 

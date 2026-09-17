@@ -1,3 +1,5 @@
+mod runner;
+
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -146,6 +148,16 @@ impl Observation {
                 .collect(),
             issues: vec![issue],
         }
+    }
+}
+
+pub fn query(config: &crate::config::SessionHookConfig, request: &Request) -> Observation {
+    let observed_at = Timestamp::now();
+    match runner::execute(config, request) {
+        Ok(bytes) => decode(request, observed_at.clone(), &bytes).unwrap_or_else(|_| {
+            Observation::unavailable(request, observed_at, Issue::new(IssueCode::InvalidResponse))
+        }),
+        Err(issue) => Observation::unavailable(request, observed_at, issue),
     }
 }
 
