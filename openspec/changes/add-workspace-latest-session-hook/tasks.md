@@ -1,6 +1,6 @@
 ## 1. Configuration and CLI
 
-- [ ] 1.1 Add typed optional hook configuration in `src/config.rs`, preserving unrelated settings. Verify missing configuration, defaults, invalid table/value types, zero timeout, relative program resolution, and rejection of an `args` setting with focused tests.
+- [x] 1.1 Add typed optional hook configuration in `src/config.rs`, preserving unrelated settings. Verify missing configuration, defaults, invalid table/value types, zero timeout, relative program resolution, and rejection of an `args` setting with focused tests.
 - [ ] 1.2 Add `status --no-hooks` and pass its value into report loading. Verify CLI parsing in all views and that bypass does not read even malformed hook configuration.
 
 ## 2. Protocol and Observation Model

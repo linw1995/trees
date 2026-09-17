@@ -544,7 +544,13 @@ fn run_status(arguments: trees::cli::StatusArgs) -> Result<ExitCode, CliError> {
         Err(trees::database::DatabaseError::ReadOnlyDatabaseMissing { .. }) => None,
         Err(source) => return Err(source.into()),
     };
-    let report = trees::status::report::load(connection, &selector, view, arguments.all)?;
+    let report = trees::status::report::load(
+        connection,
+        &selector,
+        view,
+        arguments.all,
+        arguments.no_hooks,
+    )?;
     if arguments.json {
         print_json(&report)
     } else {

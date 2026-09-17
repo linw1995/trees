@@ -20,6 +20,7 @@ pub fn load(
     selector: &WorkspaceSelector,
     view: StatusView,
     include_removed: bool,
+    _no_hooks: bool,
 ) -> Result<Report, SnapshotError> {
     load_with_observer(
         connection,
