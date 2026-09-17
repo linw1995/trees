@@ -722,3 +722,225 @@ fn observes_only_target_children_across_all_views_and_selection_modes() {
     drop(outside);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[cfg(unix)]
+mod session_hooks {
+    use super::*;
+    use serde_json::{json, Value};
+    use std::os::unix::fs::PermissionsExt;
+
+    fn configuration_path(root: &Path) -> PathBuf {
+        #[cfg(target_os = "macos")]
+        {
+            root.join("home/Library/Application Support/trees/config.toml")
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            root.join("config/trees/config.toml")
+        }
+    }
+
+    fn configure(root: &Path, response: &Value) -> PathBuf {
+        let config = configuration_path(root);
+        let directory = config.parent().unwrap();
+        fs::create_dir_all(directory).unwrap();
+        let program = directory.join("session provider");
+        fs::write(&program, "#!/bin/sh\ntest $# -eq 0 || exit 8\ncd -- \"$(dirname -- \"$0\")\" || exit 9\nprintf . >> calls\ncat > request.json\ncat response.json\n").unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(
+            directory.join("response.json"),
+            serde_json::to_vec(response).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            &config,
+            "[status.latest_session_hook]\nprogram = './session provider'\ntimeout_ms = 2000\n",
+        )
+        .unwrap();
+        config
+    }
+
+    fn session(title: &str, time: &str) -> Value {
+        json!({"agent":"agent", "id":title, "title":title,"updated_at":time})
+    }
+
+    fn read_status(root: &Path, args: &[&str]) -> Value {
+        let output = command(root)
+            .arg("status")
+            .args(args)
+            .arg("--json")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stderr.is_empty());
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+
+    #[test]
+    fn batches_inventory_preserves_order_and_leaves_lifecycle_unchanged() {
+        let root = test_root();
+        let db = database_path(&root);
+        fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let mut connection = database::connect(&db).unwrap();
+        let first = insert_workspace(
+            &mut connection,
+            path(root.join("a")),
+            WorkspaceState::Ready,
+            WorkspaceManagementMode::Manual,
+            None,
+        );
+        let empty = insert_workspace(
+            &mut connection,
+            path(root.join("b")),
+            WorkspaceState::Ready,
+            WorkspaceManagementMode::Manual,
+            None,
+        );
+        let missing = insert_workspace(
+            &mut connection,
+            path(root.join("c")),
+            WorkspaceState::Ready,
+            WorkspaceManagementMode::Manual,
+            None,
+        );
+        let removed = insert_workspace(
+            &mut connection,
+            path(root.join("removed")),
+            WorkspaceState::Removed,
+            WorkspaceManagementMode::Manual,
+            None,
+        );
+        drop(connection);
+        let baseline = read_status(&root, &["--view", "workspaces", "--no-hooks"]);
+        let before = fs::read(&db).unwrap();
+        let config = configure(
+            &root,
+            &json!({"version":1,"workspaces":{
+                first.to_string(): {"sessions":[session("FIRST", "2020-01-01T00:00:00Z"),session("SECOND", "2026-01-01T00:00:00Z")]},
+                empty.to_string(): {"sessions":[]}
+            }}),
+        );
+        let directory = config.parent().unwrap();
+        let report = read_status(&root, &["--view", "workspaces", &removed.to_string()]);
+        assert_eq!(report["schema_version"], 2);
+        assert_eq!(report["workspaces"], baseline["workspaces"]);
+        assert_eq!(
+            report["target_workspace"]["workspace_id"],
+            removed.to_string()
+        );
+        assert!(report["target_processes"].is_object());
+        let observation = &report["workspace_sessions"];
+        assert_eq!(observation["status"], "partial");
+        assert_eq!(
+            observation["workspaces"][first.to_string()]["sessions"][0]["title"],
+            "FIRST"
+        );
+        assert_eq!(
+            observation["workspaces"][first.to_string()]["sessions"][1]["title"],
+            "SECOND"
+        );
+        assert_eq!(
+            observation["workspaces"][empty.to_string()]["status"],
+            "complete"
+        );
+        assert_eq!(
+            observation["workspaces"][missing.to_string()]["status"],
+            "unavailable"
+        );
+        let request: Value =
+            serde_json::from_slice(&fs::read(directory.join("request.json")).unwrap()).unwrap();
+        assert_eq!(request["workspaces"].as_array().unwrap().len(), 3);
+        assert!(!request.to_string().contains(&removed.to_string()));
+        assert_eq!(fs::read(directory.join("calls")).unwrap(), b".");
+        let human = command(&root)
+            .args(["status", "--view", "workspaces"])
+            .output()
+            .unwrap();
+        let text = String::from_utf8(human.stdout).unwrap();
+        assert!(text.contains("LATEST SESSION"));
+        assert!(text.contains("agent: FIRST"));
+        assert!(!text.contains("SECOND"));
+        assert!(text.contains("Session hook: missing_result"));
+        assert!(text.contains('—'));
+        read_status(&root, &["--view", "workspaces", "--all"]);
+        let request: Value =
+            serde_json::from_slice(&fs::read(directory.join("request.json")).unwrap()).unwrap();
+        assert_eq!(request["workspaces"].as_array().unwrap().len(), 4);
+        assert_eq!(fs::read(&db).unwrap(), before);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bypasses_configuration_and_degrades_without_output_leaks() {
+        let root = test_root();
+        let db = database_path(&root);
+        fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let mut connection = database::connect(&db).unwrap();
+        insert_workspace(
+            &mut connection,
+            path(root.join("workspace")),
+            WorkspaceState::Ready,
+            WorkspaceManagementMode::Manual,
+            None,
+        );
+        drop(connection);
+        let config = configure(&root, &json!({"version":1,"workspaces":{}}));
+        fs::write(&config, "invalid = [").unwrap();
+        for args in [
+            vec!["--view", "workspaces", "--no-hooks"],
+            vec!["--view", "pools"],
+            vec!["--view", "repos"],
+        ] {
+            assert!(read_status(&root, &args)["workspace_sessions"].is_null());
+        }
+        let report = read_status(&root, &["--view", "workspaces"]);
+        assert_eq!(
+            report["workspace_sessions"]["issues"][0]["code"],
+            "configuration_failed"
+        );
+        assert!(!config.parent().unwrap().join("calls").exists());
+        configure(&root, &json!({"version":1,"workspaces":{}}));
+        let program = config.parent().unwrap().join("session provider");
+        fs::write(
+            &program,
+            "#!/bin/sh\ncat >/dev/null\nprintf 'NOT JSON'\nprintf 'hook failed' >&2\nexit 4\n",
+        )
+        .unwrap();
+        let report = read_status(&root, &["--view", "workspaces"]);
+        let issue = &report["workspace_sessions"]["issues"][0];
+        assert_eq!(issue["code"], "exit_failed");
+        assert_eq!(issue["exit_code"], 4);
+        assert_eq!(issue["stderr"], "hook failed");
+        fs::write(&program, "#!/bin/sh\ncat >/dev/null\nprintf 'NOT JSON'\n").unwrap();
+        assert_eq!(
+            read_status(&root, &["--view", "workspaces"])["workspace_sessions"]["issues"][0]
+                ["code"],
+            "invalid_response"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn skips_empty_inventory_and_failed_target_loading() {
+        let root = test_root();
+        let config = configure(&root, &json!({"version":1,"workspaces":{}}));
+        assert!(read_status(&root, &["--view", "workspaces"])["workspace_sessions"].is_null());
+        let output = command(&root)
+            .args([
+                "status",
+                "--view",
+                "workspaces",
+                &WorkspaceId::new().to_string(),
+            ])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(!config.parent().unwrap().join("calls").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+}

@@ -9,7 +9,7 @@ to locate the configuration file without knowing platform-specific conventions.
 
 - Add `trees config show` with an optional `--json` flag and no positional arguments.
 - Print the effective workspace and origin
-  directories as Bash-compatible, shell-quoted variable assignments, or a single JSON object
+  directories and session hook settings as Bash-compatible, shell-quoted variable assignments, or a single JSON object
   with `--json`.
 
 - Add `trees config path` to print the configuration lookup path without reading

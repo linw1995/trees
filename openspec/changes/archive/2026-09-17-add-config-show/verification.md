@@ -10,9 +10,9 @@
 
 ## Results
 
-- `cargo test`: 385 tests passed, zero failed, and zero ignored.
+- `cargo test`: 401 tests passed, zero failed, and zero ignored.
 - Configuration unit tests: seven passed, including three new projection tests.
-- Configuration CLI integration tests: ten passed.
+- Configuration CLI integration tests: twelve passed.
 - `cargo fmt --check`: passed.
 - Commit hooks passed for each implementation commit, including
   `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
@@ -29,10 +29,18 @@
   empty in both display modes.
 - Bash round trips preserve spaces, quotes, backslashes, newlines, tabs, dollar
   signs, backticks, and command-substitution text without executing path content.
-- JSON values match Bash values and include only the two supported settings.
+- JSON values match Bash values and include the two storage settings and nullable hook configuration.
 - Inspection outside a repository leaves configuration and storage unchanged.
 - Path lookup succeeds for absent or malformed files and even when the lookup
   location is a directory, proving it does not attempt to parse configuration.
 - Path lookup preserves spaces and does not follow a configuration symlink.
 - Missing platform path inputs fail with existing CLI diagnostics.
 - Unsupported arguments are rejected; `--json` belongs only to `show`.
+
+## Session Hook Integration Review
+
+- Hook inspection shares the status parser and reads one configuration snapshot.
+- Both formats include the program and effective timeout, without derived working-directory fields.
+- Missing hooks produce empty Bash values and JSON null; invalid hook settings leave standard output empty.
+- Tests cover safe Bash quoting, default timeouts, explicit timeouts, relative programs, bare programs,
+  unchanged configuration, and inspection without executing even an available provider.

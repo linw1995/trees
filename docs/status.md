@@ -18,12 +18,14 @@ trees status --claim-id CLAIM_ID
 trees status WORKSPACE_ID --view repos --json
 ```
 
-Status reads persisted state from one consistent SQLite snapshot, then observes
-processes for the target workspace after closing the database connection. It does
+Status reads persisted state from one consistent SQLite snapshot, then collects
+optional session metadata and observes target processes after closing the database
+connection. It does
 not reconcile, recover an expired operation, run Git, inspect workspace file
-contents, or assert that an available workspace is currently reusable. Use
+contents itself, or assert that an available workspace is currently reusable. Use
 `trees gc --older-than 30d --dry-run` to check which workspaces currently qualify
-for removal at a chosen age threshold.
+for removal at a chosen age threshold. User-configured hooks execute external
+code whose side effects are controlled by the provider.
 
 ## Target Workspace
 
@@ -228,3 +230,42 @@ are `removed`, and workspace removal timestamps use `removed_at`.
 GC uses `safe_to_remove` and `removed` counters. Writable database access upgrades
 older databases automatically; read-only commands report a required schema
 upgrade until that has happened. Existing audit history remains unchanged.
+
+## Workspace Session Titles
+
+An optional [session hook](configuration.md#workspace-session-hook) supplies
+ordered coding-agent session lists. With a configured hook and nonempty workspace
+inventory, `--view workspaces` appends `LATEST SESSION`. It displays the first
+session as `AGENT: TITLE`, `—` for a successful empty list, or `unavailable` for a
+missing result or failed query. Trees preserves provider order even when a later
+entry has a newer timestamp. Titles are escaped and limited to 60 display columns;
+JSON retains full titles and every session. Target summaries remain unchanged.
+
+Trees runs one batch after closing lifecycle storage and before observing target
+processes. It does not persist session results or use them for release, reuse, or
+removal decisions. No hook runs for other views, empty inventories, or failed
+persisted loading. Without configuration or with `--no-hooks`, human output keeps
+its existing columns.
+
+All version-2 JSON views add nullable top-level `workspace_sessions`. It is null
+when unconfigured or skipped. Otherwise, it contains:
+
+| Field | Meaning |
+| --- | --- |
+| `observed_at` | RFC 3339 observation time, independent of `snapshot_at`. |
+| `status` | `complete`, `partial`, or `unavailable`. |
+| `workspaces` | Object keyed by requested workspace ID, with `status` and ordered `sessions`. |
+| `issues` | Objects containing `code`, nullable `workspace_id`, nullable `exit_code`, and nullable `stderr`. |
+
+An entry is `complete` when supplied and valid, even with an empty list. Missing
+entries are `unavailable` with empty lists and `missing_result` issues. The batch
+is complete when all entries are complete, partial when some are complete, and
+unavailable when none are complete or the batch fails validation or execution.
+Existing workspace objects and `schema_version` remain unchanged.
+
+Issue codes are `configuration_failed`, `spawn_failed`, `io_failed`, `timed_out`,
+`output_limit_exceeded`, `exit_failed`, `invalid_response`, and `missing_result`.
+Issues are sorted by code and workspace ID. Human output lists distinct issue
+codes on one `Session hook:` line after the table, without raw captured diagnostics.
+JSON includes bounded captured standard error for execution failures. Observation
+failures do not change an otherwise successful status exit code.

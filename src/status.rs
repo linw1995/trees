@@ -2,6 +2,7 @@ pub mod combined;
 pub mod processes;
 pub mod report;
 pub mod repos;
+pub mod session_hook;
 pub mod summary;
 pub mod target;
 
@@ -239,6 +240,14 @@ fn load_workspaces_in_transaction(
 }
 
 pub fn render_workspaces_human(snapshot: &StatusSnapshot, color: bool) -> String {
+    render_workspaces_with_sessions(snapshot, color, None)
+}
+
+pub fn render_workspaces_with_sessions(
+    snapshot: &StatusSnapshot,
+    color: bool,
+    sessions: Option<&session_hook::Observation>,
+) -> String {
     if snapshot.workspaces.is_empty() {
         return "No workspaces.".to_owned();
     }
@@ -260,7 +269,49 @@ pub fn render_workspaces_human(snapshot: &StatusSnapshot, color: bool) -> String
             ]
         })
         .collect::<Vec<_>>();
-    render_table(&headers, &rows)
+    match sessions {
+        None => render_table(&headers, &rows),
+        Some(sessions) => {
+            let rows = rows
+                .into_iter()
+                .zip(&snapshot.workspaces)
+                .map(|(row, workspace)| {
+                    let [status, mode, repos, reconciled, id] = row;
+                    [
+                        status,
+                        mode,
+                        repos,
+                        reconciled,
+                        id,
+                        session_hook::cell(sessions, &workspace.workspace_id.to_string()),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            let mut output = render_table(
+                &[
+                    "STATUS",
+                    "MODE",
+                    "REPOS",
+                    "RECONCILED",
+                    "ID",
+                    "LATEST SESSION",
+                ],
+                &rows,
+            );
+            let codes = sessions
+                .issues
+                .iter()
+                .map(|issue| issue.code.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            if !codes.is_empty() {
+                output.push_str(&format!(
+                    "\nSession hook: {}",
+                    codes.into_iter().collect::<Vec<_>>().join(", ")
+                ));
+            }
+            output
+        }
+    }
 }
 
 fn render_table<const N: usize>(headers: &[&str; N], rows: &[[String; N]]) -> String {

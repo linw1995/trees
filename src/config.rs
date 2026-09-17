@@ -6,10 +6,74 @@ use snafu::{ResultExt, Snafu};
 
 const WORKSPACES_DIR_KEY: &str = "workspaces_dir";
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionHookConfig {
+    pub program: PathBuf,
+    pub timeout: std::time::Duration,
+}
+
+pub fn session_hook(enabled: bool) -> Result<Option<SessionHookConfig>, ConfigError> {
+    if !enabled {
+        return Ok(None);
+    }
+    let path = paths::configuration_path().context(PathSnafu)?;
+    session_hook_at(&path)
+}
+
+fn session_hook_at(path: &Path) -> Result<Option<SessionHookConfig>, ConfigError> {
+    let table = load_table(path)?;
+    configured_session_hook(path, &table)
+}
+
+fn configured_session_hook(
+    path: &Path,
+    table: &toml::Table,
+) -> Result<Option<SessionHookConfig>, ConfigError> {
+    let Some(status) = table.get("status") else {
+        return Ok(None);
+    };
+    let invalid = || {
+        InvalidSnafu {
+        path,
+        reason: "status.latest_session_hook requires program and optional positive timeout_ms; args is unsupported",
+    }.build()
+    };
+    let status = status.as_table().ok_or_else(invalid)?;
+    let Some(hook) = status.get("latest_session_hook") else {
+        return Ok(None);
+    };
+    let hook = hook.as_table().ok_or_else(invalid)?;
+    let program = hook
+        .get("program")
+        .and_then(toml::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(invalid)?;
+    if hook.contains_key("args") {
+        return Err(invalid());
+    }
+    let timeout = match hook.get("timeout_ms") {
+        None => 2000,
+        Some(value) => value
+            .as_integer()
+            .filter(|value| *value > 0)
+            .ok_or_else(invalid)?,
+    };
+    let program = if program.contains(std::path::is_separator) {
+        resolve_configured_path(path, Path::new(program))
+    } else {
+        PathBuf::from(program)
+    };
+    Ok(Some(SessionHookConfig {
+        program,
+        timeout: std::time::Duration::from_millis(timeout as u64),
+    }))
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct EffectiveConfiguration {
     pub workspaces_dir: PathBuf,
     pub origins_dir: PathBuf,
+    pub latest_session_hook: Option<SessionHookConfig>,
 }
 
 pub fn effective_configuration() -> Result<EffectiveConfiguration, ConfigError> {
@@ -28,6 +92,7 @@ fn effective_configuration_at(
     Ok(EffectiveConfiguration {
         workspaces_dir: configured_workspaces_directory(path, &table, workspaces)?,
         origins_dir: configured_directory(path, &table, origins, "repository", "origins_dir")?,
+        latest_session_hook: configured_session_hook(path, &table)?,
     })
 }
 
@@ -244,6 +309,44 @@ mod tests {
     }
 
     #[test]
+    fn session_hook_configuration_resolves_paths_and_validates_values() {
+        let root = test_root();
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("config.toml");
+        assert!(session_hook_at(&path).unwrap().is_none());
+        fs::write(
+            &path,
+            "[status.latest_session_hook]\nprogram = 'hooks/session provider'\n",
+        )
+        .unwrap();
+        let hook = session_hook_at(&path).unwrap().unwrap();
+        assert_eq!(hook.program, root.join("hooks/session provider"));
+        assert_eq!(hook.timeout.as_millis(), 2000);
+        fs::write(
+            &path,
+            "[status.latest_session_hook]\nprogram = 'provider'\ntimeout_ms = 15\n",
+        )
+        .unwrap();
+        let hook = session_hook_at(&path).unwrap().unwrap();
+        assert_eq!(hook.program, PathBuf::from("provider"));
+        assert_eq!(hook.timeout.as_millis(), 15);
+        for document in [
+            "status = 1",
+            "[status]\nlatest_session_hook = 1",
+            "[status.latest_session_hook]",
+            "[status.latest_session_hook]\nprogram = ''",
+            "[status.latest_session_hook]\nprogram = 'x'\nargs = []",
+            "[status.latest_session_hook]\nprogram = 'x'\ntimeout_ms = 0",
+            "[status.latest_session_hook]\nprogram = 'x'\ntimeout_ms = '1'",
+        ] {
+            fs::write(&path, document).unwrap();
+            assert!(session_hook_at(&path).is_err(), "{document}");
+        }
+        assert!(session_hook(false).unwrap().is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn effective_configuration_resolves_defaults_and_partial_settings_without_writes() {
         let root = test_root();
         let path = root.join("config.toml");
@@ -255,6 +358,7 @@ mod tests {
             EffectiveConfiguration {
                 workspaces_dir: workspaces.clone(),
                 origins_dir: origins.clone(),
+                latest_session_hook: None,
             }
         );
         assert!(!root.exists());
@@ -265,6 +369,7 @@ mod tests {
                 EffectiveConfiguration {
                     workspaces_dir: root.join("workspaces"),
                     origins_dir: origins.clone(),
+                    latest_session_hook: None,
                 },
             ),
             (
@@ -272,6 +377,7 @@ mod tests {
                 EffectiveConfiguration {
                     workspaces_dir: workspaces.clone(),
                     origins_dir: root.join("origins"),
+                    latest_session_hook: None,
                 },
             ),
         ] {
@@ -322,6 +428,7 @@ mod tests {
             EffectiveConfiguration {
                 workspaces_dir: real.clone(),
                 origins_dir: link.clone(),
+                latest_session_hook: None,
             }
         );
         fs::write(
@@ -334,6 +441,7 @@ mod tests {
             EffectiveConfiguration {
                 workspaces_dir: real.clone(),
                 origins_dir: real,
+                latest_session_hook: None,
             }
         );
         fs::remove_dir_all(root).unwrap();

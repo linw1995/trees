@@ -151,7 +151,7 @@ pub struct ConfigArgs {
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
     Set(ConfigSetArgs),
-    /// Show effective storage settings as Bash assignments or JSON.
+    /// Show effective settings as Bash assignments or JSON.
     Show(ConfigShowArgs),
     /// Print the configuration file lookup path without reading the file.
     Path,
@@ -226,6 +226,8 @@ pub struct StatusArgs {
 
     #[arg(long, help = "Print the workspace status snapshot as JSON")]
     pub json: bool,
+    #[arg(long, help = "Skip external status hooks")]
+    pub no_hooks: bool,
 }
 
 impl StatusArgs {
@@ -596,6 +598,18 @@ mod tests {
     #[test]
     fn rejects_an_invalid_workspace_remove_identifier() {
         assert!(Cli::try_parse_from(["trees", "remove", "invalid"]).is_err());
+    }
+
+    #[test]
+    fn parses_no_hooks_in_every_status_view() {
+        for view in ["pools", "workspaces", "repos"] {
+            let cli =
+                Cli::try_parse_from(["trees", "status", "--view", view, "--no-hooks"]).unwrap();
+            let Command::Status(arguments) = cli.command else {
+                panic!("expected status")
+            };
+            assert!(arguments.no_hooks);
+        }
     }
 
     #[test]

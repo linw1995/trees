@@ -113,7 +113,8 @@ color. `UPDATED` SHALL be the greatest `updated_at` among current capacity
 slots.
 
 The workspace human view SHALL render `STATUS`, `MODE`, `REPOS`, `RECONCILED`,
-and `ID`. `STATUS` SHALL render persisted workspace health and append `🔒`
+and `ID`, followed by `LATEST SESSION` when the session hook is enabled for a
+nonempty inventory, as specified by workspace-session-hook. `STATUS` SHALL render persisted workspace health and append `🔒`
 when an active claim exists. An unclaimed workspace SHALL have no claim marker.
 It SHALL omit current operation details.
 Workspace `MODE` SHALL render as `🤖` for automatic and `👤` for manual.
@@ -145,7 +146,7 @@ spacing SHALL NOT be a machine-readable contract.
 
 A resolved target SHALL precede the inventory as specified by the target summary
 requirement. Existing inventory table columns and compact UTC timestamps SHALL
-remain unchanged. With a summary, one blank line and the heading `Pools`,
+remain unchanged; the enabled session hook SHALL only append its column. With a summary, one blank line and the heading `Pools`,
 `Workspaces`, or `Repositories` SHALL separate it from the selected inventory.
 Without a target, inventory output SHALL remain unchanged with no added heading
 or blank line.
@@ -250,8 +251,11 @@ by the selected view and target through relational joins in one read-only SQLite
 transaction. It SHALL NOT expand all selected entity IDs into a single `IN`
 expression. Status SHALL NOT open lifecycle storage for writing or append an
 event. It SHALL NOT acquire or release a claim or start or recover an operation.
-It SHALL NOT invoke Git or inspect workspace file contents or traverse workspace
-directory trees. It SHALL permit read-only `OS` process metadata access and `cwd`
+Trees itself SHALL NOT invoke Git or inspect workspace file contents or traverse workspace
+directory trees. A user-configured session query hook SHALL be permitted after the
+lifecycle connection closes, as specified by workspace-session-hook. The hook
+is user-controlled code, not a sandboxed or guaranteed side-effect-free operation;
+Trees SHALL NOT persist its results or use them for lifecycle decisions. It SHALL permit read-only `OS` process metadata access and `cwd`
 path resolution solely for process attribution after the database transaction. Without an
 explicit ID, it SHALL resolve the invocation directory canonically solely for
 target selection. It SHALL NOT probe a stored target path or require it to exist as a condition of selecting or reporting the target.
@@ -260,6 +264,8 @@ Persisted unhealthy states, claims, leases, and removed rows in the explicit
 workspace all-view or target summary SHALL be report data rather than command failures. Status
 SHALL return nonzero only when arguments are invalid, an explicit ID is unknown, or it cannot
 resolve the invocation directory, load persisted status, or serialize the report.
+Session hook failures SHALL produce unavailable or partial observation data and
+SHALL NOT change an otherwise successful exit status.
 Process observation failures SHALL produce partial or unavailable report data
 and SHALL NOT change an otherwise successful exit status. No process observer
 SHALL run before successful persisted status loading or without a target.
@@ -267,7 +273,7 @@ Registered boundaries used for attribution SHALL share the persisted snapshot.
 
 #### Scenario: Preserve State During Inspection
 
-- **WHEN** either status view reports persisted lifecycle data
+- **WHEN** a status view reports persisted lifecycle data without an external hook
 - **THEN** database contents, Git metadata, and workspace filesystem contents
   remain unchanged
 
@@ -310,6 +316,12 @@ Registered boundaries used for attribution SHALL share the persisted snapshot.
 
 - **WHEN** no target exists or argument, target, or database loading fails
 - **THEN** status does not enumerate processes
+
+#### Scenario: Observe Sessions After Closing Storage
+
+- **WHEN** an enabled workspace session hook is eligible to run
+- **THEN** Trees closes its lifecycle database connection before starting the hook
+- **AND** hook failure leaves persisted status and the successful exit status intact
 
 ### Requirement: Render Existing Repository Metadata
 
