@@ -4,7 +4,9 @@
 
 The CLI SHALL provide `trees config show` without positional arguments and with an
 optional `--json` flag. Without `--json`, successful inspection SHALL print
-`workspaces_dir` and `origins_dir`, in that order, as newline-terminated
+`workspaces_dir`, `origins_dir`, `latest_session_hook_program`,
+and `latest_session_hook_timeout_ms`, in that
+order, as newline-terminated
 Bash variable assignments and exit successfully. Every value SHALL be single-quoted
 with embedded single quotes escaped using shell-compatible quote concatenation.
 The output SHALL contain no `export` prefix, headings, or progress messages.
@@ -12,6 +14,10 @@ Interpreting the output in Bash SHALL preserve displayed path values literally
 without evaluating their contents as shell expansions or commands. Neither output
 format SHALL include a `config_file` field. Directory values SHALL match existing configuration
 resolution used by allocation commands, including defaults and relative paths.
+Hook values SHALL use the same parsing, validation, and path resolution as status.
+An absent hook SHALL produce empty strings for both hook variables. A
+configured hook SHALL display its program and positive
+millisecond timeout, including the default of 2000 when omitted.
 
 #### Scenario: Configuration Has Not Been Created
 
@@ -36,16 +42,18 @@ resolution used by allocation commands, including defaults and relative paths.
 
 - **GIVEN** a resolved path contains spaces, single quotes, dollar signs, backticks, backslashes, newlines, or command-substitution text
 - **WHEN** the user runs `trees config show` and reads its output as Bash assignments
-- **THEN** the two variable values equal the displayed effective paths
+- **THEN** the corresponding variable values equal the displayed effective paths
 - **AND** path content does not trigger expansion or command execution
 - **AND** embedded newlines remain part of the variable values
 
 ### Requirement: Show Effective Configuration as JSON
 
 With `--json`, successful inspection SHALL print exactly one compact JSON
-object followed by a newline. The object SHALL contain only
-`workspaces_dir` and `origins_dir` as required string fields with the same
-resolved values as text output. Member order SHALL NOT be significant. Paths
+object followed by a newline. The object SHALL contain `workspaces_dir` and
+`origins_dir` as required string fields and `latest_session_hook` as a required
+nullable object. A configured hook SHALL contain `program` as a
+string and `timeout_ms` as an integer, matching text output. An absent hook
+SHALL be represented by `null`. Member order SHALL NOT be significant. Paths
 SHALL use the existing lossy display conversion and standard JSON escaping.
 
 #### Scenario: Structured Inspection with Defaults or Configured Values
@@ -63,10 +71,10 @@ SHALL use the existing lossy display conversion and standard JSON escaping.
 
 ### Requirement: Inspect Without Storage Mutation
 
-`config show` inspection SHALL read the configuration table once and resolve both supported
+`config show` inspection SHALL read the configuration table once and resolve all supported
 settings from that table. It SHALL NOT create or modify configuration, workspace,
 origin, or database storage. It SHALL NOT require a repository or registered
-workspace. Unknown settings SHALL follow existing getter behavior.
+workspace. It SHALL NOT execute or locate the hook program. Unknown settings SHALL follow existing getter behavior.
 
 #### Scenario: Inspection Before Initialization
 
@@ -78,8 +86,15 @@ workspace. Unknown settings SHALL follow existing getter behavior.
 
 - **GIVEN** a valid TOML file containing supported settings and unrelated keys
 - **WHEN** the user runs `trees config show`
-- **THEN** only the two defined fields are printed
+- **THEN** only the defined settings are printed
 - **AND** configuration contents and existing storage remain unchanged
+
+#### Scenario: Hook Inspection Does Not Execute the Provider
+
+- **GIVEN** a configured hook with a relative program path and no explicit timeout
+- **WHEN** the user runs `trees config show` in either output mode
+- **THEN** inspection shows the resolved program path and default timeout
+- **AND** the hook is not executed and a missing executable does not prevent inspection
 
 ### Requirement: Report Configuration Errors Without Partial Results
 

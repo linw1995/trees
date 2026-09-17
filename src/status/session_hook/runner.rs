@@ -43,7 +43,6 @@ fn run(
     let request = serde_json::to_vec(request).context(RequestSnafu)?;
     let mut command = Command::new(&config.program);
     command
-        .current_dir(&config.directory)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -260,11 +259,7 @@ mod tests {
         let program = root.join("session provider");
         fs::write(&program, format!("#!/bin/sh\n{script}\n")).unwrap();
         fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
-        let config = SessionHookConfig {
-            program,
-            directory: root.clone(),
-            timeout,
-        };
+        let config = SessionHookConfig { program, timeout };
         let request = Request {
             version: 1,
             workspaces: if large_input {
@@ -286,7 +281,7 @@ mod tests {
     #[test]
     fn invokes_executable_without_arguments_and_closes_input() {
         let result = run_script(
-            "test $# -eq 0 || exit 9\ntest -f './session provider' || exit 8\ncat",
+            "test $# -eq 0 || exit 9\ncat",
             Duration::from_secs(2),
             false,
         )
@@ -294,6 +289,16 @@ mod tests {
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&result).unwrap()["version"],
             1
+        );
+    }
+
+    #[test]
+    fn inherits_the_invoking_working_directory() {
+        let result = run_script("cat >/dev/null\npwd -P", Duration::from_secs(2), false).unwrap();
+        let expected = fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
+        assert_eq!(
+            String::from_utf8(result).unwrap(),
+            format!("{}\n", expected.display())
         );
     }
 
@@ -348,7 +353,6 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let config = SessionHookConfig {
             program: root.join("missing"),
-            directory: root.clone(),
             timeout: Duration::from_secs(1),
         };
         let request = Request {

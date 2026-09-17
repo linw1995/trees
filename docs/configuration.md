@@ -8,12 +8,14 @@
 trees config show
 ```
 
-The command prints the effective directories as Bash variable assignments.
+The command prints effective storage and session hook settings as Bash variable assignments.
 For example, with Linux defaults:
 
 ```bash
 workspaces_dir='/home/alice/.local/share/trees/workspaces'
 origins_dir='/home/alice/.local/share/trees/origins'
+latest_session_hook_program=''
+latest_session_hook_timeout_ms=''
 ```
 
 Values include platform defaults for missing settings. Configured relative paths
@@ -30,17 +32,31 @@ represented as follows:
 workspaces_dir='/srv/Alice'\''s workspaces'
 ```
 
-Use `--json` for one compact JSON object with the same two settings:
+Use `--json` for one compact JSON object with the same settings:
 
 ```sh
 trees config show --json
 ```
 
 ```json
-{"workspaces_dir":"/home/alice/.local/share/trees/workspaces","origins_dir":"/home/alice/.local/share/trees/origins"}
+{"workspaces_dir":"/home/alice/.local/share/trees/workspaces","origins_dir":"/home/alice/.local/share/trees/origins","latest_session_hook":null}
 ```
 
-Both fields are always strings; JSON member order is unspecified. Both output
+The two storage fields are always strings. `latest_session_hook` is `null` when
+no hook is configured; its two Bash variables are then empty. When configured,
+the JSON field is an object with `program` and `timeout_ms`:
+
+```json
+{"program":"/home/alice/hooks/sessions","timeout_ms":2000}
+```
+
+`program` uses the same path resolution as status; bare names remain unchanged
+for lookup through `PATH`.
+`timeout_ms` is a positive integer and defaults to 2000 when omitted. The Bash
+variables use the `latest_session_hook_` prefix and contain the same values.
+Inspection validates these settings without running or locating the executable.
+
+JSON member order is unspecified. Both output
 formats use the existing path display conversion, which replaces invalid Unicode
 sequences. Neither format includes the configuration file location.
 
@@ -131,17 +147,20 @@ trees status --view workspaces --no-hooks
 ```
 
 A bare program name resolves through `PATH`. Relative program paths containing a
-path separator resolve against the configuration directory, which is also the
-child's working directory. The executable inherits the invoking environment.
+path separator resolve against the configuration directory. The executable inherits the invoking
+environment and working directory.
 There is no shell expansion of the program, including `~` and environment
 variables; use an absolute path or a relative path such as `./hooks/sessions`.
 Trees reads no hook settings from repositories or workspaces.
 
-Only a nonempty workspace view reads this configuration and runs the executable,
-for both human and JSON output. `--no-hooks` bypasses even malformed configuration.
+Only a nonempty workspace view runs the executable, for both human and JSON
+output. `config show` also reads and validates the hook configuration. `--no-hooks` bypasses even malformed configuration.
 The executable is user-controlled code with the user's permissions; Trees does
 not enforce read-only behavior inside it. Keep it a finite metadata query without
-background processes.
+background processes. Hook scripts must be idempotent: repeated calls must not
+accumulate side effects. Use workspace paths from the request to locate workspace
+data rather than assuming a particular working directory. Use absolute paths for
+script resources, or locate them relative to the executable.
 
 ### Batch Protocol
 

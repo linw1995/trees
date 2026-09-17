@@ -20,10 +20,12 @@ program = "/absolute/path/to/trees-sessions"
 timeout_ms = 2000
 ```
 
-Only eligible workspace requests load this configuration; `--no-hooks` bypasses even malformed TOML.
+Only eligible workspace status requests execute the hook; `config show` also reads
+and validates its configuration without execution. `--no-hooks` bypasses even malformed TOML.
 A configuration read or validation failure becomes an unavailable observation. This preserves status
-usefulness when an optional integration breaks. Resolve relative program paths and set child working directory to
-the configuration directory. Execute the configured file directly with no additional command-line
+usefulness when an optional integration breaks. Resolve relative program paths against the configuration directory and inherit
+the invoking working directory. Require providers to be idempotent and use request
+workspace paths without assuming a particular working directory. Execute the configured file directly with no additional command-line
 arguments. It may be a compiled binary or an executable script with a shebang; Trees does not
 choose or require an implementation language or interpreter. All request data arrives through
 standard input. Do not support an `args` setting; reject it as invalid configuration rather than silently

@@ -151,7 +151,7 @@ pub struct ConfigArgs {
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
     Set(ConfigSetArgs),
-    /// Show effective storage settings as Bash assignments or JSON.
+    /// Show effective settings as Bash assignments or JSON.
     Show(ConfigShowArgs),
     /// Print the configuration file lookup path without reading the file.
     Path,

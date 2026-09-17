@@ -19,3 +19,18 @@ The latter two cases verify that observation returns within a bounded time.
 
 No real agent storage integration or remote publication was performed. Native
 Windows execution and cleanup were not exercised on this host.
+
+## Final Specification Review
+
+Reviewed configuration, protocol validation, bounded execution, observation ordering,
+failure behavior, rendering, and the configuration inspection integration against
+all requirements and scenarios. No blocking implementation discrepancies remain.
+
+The child now inherits the invocation directory; executable paths still resolve
+against the configuration directory. A regression test verifies the inherited working directory,
+and integration fixtures locate their own resources. Providers must be idempotent as an
+explicit contract; Trees does not enforce arbitrary script behavior.
+
+The final Rust suite passed 401 tests. Configuration inspection passed 12 CLI tests.
+The updated changes passed strict OpenSpec validation. Native Windows execution
+remains unverified locally; Linux validation runs in the pull request workflow.

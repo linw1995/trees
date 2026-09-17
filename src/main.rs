@@ -273,6 +273,12 @@ fn run_config(arguments: trees::cli::ConfigArgs) -> Result<ExitCode, CliError> {
                 return print_json(&serde_json::json!({
                     "workspaces_dir": config.workspaces_dir.to_string_lossy(),
                     "origins_dir": config.origins_dir.to_string_lossy(),
+                    "latest_session_hook": config.latest_session_hook.as_ref().map(|hook| {
+                        serde_json::json!({
+                            "program": hook.program.to_string_lossy(),
+                            "timeout_ms": hook.timeout.as_millis(),
+                        })
+                    }),
                 }));
             }
             println!(
@@ -283,6 +289,15 @@ fn run_config(arguments: trees::cli::ConfigArgs) -> Result<ExitCode, CliError> {
                 "origins_dir={}",
                 bash_quote(&config.origins_dir.to_string_lossy())
             );
+            let (program, timeout_ms) = match &config.latest_session_hook {
+                Some(hook) => (
+                    hook.program.to_string_lossy(),
+                    hook.timeout.as_millis().to_string(),
+                ),
+                None => (Default::default(), String::new()),
+            };
+            println!("latest_session_hook_program={}", bash_quote(&program));
+            println!("latest_session_hook_timeout_ms={}", bash_quote(&timeout_ms));
             Ok(ExitCode::SUCCESS)
         }
         trees::cli::ConfigCommand::Set(arguments) => match arguments.setting {

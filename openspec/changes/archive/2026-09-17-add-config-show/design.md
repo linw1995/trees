@@ -10,7 +10,7 @@ existing configured paths are canonicalized.
 
 Goals:
 
-- Expose the values used for future workspace and origin allocations.
+- Expose the values used for future workspace and origin allocations and session hooks.
 - Expose the configuration lookup path even when the file is absent or invalid.
 - Keep inspection read-only and consistent with existing consumers.
 
@@ -30,13 +30,15 @@ Print these variables in this order, with a trailing newline and no `export` pre
 ```bash
 workspaces_dir='/home/alice/.local/share/trees/workspaces'
 origins_dir='/home/alice/.local/share/trees/origins'
+latest_session_hook_program=''
+latest_session_hook_timeout_ms=''
 ```
 
 The paths above are an illustrative Linux example. Actual paths follow existing
 platform and environment rules. Only configurable settings appear in either
 output format of `show`; the configuration file location is exposed separately
 through `config path`.
-The two setting names match current `config set` output. Quote every value with the existing
+The storage setting names match current `config set` output. Quote every value with the existing
 `bash_quote` helper: surround the displayed path with single quotes and encode
 an embedded single quote by closing the quoted segment, emitting an escaped
 single quote, and reopening the segment. For example:
@@ -49,7 +51,7 @@ The output is valid Bash assignment syntax. Spaces, dollar signs, backticks,
 backslashes, and command-substitution syntax remain literal path content.
 Embedded newlines remain inside the quoted value, so an assignment may span
 physical lines. Print no headings, comments, or progress messages on standard output.
-Reading the output as Bash assigns the two variables without exporting them
+Reading the output as Bash assigns the variables without exporting them
 or evaluating path content as commands. The displayed path conversion remains
 unchanged; quoting happens only at the presentation boundary.
 
@@ -62,10 +64,14 @@ relative paths unresolved.
 newline, using the same resolved projection as text output:
 
 ```json
-{"workspaces_dir":"/home/alice/.local/share/trees/workspaces","origins_dir":"/home/alice/.local/share/trees/origins"}
+{"workspaces_dir":"/home/alice/.local/share/trees/workspaces","origins_dir":"/home/alice/.local/share/trees/origins","latest_session_hook":null}
 ```
 
-Both fields are required strings, including when defaults apply. JSON member
+Both storage fields are required strings, including when defaults apply.
+`latest_session_hook` is null when unconfigured or an object with a string
+`program` and integer `timeout_ms` when configured. The Bash hook variables are
+empty when unconfigured. Resolve programs and timeouts through the status hook
+parser without executing or locating the program; omit derived runtime values. JSON member
 order is not part of the contract. Do not print labels, progress messages, or
 text-format output alongside the object. Convert paths to display strings at the
 presentation boundary and serialize with the existing JSON output helper, which
@@ -104,9 +110,9 @@ conversion convention. `--json` remains specific to `show`.
 ### Resolve One Configuration Snapshot
 
 Add an effective-configuration projection in `src/config.rs` with typed `PathBuf`
-fields for the two directories. The `show` projection excludes the configuration
+fields for the two directories and an optional typed hook configuration. The `show` projection excludes the configuration
 file path; loading and error context still use it. Load the TOML table
-once per inspection and resolve both settings through helpers shared with the
+once per inspection and resolve all settings through helpers shared with the
 existing individual getters. Keep all parsing and resolution in the configuration
 module, and formatting in the CLI boundary.
 
@@ -132,7 +138,7 @@ It works outside a Git repository and before any Trees storage is initialized.
   symlinks, and retain setter regression coverage.
 
 - Separate getter calls would be simpler but could read different file versions.
-  A single table load keeps both displayed settings internally consistent.
+  A single table load keeps all displayed settings internally consistent.
 
 - Human-readable path display is not lossless for every filesystem name. Retain
   the current convention in both formats and document the lossy conversion.

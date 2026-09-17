@@ -6,10 +6,9 @@ use snafu::{ResultExt, Snafu};
 
 const WORKSPACES_DIR_KEY: &str = "workspaces_dir";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionHookConfig {
     pub program: PathBuf,
-    pub directory: PathBuf,
     pub timeout: std::time::Duration,
 }
 
@@ -23,6 +22,13 @@ pub fn session_hook(enabled: bool) -> Result<Option<SessionHookConfig>, ConfigEr
 
 fn session_hook_at(path: &Path) -> Result<Option<SessionHookConfig>, ConfigError> {
     let table = load_table(path)?;
+    configured_session_hook(path, &table)
+}
+
+fn configured_session_hook(
+    path: &Path,
+    table: &toml::Table,
+) -> Result<Option<SessionHookConfig>, ConfigError> {
     let Some(status) = table.get("status") else {
         return Ok(None);
     };
@@ -59,7 +65,6 @@ fn session_hook_at(path: &Path) -> Result<Option<SessionHookConfig>, ConfigError
     };
     Ok(Some(SessionHookConfig {
         program,
-        directory: path.parent().unwrap_or_else(|| Path::new(".")).to_owned(),
         timeout: std::time::Duration::from_millis(timeout as u64),
     }))
 }
@@ -68,6 +73,7 @@ fn session_hook_at(path: &Path) -> Result<Option<SessionHookConfig>, ConfigError
 pub struct EffectiveConfiguration {
     pub workspaces_dir: PathBuf,
     pub origins_dir: PathBuf,
+    pub latest_session_hook: Option<SessionHookConfig>,
 }
 
 pub fn effective_configuration() -> Result<EffectiveConfiguration, ConfigError> {
@@ -86,6 +92,7 @@ fn effective_configuration_at(
     Ok(EffectiveConfiguration {
         workspaces_dir: configured_workspaces_directory(path, &table, workspaces)?,
         origins_dir: configured_directory(path, &table, origins, "repository", "origins_dir")?,
+        latest_session_hook: configured_session_hook(path, &table)?,
     })
 }
 
@@ -314,7 +321,6 @@ mod tests {
         .unwrap();
         let hook = session_hook_at(&path).unwrap().unwrap();
         assert_eq!(hook.program, root.join("hooks/session provider"));
-        assert_eq!(hook.directory, root);
         assert_eq!(hook.timeout.as_millis(), 2000);
         fs::write(
             &path,
@@ -352,6 +358,7 @@ mod tests {
             EffectiveConfiguration {
                 workspaces_dir: workspaces.clone(),
                 origins_dir: origins.clone(),
+                latest_session_hook: None,
             }
         );
         assert!(!root.exists());
@@ -362,6 +369,7 @@ mod tests {
                 EffectiveConfiguration {
                     workspaces_dir: root.join("workspaces"),
                     origins_dir: origins.clone(),
+                    latest_session_hook: None,
                 },
             ),
             (
@@ -369,6 +377,7 @@ mod tests {
                 EffectiveConfiguration {
                     workspaces_dir: workspaces.clone(),
                     origins_dir: root.join("origins"),
+                    latest_session_hook: None,
                 },
             ),
         ] {
@@ -419,6 +428,7 @@ mod tests {
             EffectiveConfiguration {
                 workspaces_dir: real.clone(),
                 origins_dir: link.clone(),
+                latest_session_hook: None,
             }
         );
         fs::write(
@@ -431,6 +441,7 @@ mod tests {
             EffectiveConfiguration {
                 workspaces_dir: real.clone(),
                 origins_dir: real,
+                latest_session_hook: None,
             }
         );
         fs::remove_dir_all(root).unwrap();

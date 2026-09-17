@@ -15,3 +15,13 @@ Using the locally built `target/debug/trees` against real Codex metadata:
 The executable's initial direct invocation completed in 382 milliseconds. The
 existing 11 status integration tests passed after the local build. No new test
 files are included, as requested; validation used the actual executable and data.
+
+## Final Specification Review
+
+Temporary SQLite fixtures exercised the repository script without reading personal
+agent data or adding test files. Checks passed for missing storage, canonical exact
+roots, archived and child exclusion, deterministic ordering, name precedence,
+renames, preview and untitled fallback, and millisecond timestamps. Repeated calls
+from different working directories returned identical output and preserved all
+fixture storage hashes. An incompatible highest-version database failed without
+partial JSON, fallback, or storage mutation.

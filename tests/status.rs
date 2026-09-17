@@ -745,7 +745,7 @@ mod session_hooks {
         let directory = config.parent().unwrap();
         fs::create_dir_all(directory).unwrap();
         let program = directory.join("session provider");
-        fs::write(&program, "#!/bin/sh\ntest $# -eq 0 || exit 8\nprintf . >> calls\ncat > request.json\ncat response.json\n").unwrap();
+        fs::write(&program, "#!/bin/sh\ntest $# -eq 0 || exit 8\ncd -- \"$(dirname -- \"$0\")\" || exit 9\nprintf . >> calls\ncat > request.json\ncat response.json\n").unwrap();
         fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
         fs::write(
             directory.join("response.json"),

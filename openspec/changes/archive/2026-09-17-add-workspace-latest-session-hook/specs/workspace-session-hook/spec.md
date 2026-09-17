@@ -11,10 +11,11 @@ Trees SHALL read an optional `[status.latest_session_hook]` table from its exist
 A bare program name SHALL resolve through inherited PATH. A relative program path containing a path
 separator SHALL resolve against the configuration directory. Trees SHALL execute the program
 directly with no additional command-line arguments, shell parsing, tilde expansion, or environment
-substitution. The child SHALL inherit the invoking environment and use the configuration directory
-as its working directory. The executable MAY be a compiled binary or a script with an appropriate
+substitution. The child SHALL inherit the invoking environment and working directory. The executable MAY be a compiled binary or a script with an appropriate
 shebang and executable permission. Trees SHALL NOT select or require a language or interpreter;
-request data SHALL be supplied through standard input.
+request data SHALL be supplied through standard input. Providers MUST be idempotent:
+repeated calls MUST NOT accumulate side effects. Providers MUST use workspace paths
+from the request rather than assume a particular working directory.
 
 #### Scenario: Execute a Language-Independent Provider
 
@@ -31,6 +32,17 @@ request data SHALL be supplied through standard input.
 
 - **WHEN** program is `hooks/latest-session` and status runs from another directory
 - **THEN** the executable resolves relative to the configuration file and not the invocation directory
+
+#### Scenario: Inherit the Invocation Directory
+
+- **WHEN** Trees executes the provider from a directory different from its configuration directory
+- **THEN** the provider inherits the invocation directory
+- **AND** executable path resolution still uses the configuration directory
+
+#### Scenario: Repeat an Idempotent Query
+
+- **WHEN** a provider receives the same request repeatedly against unchanged metadata
+- **THEN** it returns the same session lists without accumulating side effects
 
 ### Requirement: Invoke One Batch for the Workspace Inventory
 

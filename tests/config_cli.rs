@@ -87,7 +87,7 @@ fn show_defaults_without_initializing_storage() {
     assert_eq!(
         success(fixture.show(false)),
         format!(
-            "workspaces_dir='{}'\norigins_dir='{}'\n",
+            "workspaces_dir='{}'\norigins_dir='{}'\nlatest_session_hook_program=''\nlatest_session_hook_timeout_ms=''\n",
             workspaces.display(),
             origins.display()
         )
@@ -100,6 +100,7 @@ fn show_defaults_without_initializing_storage() {
         serde_json::json!({
             "workspaces_dir": workspaces.to_string_lossy(),
             "origins_dir": origins.to_string_lossy(),
+            "latest_session_hook": null,
         })
     );
     assert_eq!(fs::read_dir(&fixture.root).unwrap().count(), 0);
@@ -115,7 +116,7 @@ fn show_resolves_partial_configuration_and_preserves_contents() {
     assert_eq!(
         success(fixture.show(false)),
         format!(
-            "workspaces_dir='{}'\norigins_dir='{}'\n",
+            "workspaces_dir='{}'\norigins_dir='{}'\nlatest_session_hook_program=''\nlatest_session_hook_timeout_ms=''\n",
             workspace.display(),
             origins.display()
         )
@@ -146,6 +147,14 @@ fn show_failures_leave_stdout_empty() {
         "repository = false",
         "[workspace]\nworkspaces_dir = 42",
         "[repository]\norigins_dir = []",
+        "status = 1",
+        "[status]\nlatest_session_hook = false",
+        "[status.latest_session_hook]",
+        "[status.latest_session_hook]\nprogram = ''",
+        "[status.latest_session_hook]\nprogram = 'provider'\nargs = []",
+        "[status.latest_session_hook]\nprogram = 'provider'\ntimeout_ms = 0",
+        "[status.latest_session_hook]\nprogram = 'provider'\ntimeout_ms = -1",
+        "[status.latest_session_hook]\nprogram = 'provider'\ntimeout_ms = '2000'",
     ] {
         fixture.write_config(document);
         for json in [false, true] {
@@ -203,6 +212,7 @@ fn bash_and_json_preserve_special_paths_without_executing_them() {
     let document = toml::to_string(&serde_json::json!({
         "workspace": { "workspaces_dir": value },
         "repository": { "origins_dir": value },
+        "status": { "latest_session_hook": { "program": value } },
     }))
     .unwrap();
     fixture.write_config(&document);
@@ -214,19 +224,26 @@ fn bash_and_json_preserve_special_paths_without_executing_them() {
             "--noprofile",
             "--norc",
             "-c",
-            "source \"$1\"; printf '%s\\0%s\\0' \"$workspaces_dir\" \"$origins_dir\"",
+            "source \"$1\"; printf '%s\\0%s\\0%s\\0' \"$workspaces_dir\" \"$origins_dir\" \"$latest_session_hook_program\"",
             "bash",
         ])
         .arg(&script)
         .current_dir(&fixture.root)
         .output()
         .unwrap();
-    assert_eq!(success(output), format!("{value}\0{value}\0"));
+    assert_eq!(success(output), format!("{value}\0{value}\0{value}\0"));
     assert!(!fixture.root.join("injected").exists());
     let json: serde_json::Value = serde_json::from_str(&success(fixture.show(true))).unwrap();
     assert_eq!(
         json,
-        serde_json::json!({ "workspaces_dir": value, "origins_dir": value })
+        serde_json::json!({
+            "workspaces_dir": value,
+            "origins_dir": value,
+            "latest_session_hook": {
+                "program": value,
+                "timeout_ms": 2000,
+            },
+        })
     );
     assert_eq!(fs::read_to_string(fixture.config_path()).unwrap(), document);
     assert!(!path.exists());
@@ -352,4 +369,68 @@ fn path_preserves_spaces_and_does_not_follow_configuration_symlinks() {
         .file_type()
         .is_symlink());
     assert!(!fixture.root.join("absent.toml").exists());
+}
+
+#[test]
+fn show_resolves_hook_settings_without_running_the_provider() {
+    let fixture = Fixture::new();
+    let directory = fixture.config_path().parent().unwrap().to_path_buf();
+    for (program, timeout, expected_program, expected_timeout) in [
+        (
+            "./hooks/session provider",
+            None,
+            directory.join("hooks/session provider"),
+            2000,
+        ),
+        (
+            "missing-provider",
+            Some(15),
+            PathBuf::from("missing-provider"),
+            15,
+        ),
+    ] {
+        let mut hook = serde_json::json!({ "program": program });
+        if let Some(timeout) = timeout {
+            hook["timeout_ms"] = serde_json::json!(timeout);
+        }
+        let document = toml::to_string(&serde_json::json!({
+            "status": { "latest_session_hook": hook },
+        }))
+        .unwrap();
+        fixture.write_config(&document);
+        let json: serde_json::Value = serde_json::from_str(&success(fixture.show(true))).unwrap();
+        assert_eq!(
+            json["latest_session_hook"],
+            serde_json::json!({
+                "program": expected_program.to_string_lossy(),
+                "timeout_ms": expected_timeout,
+            })
+        );
+        assert!(success(fixture.show(false)).ends_with(&format!(
+            "latest_session_hook_program='{}'\nlatest_session_hook_timeout_ms='{}'\n",
+            expected_program.display(),
+            expected_timeout,
+        )));
+        assert_eq!(fs::read_to_string(fixture.config_path()).unwrap(), document);
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn show_never_executes_a_configured_hook() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new();
+    fixture.write_config("[status.latest_session_hook]\nprogram = './provider'\n");
+    let directory = fixture.config_path().parent().unwrap().to_path_buf();
+    let provider = directory.join("provider");
+    fs::write(&provider, "#!/bin/sh\ntouch executed\nexit 1\n").unwrap();
+    fs::set_permissions(&provider, fs::Permissions::from_mode(0o755)).unwrap();
+    for json in [false, true] {
+        success(fixture.show(json));
+    }
+    assert!(!directory.join("executed").exists());
+    assert!(!fixture.root.join("executed").exists());
+    assert_eq!(fs::read_dir(&directory).unwrap().count(), 2);
 }
