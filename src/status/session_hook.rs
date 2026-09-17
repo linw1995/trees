@@ -394,6 +394,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(empty.status, Completeness::Unavailable);
+        let complete = decode(
+            &request(),
+            Timestamp::now(),
+            br#"{"version":1,"workspaces":{"a":{"sessions":[]},"b":{"sessions":[]},"c":{"sessions":[]}},"extension":{"signed":-1,"fraction":0.5}}"#,
+        )
+        .unwrap();
+        assert_eq!(complete.status, Completeness::Complete);
+        assert!(complete.issues.is_empty());
+        assert!(complete
+            .workspaces
+            .values()
+            .all(|entry| { entry.status == Completeness::Complete && entry.sessions.is_empty() }));
     }
 
     #[test]
@@ -416,6 +428,10 @@ mod tests {
         assert_eq!(cell(&observation, "b"), "—");
         assert_eq!(cell(&observation, "c"), "unavailable");
         assert_eq!(observation.workspaces["a"].sessions[0].title, title);
+        let boundary = observation_for_title(&format!("{}\u{1b}x", "x".repeat(47)));
+        assert_eq!(cell(&boundary, "a"), format!("agent: {}…", "x".repeat(47)));
+        let boundary = observation_for_title(&format!("{}x", "x".repeat(53)));
+        assert_eq!(cell(&boundary, "a"), format!("agent: {}…", "x".repeat(52)));
         for title in ["\n\u{1b}\\".to_owned(), format!("{}\u{1b}", "x".repeat(51))] {
             let mut observation = observation_for_title(&title);
             let rendered = cell(&observation, "a");
