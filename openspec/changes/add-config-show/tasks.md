@@ -1,7 +1,7 @@
 ## 1. Effective Configuration
 
-- [ ] 1.1 Add a typed effective-configuration projection and load its TOML table once; share directory resolution with existing getters while preserving their behavior and typed error chains.
-- [ ] 1.2 Cover absent/partial configuration, explicit paths, relative paths, nonexistent paths, symlinks where supported, unrelated keys, invalid types, parse errors, and read failures.
+- [x] 1.1 Add a typed effective-configuration projection and load its TOML table once; share directory resolution with existing getters while preserving their behavior and typed error chains.
+- [x] 1.2 Cover absent/partial configuration, explicit paths, relative paths, nonexistent paths, symlinks where supported, unrelated keys, invalid types, parse errors, and read failures.
 
 ## 2. CLI Integration
 
