@@ -5,8 +5,8 @@
 
 ## 2. Protocol and Observation Model
 
-- [ ] 2.1 Add the request, response, session summary, observation, and stable issue types under the existing status module entry point. Verify version-1 serialization and a version-2 report containing independent observation timestamps.
-- [ ] 2.2 Implement response validation and per-workspace completion classification. Verify empty lists versus omitted results, invalid null arrays/elements, invalid later entries, empty coverage, unknown IDs, duplicate keys, invalid timestamps, missing fields, unsupported versions, trailing log text, and ignored extension fields.
+- [x] 2.1 Add the request, response, session summary, observation, and stable issue types under the existing status module entry point. Verify version-1 serialization and a version-2 report containing independent observation timestamps.
+- [x] 2.2 Implement response validation and per-workspace completion classification. Verify empty lists versus omitted results, invalid null arrays/elements, invalid later entries, empty coverage, unknown IDs, duplicate keys, invalid timestamps, missing fields, unsupported versions, trailing log text, and ignored extension fields.
 
 ## 3. Subprocess Execution
 

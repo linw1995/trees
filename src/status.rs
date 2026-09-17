@@ -2,6 +2,7 @@ pub mod combined;
 pub mod processes;
 pub mod report;
 pub mod repos;
+pub mod session_hook;
 pub mod summary;
 pub mod target;
 
