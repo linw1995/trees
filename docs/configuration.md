@@ -143,3 +143,44 @@ be implemented by an executable written in any other language.
 printf '%s\n' '{"version":1,"workspaces":[{"id":"demo","path":"/work/demo"}]}' \
   | ./scripts/examples/session-hook
 ```
+
+### Codex Provider with UV
+
+The [Codex provider](../scripts/hooks/codex-sessions) is an executable `uv` script
+using only the Python standard library. It returns real session lists from local
+Codex metadata. Install `uv` and Python 3.11 or newer, then install the executable:
+
+```sh
+mkdir -p "$HOME/.local/bin"
+install -m755 scripts/hooks/codex-sessions "$HOME/.local/bin/trees-codex-sessions"
+printf '%s\n' '{"version":1,"workspaces":[]}' | "$HOME/.local/bin/trees-codex-sessions"
+```
+
+The warm-up command verifies runtime availability. Execution uses
+`uv run --script --offline` and never downloads dependencies or Python during
+status. Configure the installed executable using your absolute home path:
+
+```toml
+[status.latest_session_hook]
+program = "/Users/your-user/.local/bin/trees-codex-sessions"
+timeout_ms = 2000
+```
+
+The provider reads `CODEX_HOME`, defaulting to `~/.codex`. For database location,
+a top-level `sqlite_home` in its `config.toml` takes precedence over
+`CODEX_SQLITE_HOME`; otherwise the Codex home is used. Relative configured paths
+resolve against the Codex home, while relative environment paths resolve against
+the hook's working directory. Profile and command-line storage overrides are not
+resolved. The newest numeric `state_*.sqlite` is opened read-only; required columns
+are checked before querying. No app-server starts and no transcripts are scanned.
+
+Only sessions whose canonical working directory equals a requested workspace root
+are included. Sessions started in nested repository directories are omitted. This
+avoids confusing nested workspace boundaries absent from the hook request. Archived
+sessions and child-agent sessions are excluded. Results use descending update time and descending session ID as the tiebreaker. Titles prefer the database name, latest valid
+`session_index.jsonl` name, stored title, preview, first message, and finally
+`Untitled session`. Optional name and millisecond timestamp columns are supported.
+
+Missing storage returns empty lists. Unreadable or incompatible storage fails the
+hook visibly. The provider depends on Codex's internal metadata format and may
+need updates when that format changes. It never creates or migrates Codex storage.

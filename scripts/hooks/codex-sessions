@@ -1,0 +1,170 @@
+#!/usr/bin/env -S uv run --script --offline
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
+"""Return ordered Codex sessions for the Trees workspace session hook."""
+
+import json
+import os
+from pathlib import Path
+import re
+import sqlite3
+import sys
+import tomllib
+from contextlib import closing
+from datetime import datetime, timezone
+
+
+class ProviderError(Exception):
+    """Metadata is unavailable or the hook request is invalid."""
+
+
+def canonical(path):
+    value = Path(path)
+    if not value.is_absolute():
+        raise ProviderError("workspace and session paths must be absolute")
+    return value.resolve()
+
+
+def storage_paths():
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex").resolve()
+    config_path = home / "config.toml"
+    config = tomllib.loads(config_path.read_text()) if config_path.exists() else {}
+    configured = config.get("sqlite_home")
+    if configured is not None:
+        if not isinstance(configured, str) or not configured.strip():
+            raise ProviderError("sqlite_home must be a nonempty path")
+        database_home = Path(configured)
+        if not database_home.is_absolute():
+            database_home = home / database_home
+    else:
+        database_home = Path(os.environ.get("CODEX_SQLITE_HOME", "").strip() or home)
+    return home, database_home.resolve()
+
+
+def state_database(directory):
+    candidates = []
+    if not directory.exists():
+        return None
+    for path in directory.iterdir():
+        match = re.fullmatch(r"state_(\d+)\.sqlite", path.name)
+        if match:
+            candidates.append((int(match[1]), path))
+    return max(candidates, key=lambda candidate: candidate[0])[1] if candidates else None
+
+
+def main_session(source):
+    if not isinstance(source, str):
+        return False
+    if source.lower().startswith("subagent"):
+        return False
+    if source.startswith("{"):
+        try:
+            return "subagent" not in json.loads(source)
+        except (ValueError, TypeError):
+            return False
+    return True
+
+
+def indexed_names(home, ids):
+    names = {}
+    path = home / "session_index.jsonl"
+    if not ids or not path.exists():
+        return names
+    with path.open(encoding="utf-8") as stream:
+        for line in stream:
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                # Codex's append-only index can end with an incomplete write.
+                continue
+            if not isinstance(entry, dict):
+                continue
+            identifier, name = entry.get("id"), entry.get("thread_name")
+            if isinstance(identifier, str) and identifier in ids and isinstance(name, str) and name.strip():
+                names[identifier] = name.strip()
+    return names
+
+
+def timestamp(row):
+    milliseconds = row["updated_at_ms"]
+    value = milliseconds if milliseconds is not None else row["updated_at"]
+    if not isinstance(value, int):
+        raise ProviderError("invalid Codex session timestamp")
+    # Older databases can retain millisecond values in the legacy timestamp column.
+    seconds = value / 1000 if milliseconds is not None or abs(value) >= 100_000_000_000 else value
+    return datetime.fromtimestamp(seconds, timezone.utc)
+
+
+def lookup(request, home, database_home):
+    if not isinstance(request, dict) or type(request.get("version")) is not int or request["version"] != 1:
+        raise ProviderError("expected hook protocol version 1")
+    workspaces = request.get("workspaces")
+    if not isinstance(workspaces, list):
+        raise ProviderError("workspaces must be an array")
+    roots = {}
+    result = {}
+    for workspace in workspaces:
+        if not isinstance(workspace, dict) or not isinstance(workspace.get("id"), str) or not workspace["id"]:
+            raise ProviderError("workspace ID must be a nonempty string")
+        if not isinstance(workspace.get("path"), str):
+            raise ProviderError("workspace path must be a string")
+        identifier = workspace["id"]
+        if identifier in result:
+            raise ProviderError("duplicate workspace ID")
+        roots.setdefault(canonical(workspace["path"]), []).append(identifier)
+        result[identifier] = {"sessions": []}
+    response = {"version": 1, "workspaces": result}
+    if not roots:
+        return response
+    database = state_database(database_home)
+    if database is None:
+        return response
+    with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=0.25)) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only = ON")
+        connection.execute("BEGIN")
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(threads)")}
+        required = {"id", "cwd", "source", "archived", "updated_at"}
+        if not required <= columns:
+            raise ProviderError("unsupported Codex threads schema")
+        fields = ["id", "cwd", "source", "updated_at"]
+        for field in ("updated_at_ms", "name", "title", "preview", "first_user_message"):
+            fields.append(field if field in columns else f"NULL AS {field}")
+        rows = []
+        for row in connection.execute(f"SELECT {', '.join(fields)} FROM threads WHERE archived = 0"):
+            if not main_session(row["source"]):
+                continue
+            if not isinstance(row["cwd"], str) or not Path(row["cwd"]).is_absolute():
+                continue
+            root = canonical(row["cwd"])
+            if root in roots:
+                if not isinstance(row["id"], str) or not row["id"].strip():
+                    raise ProviderError("invalid Codex session ID")
+                rows.append((timestamp(row), row["id"], root, row))
+    names = indexed_names(home, {identifier for _, identifier, _, _ in rows})
+    rows.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    for updated, identifier, root, row in rows:
+        candidates = (row["name"], names.get(identifier), row["title"], row["preview"], row["first_user_message"])
+        title = next((value.strip() for value in candidates if isinstance(value, str) and value.strip()), "Untitled session")
+        session = {"agent": "codex", "id": identifier, "title": title, "updated_at": updated.isoformat().replace("+00:00", "Z")}
+        for workspace_id in roots[root]:
+            result[workspace_id]["sessions"].append(session)
+    return response
+
+
+def main():
+    try:
+        request = json.load(sys.stdin)
+        home, database_home = storage_paths()
+        response = lookup(request, home, database_home)
+        print(json.dumps(response, ensure_ascii=False, separators=(",", ":")))
+        return 0
+    except (OSError, ValueError, TypeError, OverflowError, sqlite3.Error, ProviderError) as error:
+        print(f"Codex session hook: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
