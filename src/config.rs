@@ -64,11 +64,35 @@ fn session_hook_at(path: &Path) -> Result<Option<SessionHookConfig>, ConfigError
     }))
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct EffectiveConfiguration {
+    pub workspaces_dir: PathBuf,
+    pub origins_dir: PathBuf,
+}
+
+pub fn effective_configuration() -> Result<EffectiveConfiguration, ConfigError> {
+    let path = paths::configuration_path().context(PathSnafu)?;
+    let workspaces = paths::default_managed_workspace_directory().context(PathSnafu)?;
+    let origins = paths::default_managed_origin_directory().context(PathSnafu)?;
+    effective_configuration_at(&path, workspaces, origins)
+}
+
+fn effective_configuration_at(
+    path: &Path,
+    workspaces: PathBuf,
+    origins: PathBuf,
+) -> Result<EffectiveConfiguration, ConfigError> {
+    let table = load_table(path)?;
+    Ok(EffectiveConfiguration {
+        workspaces_dir: configured_workspaces_directory(path, &table, workspaces)?,
+        origins_dir: configured_directory(path, &table, origins, "repository", "origins_dir")?,
+    })
+}
+
 pub fn workspaces_directory() -> Result<PathBuf, ConfigError> {
     let configuration_path = paths::configuration_path().context(PathSnafu)?;
     let table = load_table(&configuration_path)?;
     let default = paths::default_managed_workspace_directory().context(PathSnafu)?;
-    let default = normalize_existing_path(&configuration_path, default)?;
     configured_workspaces_directory(&configuration_path, &table, default)
 }
 
@@ -94,6 +118,7 @@ fn configured_workspaces_directory(
     table: &toml::Table,
     default: PathBuf,
 ) -> Result<PathBuf, ConfigError> {
+    let default = normalize_existing_path(configuration_path, default)?;
     configured_directory(
         configuration_path,
         table,
@@ -312,6 +337,102 @@ mod tests {
             assert!(session_hook_at(&path).is_err(), "{document}");
         }
         assert!(session_hook(false).unwrap().is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn effective_configuration_resolves_defaults_and_partial_settings_without_writes() {
+        let root = test_root();
+        let path = root.join("config.toml");
+        let workspaces = root.join("default-workspaces");
+        let origins = root.join("default-origins");
+        let resolve = || effective_configuration_at(&path, workspaces.clone(), origins.clone());
+        assert_eq!(
+            resolve().unwrap(),
+            EffectiveConfiguration {
+                workspaces_dir: workspaces.clone(),
+                origins_dir: origins.clone(),
+            }
+        );
+        assert!(!root.exists());
+        fs::create_dir_all(&root).unwrap();
+        for (document, expected) in [
+            (
+                "[workspace]\nworkspaces_dir = 'nested/../workspaces'\n[other]\nvalue = 42\n",
+                EffectiveConfiguration {
+                    workspaces_dir: root.join("workspaces"),
+                    origins_dir: origins.clone(),
+                },
+            ),
+            (
+                "[repository]\norigins_dir = 'origins'\n",
+                EffectiveConfiguration {
+                    workspaces_dir: workspaces.clone(),
+                    origins_dir: root.join("origins"),
+                },
+            ),
+        ] {
+            fs::write(&path, document).unwrap();
+            assert_eq!(resolve().unwrap(), expected);
+            assert_eq!(fs::read_to_string(&path).unwrap(), document);
+            assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn effective_configuration_preserves_typed_errors() {
+        let root = test_root();
+        let path = root.join("config.toml");
+        fs::create_dir_all(&root).unwrap();
+        let resolve =
+            || effective_configuration_at(&path, root.join("workspaces"), root.join("origins"));
+        fs::write(&path, "[").unwrap();
+        assert!(matches!(resolve(), Err(ConfigError::Parse { .. })));
+        for document in [
+            "workspace = 1",
+            "repository = []",
+            "[workspace]\nworkspaces_dir = false",
+            "[repository]\norigins_dir = 1",
+        ] {
+            fs::write(&path, document).unwrap();
+            assert!(matches!(resolve(), Err(ConfigError::Invalid { .. })));
+        }
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(matches!(resolve(), Err(ConfigError::Io { .. })));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn effective_configuration_preserves_existing_symlink_resolution_rules() {
+        let root = test_root();
+        fs::create_dir_all(root.join("real")).unwrap();
+        let link = root.join("link");
+        std::os::unix::fs::symlink(root.join("real"), &link).unwrap();
+        let path = root.join("config.toml");
+        let resolve = || effective_configuration_at(&path, link.clone(), link.clone());
+        let real = fs::canonicalize(root.join("real")).unwrap();
+        assert_eq!(
+            resolve().unwrap(),
+            EffectiveConfiguration {
+                workspaces_dir: real.clone(),
+                origins_dir: link.clone(),
+            }
+        );
+        fs::write(
+            &path,
+            "[workspace]\nworkspaces_dir = 'link'\n[repository]\norigins_dir = 'link'\n",
+        )
+        .unwrap();
+        assert_eq!(
+            resolve().unwrap(),
+            EffectiveConfiguration {
+                workspaces_dir: real.clone(),
+                origins_dir: real,
+            }
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

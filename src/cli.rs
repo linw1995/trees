@@ -151,6 +151,17 @@ pub struct ConfigArgs {
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
     Set(ConfigSetArgs),
+    /// Show effective storage settings as Bash assignments or JSON.
+    Show(ConfigShowArgs),
+    /// Print the configuration file lookup path without reading the file.
+    Path,
+}
+
+#[derive(Debug, Args)]
+pub struct ConfigShowArgs {
+    /// Output a JSON object instead of Bash assignments.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -533,7 +544,9 @@ mod tests {
         let Command::Config(arguments) = cli.command else {
             panic!("expected config command");
         };
-        let ConfigCommand::Set(arguments) = arguments.command;
+        let ConfigCommand::Set(arguments) = arguments.command else {
+            panic!("expected config set command");
+        };
         assert!(matches!(arguments.setting, ConfigSetting::WorkspacesDir));
         assert_eq!(arguments.value, PathBuf::from("relative-workspaces"));
     }
