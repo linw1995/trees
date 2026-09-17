@@ -13,5 +13,8 @@
 
 ## 3. Documentation and Verification
 
-- [ ] 3.1 Document `trees config show`, `--json`, `trees config path`, examples of Bash assignments and JSON, shell quoting and non-exported variables, effective/default semantics, plain lookup-path output even for missing or invalid configuration, and read-only behavior in `docs/configuration.md`.
-- [ ] 3.2 Run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, and strict OpenSpec validation; record results and platform limitations.
+- [x] 3.1 Document `trees config show`, `--json`, `trees config path`, examples of Bash assignments and JSON, shell quoting and non-exported variables, effective/default semantics, plain lookup-path output even for missing or invalid configuration, and read-only behavior in `docs/configuration.md`.
+- [x] 3.2 Run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, and strict OpenSpec validation; record results and platform limitations.
+
+All tasks are complete. See [verification results](verification.md) for checks
+and platform coverage.
