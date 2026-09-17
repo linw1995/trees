@@ -1,0 +1,26 @@
+#!/bin/sh
+set -eu
+
+# Demonstrate the protocol without reading or modifying agent storage.
+exec jq '{
+  version: 1,
+  workspaces: (.workspaces | map({
+    key: .id,
+    value: {
+      sessions: [
+        {
+          agent: "example",
+          id: (.id + ":first"),
+          title: "Review workspace changes",
+          updated_at: "2026-09-17T08:00:00Z"
+        },
+        {
+          agent: "example",
+          id: (.id + ":second"),
+          title: "Explore the repository",
+          updated_at: "2026-09-16T08:00:00Z"
+        }
+      ]
+    }
+  }) | from_entries)
+}'

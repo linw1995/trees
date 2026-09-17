@@ -21,6 +21,6 @@
 
 ## 5. Documentation and Integration Validation
 
-- [ ] 5.1 Update configuration and status documentation and add an executable protocol example. Verify the example returns multiple ordered sessions per workspace through standard input/standard output and document selection-policy ownership, standard error exposure, trust boundary, limits, and `--no-hooks`.
-- [ ] 5.2 Run focused end-to-end status tests proving hook execution leaves Trees lifecycle records unchanged and preserves process reporting. Run formatting, relevant Rust tests, and repository-required checks, recording any environment limitations.
-- [ ] 5.3 Validate the final specification with `openspec validate add-workspace-latest-session-hook --strict` and review implementation against all hook scenarios before marking tasks complete.
+- [x] 5.1 Update configuration and status documentation and add an executable protocol example. Verify the example returns multiple ordered sessions per workspace through standard input/standard output and document selection-policy ownership, standard error exposure, trust boundary, limits, and `--no-hooks`.
+- [x] 5.2 Run focused end-to-end status tests proving hook execution leaves Trees lifecycle records unchanged and preserves process reporting. Run formatting, relevant Rust tests, and repository-required checks, recording any environment limitations.
+- [x] 5.3 Validate the final specification with `openspec validate add-workspace-latest-session-hook --strict` and review implementation against all hook scenarios before marking tasks complete.
