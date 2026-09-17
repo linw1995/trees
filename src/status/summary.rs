@@ -12,11 +12,21 @@ pub fn render(
     color: bool,
     processes: Option<&Observation>,
 ) -> String {
+    render_with_sessions(snapshot, selector, color, processes, None)
+}
+
+pub fn render_with_sessions(
+    snapshot: &Snapshot,
+    selector: &WorkspaceSelector,
+    color: bool,
+    processes: Option<&Observation>,
+    sessions: Option<&super::session_hook::Observation>,
+) -> String {
     let (heading, inventory) = match snapshot {
         Snapshot::Pools(snapshot) => ("Pools", super::render_pools_human(snapshot, color)),
         Snapshot::Workspaces(snapshot) => (
             "Workspaces",
-            super::render_workspaces_human(snapshot, color),
+            super::render_workspaces_with_sessions(snapshot, color, sessions),
         ),
         Snapshot::Repos(snapshot) => ("Repositories", repos::render(snapshot)),
     };

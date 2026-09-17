@@ -151,6 +151,55 @@ impl Observation {
     }
 }
 
+pub fn observe(workspaces: &[WorkspaceStatus], enabled: bool) -> Option<Observation> {
+    let observed_at = Timestamp::now();
+    let config = crate::config::session_hook(enabled);
+    let request = Request::new(workspaces);
+    match config {
+        Ok(Some(config)) => Some(query(&config, &request)),
+        Ok(None) => None,
+        Err(_) => Some(Observation::unavailable(
+            &request,
+            observed_at,
+            Issue::new(IssueCode::ConfigurationFailed),
+        )),
+    }
+}
+
+pub fn cell(observation: &Observation, workspace_id: &str) -> String {
+    let Some(entry) = observation.workspaces.get(workspace_id) else {
+        return "unavailable".into();
+    };
+    if entry.status != Completeness::Complete {
+        return "unavailable".into();
+    }
+    let Some(session) = entry.sessions.first() else {
+        return "—".into();
+    };
+    let label = format!("{}: {}", session.agent, session.title);
+    let mut tokens = Vec::new();
+    let mut width = 0;
+    for character in label.chars() {
+        let token = match character {
+            '\\' => "\\\\".to_owned(),
+            character if character.is_control() => character.escape_default().to_string(),
+            character => character.to_string(),
+        };
+        let token_width = super::display_width(&token);
+        if width + token_width > 60 {
+            while width > 59 {
+                let removed: String = tokens.pop().expect("nonempty label");
+                width -= super::display_width(&removed);
+            }
+            tokens.push("…".to_owned());
+            break;
+        }
+        width += token_width;
+        tokens.push(token);
+    }
+    tokens.concat()
+}
+
 pub fn query(config: &crate::config::SessionHookConfig, request: &Request) -> Observation {
     let observed_at = Timestamp::now();
     match runner::execute(config, request) {
@@ -345,6 +394,49 @@ mod tests {
         )
         .unwrap();
         assert_eq!(empty.status, Completeness::Unavailable);
+    }
+
+    #[test]
+    fn renders_first_session_with_safe_width_and_complete_escapes() {
+        let title = format!("{}\n\u{1b}[31m\\", "界".repeat(40));
+        let mut first = session("first");
+        first["title"] = json!(title);
+        let response = json!({"version":1,"workspaces":{"a":{"sessions":[first,session("second")]},"b":{"sessions":[]}}});
+        let observation = decode(
+            &request(),
+            Timestamp::now(),
+            &serde_json::to_vec(&response).unwrap(),
+        )
+        .unwrap();
+        let rendered = cell(&observation, "a");
+        assert!(super::super::display_width(&rendered) <= 60);
+        assert!(rendered.ends_with('…'));
+        assert!(!rendered.contains('\n'));
+        assert!(!rendered.contains('\u{1b}'));
+        assert_eq!(cell(&observation, "b"), "—");
+        assert_eq!(cell(&observation, "c"), "unavailable");
+        assert_eq!(observation.workspaces["a"].sessions[0].title, title);
+        for title in ["\n\u{1b}\\".to_owned(), format!("{}\u{1b}", "x".repeat(51))] {
+            let mut observation = observation_for_title(&title);
+            let rendered = cell(&observation, "a");
+            assert!(!rendered.contains('\n'));
+            assert!(!rendered.contains('\u{1b}'));
+            assert!(!rendered.ends_with("\\u{…"));
+            observation.workspaces.get_mut("a").unwrap().sessions[0].title = "x".repeat(53);
+            assert_eq!(super::super::display_width(&cell(&observation, "a")), 60);
+        }
+    }
+
+    fn observation_for_title(title: &str) -> Observation {
+        let mut item = session("first");
+        item["title"] = json!(title);
+        decode(
+            &request(),
+            Timestamp::now(),
+            &serde_json::to_vec(&json!({"version":1,"workspaces":{"a":{"sessions":[item]}}}))
+                .unwrap(),
+        )
+        .unwrap()
     }
 
     #[test]

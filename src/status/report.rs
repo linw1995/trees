@@ -4,7 +4,7 @@ use snafu::ResultExt;
 
 use super::combined::{self, Snapshot, SnapshotError};
 use super::processes::{self, Boundary, Observation};
-use super::{StatusView, WorkspaceStatus};
+use super::{session_hook, StatusView, WorkspaceStatus};
 use crate::storage::repository;
 use crate::workspace_locator::WorkspaceSelector;
 
@@ -13,6 +13,7 @@ pub struct Report {
     #[serde(flatten)]
     pub snapshot: Snapshot,
     pub target_processes: Option<Observation>,
+    pub workspace_sessions: Option<session_hook::Observation>,
 }
 
 pub fn load(
@@ -20,34 +21,61 @@ pub fn load(
     selector: &WorkspaceSelector,
     view: StatusView,
     include_removed: bool,
-    _no_hooks: bool,
+    no_hooks: bool,
 ) -> Result<Report, SnapshotError> {
-    load_with_observer(
+    load_with_observers(
         connection,
         selector,
         view,
         include_removed,
         |target, boundaries| processes::observe(target.workspace_id, boundaries),
+        |workspaces| session_hook::observe(workspaces, !no_hooks),
     )
 }
 
-fn load_with_observer(
+fn load_with_observers(
     mut connection: Option<SqliteConnection>,
     selector: &WorkspaceSelector,
     view: StatusView,
     include_removed: bool,
     observer: impl FnOnce(&WorkspaceStatus, &[Boundary]) -> Observation,
+    sessions: impl FnOnce(&[WorkspaceStatus]) -> Option<session_hook::Observation>,
 ) -> Result<Report, SnapshotError> {
     let (snapshot, boundaries) =
         load_persisted(connection.as_mut(), selector, view, include_removed, || {})?;
     drop(connection);
+    let workspace_sessions = match &snapshot {
+        Snapshot::Workspaces(snapshot) if !snapshot.workspaces.is_empty() => {
+            sessions(&snapshot.workspaces)
+        }
+        _ => None,
+    };
     let target_processes = snapshot
         .target()
         .map(|target| observer(target, &boundaries));
     Ok(Report {
         snapshot,
         target_processes,
+        workspace_sessions,
     })
+}
+
+#[cfg(test)]
+fn load_with_observer(
+    connection: Option<SqliteConnection>,
+    selector: &WorkspaceSelector,
+    view: StatusView,
+    include_removed: bool,
+    observer: impl FnOnce(&WorkspaceStatus, &[Boundary]) -> Observation,
+) -> Result<Report, SnapshotError> {
+    load_with_observers(
+        connection,
+        selector,
+        view,
+        include_removed,
+        observer,
+        |_| None,
+    )
 }
 
 fn load_persisted(
@@ -138,6 +166,49 @@ mod tests {
                 assert_eq!(json["target_workspace"], json["workspaces"][0]);
             }
         }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sessions_run_after_storage_closes_and_before_processes() {
+        let root = std::env::temp_dir().join(format!("trees-session-order-{}", WorkspaceId::new()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("state.sqlite");
+        let mut writer = database::connect(&path).unwrap();
+        let id = insert_workspace(&mut writer, "/work/api", WorkspaceState::Ready);
+        drop(writer);
+        let calls = Cell::new(0);
+        let report = load_with_observers(
+            Some(database::connect_read_only(&path).unwrap()),
+            &WorkspaceSelector::Id(id),
+            StatusView::Workspaces,
+            false,
+            |_, _| {
+                assert_eq!(calls.get(), 1);
+                Observation::unavailable(Timestamp::now(), IssueCode::EnumerationFailed)
+            },
+            |workspaces| {
+                calls.set(calls.get() + 1);
+                let mut writer = database::connect(&path).unwrap();
+                writer
+                    .exclusive_transaction::<_, diesel::result::Error, _>(|_| Ok(()))
+                    .unwrap();
+                let request = session_hook::Request::new(workspaces);
+                Some(session_hook::Observation::unavailable(
+                    &request,
+                    Timestamp::parse("2000-01-01T00:00:00Z").unwrap(),
+                    session_hook::Issue::new(session_hook::IssueCode::TimedOut),
+                ))
+            },
+        )
+        .unwrap();
+        let json = serde_json::to_value(report).unwrap();
+        assert_ne!(
+            json["snapshot_at"],
+            json["workspace_sessions"]["observed_at"]
+        );
+        assert_eq!(json["workspaces"][0], json["target_workspace"]);
+        assert_eq!(calls.get(), 1);
         std::fs::remove_dir_all(root).unwrap();
     }
 

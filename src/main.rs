@@ -556,11 +556,12 @@ fn run_status(arguments: trees::cli::StatusArgs) -> Result<ExitCode, CliError> {
     } else {
         println!(
             "{}",
-            trees::status::summary::render(
+            trees::status::summary::render_with_sessions(
                 &report.snapshot,
                 &selector,
                 status_color_enabled(),
-                report.target_processes.as_ref()
+                report.target_processes.as_ref(),
+                report.workspace_sessions.as_ref()
             )
         );
         Ok(ExitCode::SUCCESS)

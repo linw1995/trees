@@ -1,7 +1,7 @@
 ## 1. Configuration and CLI
 
 - [x] 1.1 Add typed optional hook configuration in `src/config.rs`, preserving unrelated settings. Verify missing configuration, defaults, invalid table/value types, zero timeout, relative program resolution, and rejection of an `args` setting with focused tests.
-- [ ] 1.2 Add `status --no-hooks` and pass its value into report loading. Verify CLI parsing in all views and that bypass does not read even malformed hook configuration.
+- [x] 1.2 Add `status --no-hooks` and pass its value into report loading. Verify CLI parsing in all views and that bypass does not read even malformed hook configuration.
 
 ## 2. Protocol and Observation Model
 
@@ -15,9 +15,9 @@
 
 ## 4. Report and Rendering Integration
 
-- [ ] 4.1 Collect the hook observation after closing lifecycle storage and before target process observation. Verify one invocation for a nonempty inventory, no invocation for other views or failed loading, removed filtering, and no extra request entry for an excluded target.
-- [ ] 4.2 Add nullable `workspace_sessions` to JSON reports while leaving workspace objects and schema version unchanged. Verify partial coverage, whole-batch failures, configuration failures, issue ordering, complete session lists in provider order, and successful exit with exactly one JSON document and no child output leakage.
-- [ ] 4.3 Append the conditional human column and issue-code diagnostic line. Verify unchanged unconfigured output, first-session/empty/unavailable cells, provider order despite conflicting timestamps, full JSON lists and titles, escaped control characters, wide Unicode, 60-column truncation, and one physical line per workspace.
+- [x] 4.1 Collect the hook observation after closing lifecycle storage and before target process observation. Verify one invocation for a nonempty inventory, no invocation for other views or failed loading, removed filtering, and no extra request entry for an excluded target.
+- [x] 4.2 Add nullable `workspace_sessions` to JSON reports while leaving workspace objects and schema version unchanged. Verify partial coverage, whole-batch failures, configuration failures, issue ordering, complete session lists in provider order, and successful exit with exactly one JSON document and no child output leakage.
+- [x] 4.3 Append the conditional human column and issue-code diagnostic line. Verify unchanged unconfigured output, first-session/empty/unavailable cells, provider order despite conflicting timestamps, full JSON lists and titles, escaped control characters, wide Unicode, 60-column truncation, and one physical line per workspace.
 
 ## 5. Documentation and Integration Validation
 
