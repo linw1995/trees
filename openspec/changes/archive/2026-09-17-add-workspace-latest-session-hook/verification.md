@@ -34,3 +34,7 @@ explicit contract; Trees does not enforce arbitrary script behavior.
 The final Rust suite passed 401 tests. Configuration inspection passed 12 CLI tests.
 The updated changes passed strict OpenSpec validation. Native Windows execution
 remains unverified locally; Linux validation runs in the pull request workflow.
+
+Coverage review added assertions for fully complete observations with empty
+session lists, ignored numeric extension fields, and truncation after exactly
+60 display columns, including removal of a whole escaped control token.
