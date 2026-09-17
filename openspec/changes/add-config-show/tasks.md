@@ -6,8 +6,8 @@
 ## 2. CLI Integration
 
 - [ ] 2.1 Add `ConfigCommand::Show` with `--json` and `ConfigCommand::Path`, help text, and parser coverage; adjust existing irrefutable `Set` matches for the new variants.
-- [ ] 2.2 Resolve the full projection before printing the two ordered Bash variable assignments using `bash_quote` or serializing a single JSON object; preserve existing `config set` behavior and CLI failure handling.
-- [ ] 2.3 Add isolated CLI integration coverage for defaults, configured values, errors with empty standard output, execution outside repositories, and absence of configuration/storage mutations in both modes. Verify JSON field types, Bash/JSON value parity, and escaping; verify Bash round trips for special characters and that command-like path content cannot execute.
+- [x] 2.2 Resolve the full projection before printing the two ordered Bash variable assignments using `bash_quote` or serializing a single JSON object; preserve existing `config set` behavior and CLI failure handling.
+- [x] 2.3 Add isolated CLI integration coverage for defaults, configured values, errors with empty standard output, execution outside repositories, and absence of configuration/storage mutations in both modes. Verify JSON field types, Bash/JSON value parity, and escaping; verify Bash round trips for special characters and that command-like path content cannot execute.
 
 - [ ] 2.4 Implement `config path` using `paths::configuration_path()` and plain path output; avoid configuration reads, existence checks, `canonicalize` calls, and storage initialization.
 - [ ] 2.5 Cover `config path` platform lookup, absent/malformed/unreadable configuration, no storage mutation, rejection of unsupported arguments including `--json`, and path-resolution failures with empty standard output.

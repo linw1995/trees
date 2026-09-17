@@ -262,6 +262,24 @@ fn release_automatic(
 
 fn run_config(arguments: trees::cli::ConfigArgs) -> Result<ExitCode, CliError> {
     match arguments.command {
+        trees::cli::ConfigCommand::Show(arguments) => {
+            let config = trees::config::effective_configuration()?;
+            if arguments.json {
+                return print_json(&serde_json::json!({
+                    "workspaces_dir": config.workspaces_dir.to_string_lossy(),
+                    "origins_dir": config.origins_dir.to_string_lossy(),
+                }));
+            }
+            println!(
+                "workspaces_dir={}",
+                bash_quote(&config.workspaces_dir.to_string_lossy())
+            );
+            println!(
+                "origins_dir={}",
+                bash_quote(&config.origins_dir.to_string_lossy())
+            );
+            Ok(ExitCode::SUCCESS)
+        }
         trees::cli::ConfigCommand::Set(arguments) => match arguments.setting {
             trees::cli::ConfigSetting::OriginsDir => {
                 let path = trees::config::set_origins_directory(&arguments.value)?;
