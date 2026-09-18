@@ -261,10 +261,14 @@ Successful release prints `workspace_id`, `workspace_path`, `claim_id`, and
 `released_at` as line-oriented key-value pairs.
 
 Release requires every managed worktree to be clean: staged, unstaged, or
-untracked changes reject the entire operation. It then aligns each worktree to
-its source repository's current local `HEAD` in detached mode and releases the
-claim only after final reconciliation. Missing, prunable, identity-mismatched,
-or failed worktrees retain the claim for repair.
+untracked changes reject the entire operation. Release fetches each source
+repository and aligns its worktree in detached mode to the primary branch's
+tracking upstream, falling back to the local `HEAD` of the primary worktree when no
+tracking upstream is configured, just as online create does. The source's local
+`HEAD` stays unchanged. All fetches must succeed before any worktree is aligned;
+a failed fetch retains the claim for retry. Release removes the claim only after
+final reconciliation. Missing, prunable, identity-mismatched, or failed worktrees
+retain the claim for repair.
 
 Only one release can run per workspace. A concurrent attempt exits busy without
 waiting or retrying.
