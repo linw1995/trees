@@ -1,7 +1,7 @@
 #[cfg(unix)]
 mod signals;
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus};
@@ -213,6 +213,25 @@ impl ProcessSupervisor {
     ) -> Result<ExitStatus, ProcessError> {
         let mut command = Command::new(program);
         command.current_dir(identity.workspace_path.as_path());
+        let locale = ["LC_ALL", "LC_CTYPE", "LANG"]
+            .into_iter()
+            .filter_map(std::env::var_os)
+            .find(|value| !value.is_empty());
+        let utf8 = locale
+            .as_deref()
+            .and_then(OsStr::to_str)
+            .and_then(|locale| locale.split_once('.'))
+            .map(|(_, encoding)| encoding.split('@').next().unwrap_or_default())
+            .is_some_and(|encoding| {
+                encoding.eq_ignore_ascii_case("UTF-8") || encoding.eq_ignore_ascii_case("UTF8")
+            });
+        let mut prompt = OsString::from(if utf8 {
+            "[♻️] "
+        } else {
+            "[trees:release-on-exit] "
+        });
+        prompt.push(std::env::var_os("PS1").unwrap_or_else(|| OsString::from("$ ")));
+        command.env("PS1", prompt);
         if interactive {
             command.arg("-i");
         }
