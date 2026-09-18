@@ -651,7 +651,25 @@ fn align_release_worktrees(
     lease_id: &LeaseId,
 ) -> Result<(), WorkspaceError> {
     let alignments =
-        prepare_worktree_alignments(connection, workspace, |_, source| Ok(source.head.clone()))?;
+        prepare_worktree_alignments(connection, workspace, |repository, connection| {
+            let source = git::inspect_fetched_upstream_repository_with_heartbeat(
+                &repository.source_path,
+                || match crate::storage::renew_operation_lease(connection, lease_id) {
+                    Ok(true) => Ok(()),
+                    Ok(false) => Err(GitError::Heartbeat {
+                        message: "operation lease is no longer owned".to_owned(),
+                    }),
+                    Err(error) => Err(GitError::from_heartbeat_source(error)),
+                },
+            )?;
+            snafu::ensure!(
+                source.common_dir == repository.repository_identity,
+                NotReusableSnafu {
+                    path: workspace.canonical_path.clone()
+                }
+            );
+            Ok(source.head)
+        })?;
     execute_worktree_alignments(connection, lease_id, alignments)
 }
 
@@ -661,7 +679,7 @@ fn prepare_worktree_alignments<F>(
     mut target_head: F,
 ) -> Result<Vec<ReleaseAlignment>, WorkspaceError>
 where
-    F: FnMut(&RepoWorktreeRow, &git::RepositoryInfo) -> Result<String, WorkspaceError>,
+    F: FnMut(&RepoWorktreeRow, &mut SqliteConnection) -> Result<String, WorkspaceError>,
 {
     let repositories =
         crate::storage::list_repo_worktrees(connection, &workspace.id).context(DatabaseSnafu)?;
@@ -688,7 +706,7 @@ where
                 path: workspace.canonical_path.clone(),
             });
         }
-        let target_head = target_head(&repository, &source)?;
+        let target_head = target_head(&repository, connection)?;
         let needs_checkout = worktree.head.as_deref() != Some(target_head.as_str())
             || !worktree.detached
             || worktree.branch.is_some();
@@ -2153,6 +2171,144 @@ mod tests {
         drop(connection);
         fs::remove_file(database_path).expect("state database should be removable");
         fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn release_fetches_the_tracking_revision_without_moving_the_source_head() {
+        let (root, database_path, mut connection, plan, candidate, worktree_path) =
+            automatic_candidate_fixture();
+        let acquire = acquire_automatic_candidate(&mut connection, &plan, &candidate)
+            .expect("automatic acquire should succeed");
+        let source = &plan.repositories[0].source_path;
+        let local_head = git::inspect_repository(source).unwrap().head;
+        run_git(source.as_path(), &["branch", "-M", "main"]);
+        let remote = root.join("remote.git");
+        run_git(
+            &root,
+            &[
+                "clone",
+                "--bare",
+                source.as_path().to_str().unwrap(),
+                remote.to_str().unwrap(),
+            ],
+        );
+        run_git(
+            source.as_path(),
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        run_git(source.as_path(), &["fetch", "--quiet"]);
+        run_git(
+            source.as_path(),
+            &["branch", "--set-upstream-to=origin/main", "main"],
+        );
+        let publisher = root.join("publisher");
+        run_git(
+            &root,
+            &[
+                "clone",
+                remote.to_str().unwrap(),
+                publisher.to_str().unwrap(),
+            ],
+        );
+        run_git(
+            &publisher,
+            &["config", "user.email", "trees@example.invalid"],
+        );
+        run_git(&publisher, &["config", "user.name", "trees tests"]);
+        fs::write(publisher.join("README"), "remote update\n").unwrap();
+        run_git(&publisher, &["commit", "-qam", "remote update"]);
+        run_git(&publisher, &["push", "--quiet"]);
+        let remote_head = git::inspect_repository(&CanonicalPath::resolve(&publisher).unwrap())
+            .unwrap()
+            .head;
+        assert_ne!(remote_head, local_head);
+        run_git(&worktree_path, &["checkout", "-q", "-b", "feature"]);
+
+        release_automatic_workspace(&mut connection, &candidate.canonical_path, acquire.claim_id)
+            .expect("release should fetch and align to the remote revision");
+
+        assert_eq!(git::inspect_repository(source).unwrap().head, local_head);
+        let worktree = git::find_worktree(source, &worktree_path).unwrap();
+        assert_eq!(worktree.head.as_deref(), Some(remote_head.as_str()));
+        assert!(worktree.detached);
+        assert!(worktree.branch.is_none());
+        let stored = crate::storage::list_repo_worktrees(&mut connection, &candidate.id).unwrap();
+        assert_eq!(stored[0].last_head.as_deref(), Some(remote_head.as_str()));
+        assert!(
+            crate::storage::find_workspace_claim(&mut connection, &candidate.id)
+                .unwrap()
+                .is_none()
+        );
+
+        git::remove_worktree(source, &worktree_path).unwrap();
+        drop(connection);
+        fs::remove_file(database_path).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_release_fetch_retains_the_claim_and_worktree_for_retry() {
+        let (root, database_path, mut connection, plan, candidate, worktree_path) =
+            automatic_candidate_fixture();
+        let acquire = acquire_automatic_candidate(&mut connection, &plan, &candidate)
+            .expect("automatic acquire should succeed");
+        let source = &plan.repositories[0].source_path;
+        run_git(&worktree_path, &["checkout", "-q", "-b", "feature"]);
+        let before = git::find_worktree(source, &worktree_path).unwrap();
+        fs::write(source.as_path().join("README"), "local update\n").unwrap();
+        run_git(source.as_path(), &["commit", "-qam", "local update"]);
+        run_git(
+            source.as_path(),
+            &[
+                "remote",
+                "add",
+                "origin",
+                root.join("missing.git").to_str().unwrap(),
+            ],
+        );
+
+        let error = release_automatic_workspace(
+            &mut connection,
+            &candidate.canonical_path,
+            acquire.claim_id,
+        )
+        .expect_err("failed fetch should reject release");
+
+        assert!(matches!(
+            error,
+            WorkspaceError::Git {
+                source: GitError::CommandFailed { .. }
+            }
+        ));
+        let after = git::find_worktree(source, &worktree_path).unwrap();
+        assert_eq!(after.head, before.head);
+        assert_eq!(after.branch, before.branch);
+        assert_eq!(
+            crate::storage::find_workspace_claim(&mut connection, &candidate.id)
+                .unwrap()
+                .unwrap()
+                .id,
+            acquire.claim_id
+        );
+        let event = crate::schema::lifecycle_events::table
+            .filter(crate::schema::lifecycle_events::entity_id.eq(candidate.id.to_string()))
+            .filter(crate::schema::lifecycle_events::event_type.eq("workspace_release_rejected"))
+            .select(crate::storage::EventRow::as_select())
+            .first(&mut connection)
+            .unwrap();
+        assert_eq!(
+            crate::storage::operation_state(&mut connection, &event.operation_id).unwrap(),
+            Some(OperationState::Failed)
+        );
+
+        run_git(source.as_path(), &["remote", "remove", "origin"]);
+        release_automatic_workspace(&mut connection, &candidate.canonical_path, acquire.claim_id)
+            .expect("release should succeed after repairing the remote");
+
+        git::remove_worktree(source, &worktree_path).unwrap();
+        drop(connection);
+        fs::remove_file(database_path).unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
