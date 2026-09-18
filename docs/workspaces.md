@@ -123,6 +123,30 @@ to recovery shells and requires no shell integration. The marker is best-effort:
 shell startup files or prompt themes can override it, and shells that do not
 use POSIX `PS1` may not display it. The parent shell's prompt is unchanged.
 
+Trees also sets `TREES_RELEASE_ON_EXIT=1` in the child process and each recovery
+shell. This session marker is inherited by their child processes and survives
+prompt overrides. It describes the supervised session, not the current
+directory. Trees does not set it for create without `--release-on-exit` or
+standalone `trees open`; those commands preserve any inherited value.
+
+For [Starship](https://starship.rs/config/#environment-variable), add the
+following to `~/.config/starship.toml`:
+
+```toml
+[env_var.TREES_RELEASE_ON_EXIT]
+format = '[\[♻️\]](bold yellow) '
+```
+
+The module appears only when the variable is set. Starship's default prompt
+already includes environment variable modules. For a custom prompt, include
+`${env_var.TREES_RELEASE_ON_EXIT}` in the top-level `format`. To place the marker
+before the default prompt, set this at the top of the configuration, before any
+module tables:
+
+```toml
+format = '${env_var.TREES_RELEASE_ON_EXIT}$all'
+```
+
 If release fails, Trees prints the reason and opens `$SHELL -i` in the workspace.
 Save your work on a branch or outside the workspace and resolve the reported
 problem. Exiting the shell retries release; another failure opens another shell,

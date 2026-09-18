@@ -213,6 +213,7 @@ impl ProcessSupervisor {
     ) -> Result<ExitStatus, ProcessError> {
         let mut command = Command::new(program);
         command.current_dir(identity.workspace_path.as_path());
+        command.env("TREES_RELEASE_ON_EXIT", "1");
         let locale = ["LC_ALL", "LC_CTYPE", "LANG"]
             .into_iter()
             .filter_map(std::env::var_os)

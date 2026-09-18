@@ -394,6 +394,7 @@ fn recovery_shell_retries_after_each_exit_and_allows_manual_release() {
             .env("SHELL", "/bin/sh")
             .env("PS1", "RECOVERY_READY> ")
             .env("LC_ALL", "C")
+            .env_remove("TREES_RELEASE_ON_EXIT")
             .env("TREES_BINARY", env!("CARGO_BIN_EXE_trees"));
         let mut terminal = Terminal::spawn(command);
         terminal.until("RECOVERY_READY>");
@@ -403,6 +404,10 @@ fn recovery_shell_retries_after_each_exit_and_allows_manual_release() {
         assert!(terminal
             .output
             .contains("Exiting the shell will retry release"));
+        terminal.output.clear();
+        terminal.send(b"printf 'SESSION_RELEASE_ON_EXIT=%s\\n' \"$TREES_RELEASE_ON_EXIT\"\n");
+        terminal.until("SESSION_RELEASE_ON_EXIT=1");
+        terminal.until("RECOVERY_READY>");
         terminal.output.clear();
         terminal.send(b"exit 9\n");
         terminal.until("RECOVERY_READY>");
@@ -763,12 +768,17 @@ fn initial_shell_displays_release_on_exit_prompt() {
 fn default_shell_supports_supervision_and_unflagged_create_retains_its_claim() {
     for release in [false, true] {
         let fixture = Fixture::new();
+        let program = fixture.script(
+            "program",
+            "PS1='THEME> '; printf 'SESSION_RELEASE_ON_EXIT=%s\\n' \"${TREES_RELEASE_ON_EXIT-unset}\"",
+        );
         let mut command = fixture.command();
         command
             .args(["create", "--offline", "--repo"])
             .arg(&fixture.repo)
             .arg("--open")
-            .env("SHELL", "true");
+            .env("SHELL", &program)
+            .env_remove("TREES_RELEASE_ON_EXIT");
         if release {
             command.arg("--release-on-exit");
         }
@@ -777,6 +787,14 @@ fn default_shell_supports_supervision_and_unflagged_create_retains_its_claim() {
             output.status.success(),
             "{}",
             String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            if release {
+                "SESSION_RELEASE_ON_EXIT=1"
+            } else {
+                "SESSION_RELEASE_ON_EXIT=unset"
+            }
         );
         let mut connection = fixture.connection();
         let workspace = trees::storage::list_workspaces(&mut connection, false)
