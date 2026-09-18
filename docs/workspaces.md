@@ -114,6 +114,15 @@ a release attempt.
 Without this flag, exiting the program retains the claim. Standalone
 `trees open` behavior is unchanged.
 
+Trees prefixes the child process's `PS1` with `[♻️]` in `UTF-8`
+locales or `[trees:release-on-exit]` otherwise. A space follows the marker. Locale detection uses the first
+nonempty value of `LC_ALL`, `LC_CTYPE`, and `LANG`, in that order. Emoji rendering
+depends on terminal font support. Trees builds the prompt by
+preserving an inherited `PS1` or using `$` followed by a space when it is unset. This also applies
+to recovery shells and requires no shell integration. The marker is best-effort:
+shell startup files or prompt themes can override it, and shells that do not
+use POSIX `PS1` may not display it. The parent shell's prompt is unchanged.
+
 If release fails, Trees prints the reason and opens `$SHELL -i` in the workspace.
 Save your work on a branch or outside the workspace and resolve the reported
 problem. Exiting the shell retries release; another failure opens another shell,

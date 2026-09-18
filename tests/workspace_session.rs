@@ -393,9 +393,13 @@ fn recovery_shell_retries_after_each_exit_and_allows_manual_release() {
         command
             .env("SHELL", "/bin/sh")
             .env("PS1", "RECOVERY_READY> ")
+            .env("LC_ALL", "C")
             .env("TREES_BINARY", env!("CARGO_BIN_EXE_trees"));
         let mut terminal = Terminal::spawn(command);
         terminal.until("RECOVERY_READY>");
+        assert!(terminal
+            .output
+            .contains("[trees:release-on-exit] RECOVERY_READY>"));
         assert!(terminal
             .output
             .contains("Exiting the shell will retry release"));
@@ -403,6 +407,9 @@ fn recovery_shell_retries_after_each_exit_and_allows_manual_release() {
         terminal.send(b"exit 9\n");
         terminal.until("RECOVERY_READY>");
         assert!(terminal.output.contains("Release failed"));
+        assert!(terminal
+            .output
+            .contains("[trees:release-on-exit] RECOVERY_READY>"));
         if manual_release {
             terminal.send(b"rm unsaved; \"$TREES_BINARY\" release; exit 0\n");
         } else {
@@ -713,6 +720,43 @@ fn recovery_shell_supports_job_control() {
     terminal.until("SESSION_CHILD_FINISHED");
     terminal.send(b"rm unsaved; exit 0\n");
     assert_eq!(terminal.finish().code(), Some(7), "{}", terminal.output);
+}
+
+#[test]
+fn initial_shell_displays_release_on_exit_prompt() {
+    for (lc_all, lc_ctype, lang, inherited, marker) in [
+        (
+            "C",
+            "en_US.UTF-8",
+            "en_US.UTF-8",
+            None,
+            "trees:release-on-exit",
+        ),
+        ("en_US.UTF-8", "C", "C", Some("CUSTOM> "), "♻️"),
+        ("", "en_US.utf8", "C", None, "♻️"),
+        ("", "", "en_US.UTF-8", Some("CUSTOM> "), "♻️"),
+        ("", "", "", Some("CUSTOM> "), "trees:release-on-exit"),
+    ] {
+        let fixture = Fixture::new();
+        let mut command = fixture.create(Path::new("/bin/sh"));
+        command
+            .env_remove("ENV")
+            .env("LC_ALL", lc_all)
+            .env("LC_CTYPE", lc_ctype)
+            .env("LANG", lang);
+        match inherited {
+            Some(prompt) => {
+                command.env("PS1", prompt);
+            }
+            None => {
+                command.env_remove("PS1");
+            }
+        }
+        let mut terminal = Terminal::spawn(command);
+        terminal.until(&format!("[{marker}] {}", inherited.unwrap_or("$ ")));
+        terminal.send(b"exit 0\n");
+        assert_eq!(terminal.finish().code(), Some(0), "{}", terminal.output);
+    }
 }
 
 #[test]
