@@ -3,8 +3,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use trees::database;
-use trees::domain::{CanonicalPath, WorkspaceId, WorkspaceState};
-use trees::storage::find_workspace_by_path;
+use trees::domain::{CanonicalPath, RepoWorktreeState, WorkspaceId, WorkspaceState};
+use trees::storage::{
+    find_workspace, find_workspace_by_path, find_workspace_claim, list_repo_worktrees,
+};
 
 fn test_root() -> PathBuf {
     std::env::temp_dir().join(format!("trees-remove-cli-{}", WorkspaceId::new()))
@@ -138,5 +140,106 @@ fn dry_runs_confirms_and_removes_a_workspace_by_id() {
     );
     drop(connection);
 
+    fs::remove_dir_all(root).expect("test root should be removable");
+}
+
+#[test]
+fn force_removes_a_claimed_dirty_workspace_after_a_read_only_dry_run() {
+    let root = test_root();
+    let source = root.join("source");
+    repository(&source);
+
+    let created = command(&root)
+        .args([
+            "create",
+            "--repo",
+            source.to_str().unwrap(),
+            "--offline",
+            "--json",
+        ])
+        .output()
+        .expect("automatic create should run");
+    assert!(created.status.success());
+    let created: serde_json::Value =
+        serde_json::from_slice(&created.stdout).expect("create output should be JSON");
+    let workspace_path = CanonicalPath::resolve(created["workspace_path"].as_str().unwrap())
+        .expect("workspace should resolve");
+    let mut connection = database::connect(&database_path(&root)).expect("database should open");
+    let workspace = find_workspace_by_path(&mut connection, &workspace_path)
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    let claim = find_workspace_claim(&mut connection, &workspace.id)
+        .expect("claim lookup should succeed")
+        .expect("automatic workspace should be claimed");
+    let worktrees = list_repo_worktrees(&mut connection, &workspace.id)
+        .expect("worktree lookup should succeed");
+    let worktree_path = worktrees[0].worktree_path.as_path();
+    fs::write(worktree_path.join("README"), "local changes\n")
+        .expect("tracked file should become dirty");
+    fs::write(worktree_path.join("untracked"), "local content\n")
+        .expect("untracked file should be written");
+    drop(connection);
+
+    let rejected = command(&root)
+        .args(["remove", &workspace.id.to_string(), "--yes"])
+        .output()
+        .expect("normal remove should run");
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stdout).contains("preflight_reason=claimed"));
+
+    let dry_run = command(&root)
+        .args(["remove", &workspace.id.to_string(), "--force", "--dry-run"])
+        .output()
+        .expect("forced dry-run should run");
+    assert!(dry_run.status.success());
+    assert!(String::from_utf8_lossy(&dry_run.stdout).contains("preflight_reason=eligible"));
+    assert_eq!(
+        fs::read_to_string(worktree_path.join("README")).unwrap(),
+        "local changes\n"
+    );
+    assert!(worktree_path.join("untracked").exists());
+    let mut connection = database::connect(&database_path(&root)).expect("database should reopen");
+    assert_eq!(
+        find_workspace_claim(&mut connection, &workspace.id)
+            .expect("claim lookup should succeed")
+            .expect("dry-run should preserve the claim")
+            .id,
+        claim.id
+    );
+    assert!(
+        trees::storage::find_running_operation(&mut connection, &workspace.id)
+            .expect("operation lookup should succeed")
+            .is_none()
+    );
+    drop(connection);
+
+    let removed = command(&root)
+        .args(["remove", &workspace.id.to_string(), "--force", "--yes"])
+        .output()
+        .expect("forced remove should run");
+    assert!(removed.status.success());
+    assert!(String::from_utf8_lossy(&removed.stdout).contains("removed=true"));
+    assert!(!workspace_path.as_path().exists());
+    let mut connection = database::connect(&database_path(&root)).expect("database should reopen");
+    assert!(find_workspace_claim(&mut connection, &workspace.id)
+        .expect("claim lookup should succeed")
+        .is_none());
+    assert_eq!(
+        find_workspace(&mut connection, &workspace.id)
+            .expect("workspace tombstone should remain")
+            .state,
+        WorkspaceState::Removed
+    );
+    assert!(list_repo_worktrees(&mut connection, &workspace.id)
+        .expect("worktree tombstones should remain")
+        .iter()
+        .all(|worktree| worktree.state == RepoWorktreeState::Removed));
+    assert_eq!(
+        trees::git::list_worktrees(&CanonicalPath::resolve(&source).unwrap())
+            .expect("source worktrees should be readable")
+            .len(),
+        1
+    );
+    drop(connection);
     fs::remove_dir_all(root).expect("test root should be removable");
 }

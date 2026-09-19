@@ -30,11 +30,13 @@ trees remove <workspace-id> --force
 ```
 
 Explicit removal accepts automatic and manual workspaces and does not apply an
-age threshold. Normal mode requires a safe clean workspace. `--force` may
-remove dirty worktrees or unexpected content, but it does not break an active
-claim or operation and does not bypass path or repository identity guards.
-Successful removal keeps the workspace and worktree records as removed
-tombstones.
+age threshold. Normal mode requires a safe clean workspace without an active
+claim. `--force` skips confirmation and may remove claimed workspaces, dirty
+worktrees, or unexpected content. It still rejects active operations and does
+not bypass path or repository identity guards. Successful removal clears any
+claim and keeps the workspace and worktree records as removed tombstones.
+Failed or rejected removal retains the claim. `--dry-run` leaves claims and
+workspace content unchanged, including with `--force`.
 
 ## Remove a Source Record
 

@@ -379,9 +379,10 @@ fn removal_reason(
     if workspace.state == WorkspaceState::Removed {
         return Ok(GcCandidateReason::Removed);
     }
-    if find_workspace_claim(connection, &workspace.id)
-        .context(DatabaseSnafu)?
-        .is_some()
+    if !force
+        && find_workspace_claim(connection, &workspace.id)
+            .context(DatabaseSnafu)?
+            .is_some()
     {
         return Ok(GcCandidateReason::Claimed);
     }
@@ -660,9 +661,10 @@ fn removal_reason_while_owned(
     if workspace.state == WorkspaceState::Removed {
         return Ok(GcCandidateReason::Removed);
     }
-    if find_workspace_claim(connection, &workspace.id)
-        .context(DatabaseSnafu)?
-        .is_some()
+    if !force
+        && find_workspace_claim(connection, &workspace.id)
+            .context(DatabaseSnafu)?
+            .is_some()
     {
         return Ok(GcCandidateReason::Claimed);
     }

@@ -562,13 +562,13 @@ fn explicit_removal_does_not_apply_the_gc_age_threshold() {
 }
 
 #[test]
-fn forced_explicit_removal_preserves_an_active_claim() {
+fn normal_explicit_removal_preserves_an_active_claim() {
     let mut fixture = automatic_fixture();
     let acquire = allocate_automatic_workspace(&mut fixture.connection, &fixture.plan)
         .expect("allocation should succeed");
 
-    let report = gc::remove_workspace(&mut fixture.connection, &fixture.workspace.id, true)
-        .expect("forced removal should report the admission rejection");
+    let report = gc::remove_workspace(&mut fixture.connection, &fixture.workspace.id, false)
+        .expect("normal removal should report the admission rejection");
 
     assert!(!report.removed);
     assert_eq!(report.reason, gc::GcCandidateReason::Claimed);
@@ -616,7 +616,9 @@ fn forced_explicit_removal_removes_dirty_detached_content() {
 
 #[test]
 fn explicit_removal_rejects_active_operations_and_recovers_expired_ones() {
-    let fixture = automatic_fixture();
+    let mut fixture = automatic_fixture();
+    let acquire = allocate_automatic_workspace(&mut fixture.connection, &fixture.plan)
+        .expect("allocation should succeed");
     let mut connection = fixture.connection;
     let intent = OperationIntent::new(
         fixture.workspace.id,
@@ -635,6 +637,13 @@ fn explicit_removal_rejects_active_operations_and_recovers_expired_ones() {
         .expect("active operation should be rejected");
     assert_eq!(rejected.reason, gc::GcCandidateReason::ActiveOperation);
     assert!(fixture.workspace.canonical_path.as_path().exists());
+    assert_eq!(
+        find_workspace_claim(&mut connection, &fixture.workspace.id)
+            .expect("claim lookup should succeed")
+            .expect("busy removal should preserve the claim")
+            .id,
+        acquire.claim_id
+    );
 
     let running = find_running_operation(&mut connection, &fixture.workspace.id)
         .expect("operation lookup should succeed")
@@ -654,8 +663,62 @@ fn explicit_removal_rejects_active_operations_and_recovers_expired_ones() {
         .expect("expired operation should be recovered before removal");
     assert!(report.removed);
     assert!(!fixture.workspace.canonical_path.as_path().exists());
+    assert!(find_workspace_claim(&mut connection, &fixture.workspace.id)
+        .expect("claim lookup should succeed")
+        .is_none());
 
     drop(connection);
+    fs::remove_file(fixture.database_path).expect("database should be removable");
+    fs::remove_dir_all(fixture.root).expect("test root should be removable");
+}
+
+#[test]
+fn failed_forced_removal_preserves_the_claim_until_a_successful_retry() {
+    let mut fixture = automatic_fixture();
+    let acquire = allocate_automatic_workspace(&mut fixture.connection, &fixture.plan)
+        .expect("allocation should succeed");
+    run_git(
+        fixture.source.as_path(),
+        &["worktree", "lock", fixture.worktree_path.to_str().unwrap()],
+    );
+
+    let failed = gc::remove_workspace(&mut fixture.connection, &fixture.workspace.id, true)
+        .expect("failed physical removal should be reported");
+    assert!(!failed.removed);
+    assert_eq!(failed.reason, gc::GcCandidateReason::GitError);
+    assert!(failed.error.is_some());
+    assert!(fixture.worktree_path.exists());
+    assert_eq!(
+        find_workspace_claim(&mut fixture.connection, &fixture.workspace.id)
+            .expect("claim lookup should succeed")
+            .expect("failed removal should preserve the claim")
+            .id,
+        acquire.claim_id
+    );
+    assert!(
+        find_running_operation(&mut fixture.connection, &fixture.workspace.id)
+            .expect("operation lookup should succeed")
+            .is_none()
+    );
+
+    run_git(
+        fixture.source.as_path(),
+        &[
+            "worktree",
+            "unlock",
+            fixture.worktree_path.to_str().unwrap(),
+        ],
+    );
+    let removed = gc::remove_workspace(&mut fixture.connection, &fixture.workspace.id, true)
+        .expect("retry should succeed after unlocking the worktree");
+    assert!(removed.removed);
+    assert!(!fixture.workspace.canonical_path.as_path().exists());
+    assert!(
+        find_workspace_claim(&mut fixture.connection, &fixture.workspace.id)
+            .expect("claim lookup should succeed")
+            .is_none()
+    );
+    drop(fixture.connection);
     fs::remove_file(fixture.database_path).expect("database should be removable");
     fs::remove_dir_all(fixture.root).expect("test root should be removable");
 }
