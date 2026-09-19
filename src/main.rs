@@ -514,7 +514,7 @@ fn confirm_entity_removal(
         return Ok(GcConfirmation::Proceed);
     }
     if force {
-        eprintln!("Warning: --force may remove dirty worktrees and unexpected workspace content.");
+        eprintln!("Warning: --force may remove claimed workspaces, dirty worktrees, and unexpected workspace content.");
         return Ok(GcConfirmation::Proceed);
     }
     if yes {

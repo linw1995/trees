@@ -728,6 +728,11 @@ fn record_workspace_removed_by(
                 },
             )?;
         }
+        // Keep the claim until removal commits so the workspace cannot be reused mid-removal.
+        diesel::delete(
+            workspace_claims::table.filter(workspace_claims::workspace_id.eq(workspace_id)),
+        )
+        .execute(connection)?;
         diesel::update(workspaces::table.find(workspace_id))
             .set((
                 workspaces::state.eq(WorkspaceState::Removed),
