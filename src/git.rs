@@ -306,6 +306,11 @@ pub fn add_detached_worktree_at_with_heartbeat<F>(
 where
     F: FnMut() -> Result<(), GitError>,
 {
+    eprintln!(
+        "Creating worktree: {} at {revision}",
+        worktree_path.display()
+    );
+    let started = Instant::now();
     run_git_with_heartbeat(
         repository.as_path(),
         &[
@@ -317,6 +322,11 @@ where
         ],
         heartbeat,
     )?;
+    eprintln!(
+        "Created worktree: {} ({:.1}s)",
+        worktree_path.display(),
+        started.elapsed().as_secs_f64()
+    );
     Ok(())
 }
 
@@ -493,6 +503,11 @@ pub fn checkout_detached_with_heartbeat<F>(
 where
     F: FnMut() -> Result<(), GitError>,
 {
+    eprintln!(
+        "Aligning worktree: {} to {revision}",
+        worktree_path.display()
+    );
+    let started = Instant::now();
     run_git_with_heartbeat(
         worktree_path,
         &[
@@ -503,6 +518,11 @@ where
         ],
         heartbeat,
     )?;
+    eprintln!(
+        "Aligned worktree: {} ({:.1}s)",
+        worktree_path.display(),
+        started.elapsed().as_secs_f64()
+    );
     Ok(())
 }
 

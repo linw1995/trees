@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use diesel::sqlite::SqliteConnection;
 use snafu::{ResultExt, Snafu};
 
@@ -88,6 +90,8 @@ fn reconcile_workspace_inner(
         });
     }
     let repositories = list_repo_worktrees(connection, workspace_id).context(DatabaseSnafu)?;
+    eprintln!("Checking workspace: {}", workspace.canonical_path);
+    let started = Instant::now();
     let mut changed_worktrees = 0;
     let mut observed_states = Vec::with_capacity(repositories.len());
 
@@ -153,6 +157,11 @@ fn reconcile_workspace_inner(
             .context(DatabaseSnafu)?;
     }
 
+    eprintln!(
+        "Checked workspace: {} ({:.1}s)",
+        workspace.canonical_path,
+        started.elapsed().as_secs_f64()
+    );
     Ok(ReconciliationSummary {
         changed_worktrees,
         workspace_state,
@@ -345,6 +354,10 @@ pub fn recover_expired_operation(
         return Ok(RecoveryOutcome::LeaseActive);
     }
     let operation = find_operation(connection, &operation.id).context(DatabaseSnafu)?;
+    eprintln!(
+        "Recovering expired operation: {} ({}) for workspace {}",
+        operation.id, operation.kind, workspace_id
+    );
 
     if operation.kind == "add" {
         return Ok(crate::add::workflow::recover(
