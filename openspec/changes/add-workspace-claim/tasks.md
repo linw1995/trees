@@ -2,8 +2,10 @@
 
 ## 1. CLI and Target Selection
 
-- [ ] 1.1 Add claim arguments and command dispatch with positional path, `--workspace-id`, and `--json`; verify parser tests cover defaults, selector conflicts, malformed IDs, and rejection of `--workspace-dir` and `--claim-id`.
-- [ ] 1.2 Convert claim inputs into shared typed selectors without exposing other named options; verify exact-root, relative-path, nearest-ancestor, ID selection without current-directory access, and direct-input conflict tests.
+- [x] 1.1 Add claim arguments with positional path, `--workspace-id`, and `--json`; verify parser tests cover defaults, selector conflicts, malformed IDs, and rejection of `--workspace-dir` and `--claim-id`.
+- [x] 1.2 Convert claim inputs into shared typed selectors without exposing other named options; verify exact-root, relative-path, nearest-ancestor, ID selection without current-directory access, and direct-input conflict tests.
+
+Command dispatch will be connected in task 4.1 once the workflow is available.
 
 ## 2. Admission and Structural Validation
 

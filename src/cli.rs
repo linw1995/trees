@@ -120,6 +120,33 @@ impl AddArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct ClaimArgs {
+    #[arg(value_name = "WORKSPACE_DIR", conflicts_with = "workspace_id")]
+    pub workspace_dir: Option<PathBuf>,
+
+    #[arg(long, value_name = "WORKSPACE_ID", help = "Select a workspace by ID")]
+    pub workspace_id: Option<crate::domain::WorkspaceId>,
+
+    #[arg(long, help = "Print the claim result as JSON")]
+    pub json: bool,
+}
+
+impl ClaimArgs {
+    pub fn selector(&self) -> Result<WorkspaceSelector, InputError> {
+        WorkspaceLocatorArgs {
+            workspace_id: self.workspace_id,
+            ..Default::default()
+        }
+        .resolve(
+            self.workspace_dir
+                .clone()
+                .map(WorkspaceLocatorInput::ExactPath),
+            SelectionDefault::CurrentDirectory,
+        )
+    }
+}
+
+#[derive(Debug, Args)]
 #[command(group(workspace_locator::group(Self::SELECTION_DEFAULT)))]
 pub struct ReleaseArgs {
     #[arg(id = "legacy_workspace_dir", group = workspace_locator::GROUP, value_name = "WORKSPACE_DIR")]
@@ -751,5 +778,65 @@ mod tests {
     #[test]
     fn allows_codex_without_a_workspace_argument() {
         assert!(Cli::try_parse_from(["trees", "codex"]).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod claim_tests {
+    use super::*;
+    use crate::domain::{CanonicalPath, WorkspaceId};
+
+    #[derive(Parser)]
+    struct ClaimCli {
+        #[command(flatten)]
+        args: ClaimArgs,
+    }
+
+    #[test]
+    fn claim_selectors_preserve_the_small_interface() {
+        let id = WorkspaceId::new();
+        for (input, expected) in [
+            (
+                vec!["claim"],
+                WorkspaceSelector::ContainingDirectory(CanonicalPath::resolve(".").unwrap()),
+            ),
+            (
+                vec!["claim", "."],
+                WorkspaceSelector::ExactPath(CanonicalPath::resolve(".").unwrap()),
+            ),
+        ] {
+            let args = ClaimCli::try_parse_from(input).unwrap().args;
+            match (args.selector().unwrap(), expected) {
+                (WorkspaceSelector::ExactPath(actual), WorkspaceSelector::ExactPath(expected))
+                | (
+                    WorkspaceSelector::ContainingDirectory(actual),
+                    WorkspaceSelector::ContainingDirectory(expected),
+                ) => assert_eq!(actual, expected),
+                _ => panic!("unexpected selector"),
+            }
+        }
+        let args = ClaimCli::try_parse_from(["claim", "--workspace-id", &id.to_string(), "--json"])
+            .unwrap()
+            .args;
+        assert!(args.json);
+        assert!(matches!(args.selector().unwrap(), WorkspaceSelector::Id(actual) if actual == id));
+        for input in [
+            vec!["claim", ".", "--workspace-id", &id.to_string()],
+            vec!["claim", "--workspace-id", "invalid"],
+            vec!["claim", "--workspace-dir", "."],
+            vec!["claim", "--claim-id", "invalid"],
+        ] {
+            assert!(ClaimCli::try_parse_from(input).is_err());
+        }
+    }
+
+    #[test]
+    fn claim_rejects_direct_conflicts_before_path_resolution() {
+        let args = ClaimArgs {
+            workspace_dir: Some(PathBuf::from("/missing/parent/workspace")),
+            workspace_id: Some(WorkspaceId::new()),
+            json: false,
+        };
+        assert!(matches!(args.selector(), Err(InputError::Conflict)));
     }
 }
