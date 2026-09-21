@@ -26,6 +26,14 @@ Command dispatch was connected in task 4.1 after the workflow became available.
 
 ## 5. Documentation and Validation
 
-- [ ] 5.1 Update README and workspace lifecycle documentation with exact CLI forms, in-place preservation, recovery limitations, output fields, and existing release semantics; verify examples against generated help.
-- [ ] 5.2 Run targeted integration tests and repository checks (`nix develop --command prek -a`), plus the Rust test suite in the project environment; resolve failures and record results.
-- [ ] 5.3 Run `openspec validate add-workspace-claim --strict` and review the final implementation against every delta scenario before marking tasks complete.
+- [x] 5.1 Update README and workspace lifecycle documentation with exact CLI forms, in-place preservation, recovery limitations, output fields, and existing release semantics; verify examples against generated help.
+- [x] 5.2 Run targeted integration tests and repository checks (`nix develop --command prek -a`), plus the Rust test suite in the project environment; resolve failures and record results.
+- [x] 5.3 Run `openspec validate add-workspace-claim --strict` and review the final implementation against every delta scenario before marking tasks complete.
+
+## Validation Results
+
+- `cargo test --all-targets --all-features`: 427 tests passed across 20 suites; no failures or ignored tests.
+- `nix develop --command prek -a`: all repository checks passed, including formatting, Clippy, compiler checks, Rust Analyzer, documentation lint, notices, and the runtime SQL boundary.
+- `openspec validate add-workspace-claim --strict`: passed.
+- `trees claim --help`: matches the planned positional directory, `--workspace-id`, and `--json` interface.
+- `git diff --check`: passed.

@@ -72,6 +72,11 @@ In recovery, save your work and leave the worktrees clean; exiting the recovery
 shell retries release. See [automatic release](docs/workspaces.md#release-after-program-exit)
 for terminal requirements and exit behavior.
 
+To reserve a specific existing automatic workspace without changing its files,
+branch, or revision, run `trees claim ./workspace`, or run `trees claim` inside
+it. Use `trees release` when finished. See [explicit claims](docs/workspaces.md#claim-an-existing-automatic-workspace)
+for eligibility, output, and recovery behavior.
+
 With one repository, the workspace directory is the worktree root. With multiple
 repositories, it contains one direct child worktree per repository. Existing
 local repositories are also supported through `--repo /path/to/repo`; their
@@ -81,7 +86,7 @@ source directories stay at their original paths.
 
 | Guide | Topics |
 | --- | --- |
-| [Workspace lifecycle](docs/workspaces.md) | Manual and automatic allocation, source selection, starting revisions, repository additions, and release. |
+| [Workspace lifecycle](docs/workspaces.md) | Manual and automatic allocation, source selection, starting revisions, repository additions, explicit claims, and release. |
 | [Status and opening](docs/status.md) | Pool capacity, workspace health, source inventory, JSON output, and opening a workspace. |
 | [Storage configuration](docs/configuration.md) | Automatic workspace and source clone directories. |
 | [Cleanup](docs/cleanup.md) | Automatic GC, workspace removal, and source record removal. |
