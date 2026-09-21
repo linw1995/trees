@@ -31,6 +31,8 @@ pub enum Command {
     Create(CreateArgs),
     #[command(about = "Add repositories to an existing workspace")]
     Add(AddArgs),
+    #[command(about = "Claim an existing automatic workspace without changing its contents")]
+    Claim(ClaimArgs),
     Release(ReleaseArgs),
     Config(ConfigArgs),
     Gc(GcArgs),

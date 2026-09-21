@@ -1521,3 +1521,28 @@ fn explicit_claim_validates_every_repository_in_a_pool() {
     assert!(repositories[0].worktree_path.as_path().exists());
     fs::remove_dir_all(fixture.root).unwrap();
 }
+
+#[test]
+fn explicit_claim_excludes_allocation_and_gc_but_allows_explicit_forced_removal() {
+    let mut fixture = automatic_fixture();
+    let claim = claim_fixture(&mut fixture).unwrap();
+    let allocated = allocate_automatic_workspace(&mut fixture.connection, &fixture.plan).unwrap();
+    assert_ne!(allocated.workspace_path, claim.workspace_path);
+    for force in [false, true] {
+        let report = gc::execute(&mut fixture.connection, "1d".parse().unwrap(), force).unwrap();
+        assert!(report.removed.is_empty());
+    }
+    let report =
+        gc::remove_workspace(&mut fixture.connection, &fixture.workspace.id, false).unwrap();
+    assert!(!report.removed);
+    assert_eq!(report.reason, gc::GcCandidateReason::Claimed);
+    let report =
+        gc::remove_workspace(&mut fixture.connection, &fixture.workspace.id, true).unwrap();
+    assert!(report.removed);
+    assert!(
+        find_workspace_claim(&mut fixture.connection, &fixture.workspace.id)
+            .unwrap()
+            .is_none()
+    );
+    fs::remove_dir_all(fixture.root).unwrap();
+}

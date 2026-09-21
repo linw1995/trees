@@ -5,7 +5,7 @@
 - [x] 1.1 Add claim arguments with positional path, `--workspace-id`, and `--json`; verify parser tests cover defaults, selector conflicts, malformed IDs, and rejection of `--workspace-dir` and `--claim-id`.
 - [x] 1.2 Convert claim inputs into shared typed selectors without exposing other named options; verify exact-root, relative-path, nearest-ancestor, ID selection without current-directory access, and direct-input conflict tests.
 
-Command dispatch will be connected in task 4.1 once the workflow is available.
+Command dispatch was connected in task 4.1 after the workflow became available.
 
 ## 2. Admission and Structural Validation
 
@@ -16,13 +16,13 @@ Command dispatch will be connected in task 4.1 once the workflow is available.
 ## 3. Atomic Publication and Recovery
 
 - [x] 3.1 Atomically publish the claim, access event, terminal success, and lease cleanup after final validation; verify transaction fault tests leave neither a partial claim nor a partial successful outcome and preserve stable workspace metadata.
-- [ ] 3.2 Preserve committed claims across output loss and support existing non-creation recovery for interrupted claims; verify interruption before publication, expired lease, lease takeover, output failure, and repeated claim behavior without Git mutation.
+- [x] 3.2 Preserve committed claims across output loss and support existing non-creation recovery for interrupted claims; verify interruption before publication, expired lease, lease takeover, output failure, and repeated claim behavior without Git mutation.
 - [x] 3.3 Add deterministic multi-connection race tests for claim versus claim, automatic allocation, and GC/removal; verify exclusive admission, no duplicate claim, and no target fallback.
 
 ## 4. Output and Lifecycle Integration
 
-- [ ] 4.1 Add the dedicated result type, Bash-safe output, and JSON serialization without changing create output; verify all four fields, special-character paths, standard error diagnostics, and success output only after commit.
-- [ ] 4.2 Exercise claim, status, allocation/GC exclusion, and ordinary release end to end; verify dirty release retains the claim, clean release succeeds, and manual workspace and explicit forced-removal policies remain unchanged.
+- [x] 4.1 Add the dedicated result type, Bash-safe output, and JSON serialization without changing create output; verify all four fields, special-character paths, standard error diagnostics, and success output only after commit.
+- [x] 4.2 Exercise claim, status, allocation/GC exclusion, and ordinary release end to end; verify dirty release retains the claim, clean release succeeds, and manual workspace and explicit forced-removal policies remain unchanged.
 
 ## 5. Documentation and Validation
 
