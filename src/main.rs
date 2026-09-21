@@ -20,6 +20,7 @@ fn run(cli: trees::cli::Cli) -> Result<ExitCode, CliError> {
     match cli.command {
         trees::cli::Command::Create(arguments) => run_create(arguments),
         trees::cli::Command::Add(arguments) => run_add(arguments),
+        trees::cli::Command::Claim(arguments) => run_claim(arguments),
         trees::cli::Command::Release(arguments) => run_release(arguments),
         trees::cli::Command::Config(arguments) => run_config(arguments),
         trees::cli::Command::Gc(arguments) => run_gc(arguments),
@@ -234,6 +235,27 @@ fn open_workspace(program: &OsStr, workspace_path: &Path) -> Result<ExitCode, Cl
             source,
         }),
     }
+}
+
+fn run_claim(arguments: trees::cli::ClaimArgs) -> Result<ExitCode, CliError> {
+    let target = arguments.selector()?;
+    let result = {
+        let mut connection = trees::database::open_default()?;
+        trees::workspace::claim_automatic_workspace(&mut connection, target)?
+    };
+    let output = if arguments.json {
+        serde_json::to_string(&result).context(SerializeJsonSnafu)?
+    } else {
+        format!(
+            "WORKSPACE_ID={}\nWORKSPACE_PATH={}\nPOOL_ID={}\nCLAIM_ID={}",
+            bash_quote(&result.workspace_id.to_string()),
+            bash_quote(&result.workspace_path.to_string()),
+            bash_quote(&result.pool_id.to_string()),
+            bash_quote(&result.claim_id.to_string()),
+        )
+    };
+    writeln!(io::stdout().lock(), "{output}").context(ClaimOutputSnafu)?;
+    Ok(ExitCode::SUCCESS)
 }
 
 fn run_release(arguments: trees::cli::ReleaseArgs) -> Result<ExitCode, CliError> {
@@ -749,6 +771,10 @@ enum CliError {
     StatusSnapshot {
         source: trees::status::combined::SnapshotError,
     },
+    #[snafu(display(
+        "claim committed but output failed; inspect trees status for its identity: {source}"
+    ))]
+    ClaimOutput { source: io::Error },
     #[snafu(display("failed to serialize JSON output: {source}"))]
     SerializeJson { source: serde_json::Error },
     #[snafu(transparent)]

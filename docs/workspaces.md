@@ -85,6 +85,53 @@ Automatic creation prints Bash assignments: `WORKSPACE_PATH`, `POOL_ID`, and
 UUID of the repository-set pool. Keep `CLAIM_ID` when automation must release
 the exact claim returned by create.
 
+### Claim an Existing Automatic Workspace
+
+```sh
+trees claim
+trees claim ./workspace
+trees claim --workspace-id WORKSPACE_ID
+trees claim ./workspace --json
+```
+
+Use `claim` to reserve a specific existing automatic workspace. With no target,
+it selects the nearest registered workspace containing the current directory,
+including when you run it from a repository subdirectory. An explicit path must
+identify the exact workspace root; relative paths resolve against the current
+directory. The positional path and `--workspace-id` are mutually exclusive.
+There is no `--workspace-dir` or `--claim-id` option for this command.
+
+Claim preserves staged and unstaged changes, untracked and ignored files,
+branches, and the current `HEAD`. It does not fetch or check out a revision.
+The workspace can remain `degraded` because of those changes while successfully
+claimed: health and claim status are independent.
+
+The workspace must be automatic, unclaimed, and structurally complete. Missing
+or unregistered worktrees, mismatched repository identities, inconsistent pool
+membership, and incomplete lifecycle state prevent claiming. Manual workspaces
+already stay outside automatic allocation and GC and cannot be claimed.
+An existing claim is an error; retrying does not replace or refresh it.
+
+An unfinished operation also prevents claiming, even if its lease has expired.
+The error identifies the retained operation. Use its existing recovery workflow
+before retrying; `claim` never initiates recovery that could move or remove your
+worktrees. Unresolved repository additions must be recovered through `trees add`.
+
+Success prints Bash assignments: `WORKSPACE_ID`, `WORKSPACE_PATH`, `POOL_ID`, and
+`CLAIM_ID`. With `--json`, output is one object containing `workspace_id`,
+`workspace_path`, `pool_id`, and `claim_id`. If output fails after the database
+commit, the claim remains active; inspect `trees status` to find it.
+
+An active claim prevents automatic allocation, GC, and ordinary removal.
+Explicit `trees remove --force` retains its existing ability to remove a claimed
+workspace. A claim coordinates Trees operations; it does not lock files against
+external programs. Opening a workspace with `trees open` does not claim it.
+
+Use [ordinary release](#release-automatic-workspaces) when finished. Claim does
+not change release behavior: dirty work prevents release, and successful release
+aligns clean worktrees before returning the workspace to its pool. Claims do not
+expire when the invoking process or shell exits.
+
 ### Open a Program
 
 ```sh
