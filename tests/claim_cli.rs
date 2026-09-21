@@ -225,3 +225,29 @@ fn claim_cli_retains_the_claim_after_output_failure() {
     assert!(!duplicate.status.success());
     fixture.release();
 }
+
+#[test]
+fn claim_cli_does_not_fall_back_from_an_inner_manual_workspace() {
+    let fixture = Fixture::new();
+    let inner = PathBuf::from(&fixture.workspace).join("inner");
+    success(
+        fixture
+            .command()
+            .arg("create")
+            .arg(&inner)
+            .args(["--offline", "--repo"])
+            .arg(fixture.root.join("source"))
+            .output()
+            .unwrap(),
+    );
+    let output = fixture
+        .command()
+        .current_dir(inner)
+        .arg("claim")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("not managed by the automatic workspace pool"));
+    assert!(fixture.status()["target_workspace"]["claim"].is_null());
+}

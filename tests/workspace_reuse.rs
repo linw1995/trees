@@ -1546,3 +1546,28 @@ fn explicit_claim_excludes_allocation_and_gc_but_allows_explicit_forced_removal(
     );
     fs::remove_dir_all(fixture.root).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn explicit_claim_rejects_a_noncanonical_source_association() {
+    let mut fixture = automatic_fixture();
+    let alias = fixture.root.join("source-alias");
+    std::os::unix::fs::symlink(fixture.source.as_path(), &alias).unwrap();
+    diesel::update(trees::schema::origin_repositories::table)
+        .set(
+            trees::schema::origin_repositories::source_path
+                .eq(CanonicalPath::from_absolute(alias).unwrap()),
+        )
+        .execute(&mut fixture.connection)
+        .unwrap();
+    assert!(matches!(
+        claim_fixture(&mut fixture),
+        Err(WorkspaceError::NotClaimable { .. })
+    ));
+    assert!(
+        find_workspace_claim(&mut fixture.connection, &fixture.workspace.id)
+            .unwrap()
+            .is_none()
+    );
+    fs::remove_dir_all(fixture.root).unwrap();
+}

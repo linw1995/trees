@@ -611,6 +611,10 @@ fn validate_claim_structure(
                 .worktree_path
                 .as_path()
                 .starts_with(root.as_path())
+                && CanonicalPath::resolve(repository.source_path.as_path())
+                    .ok()
+                    .as_ref()
+                    == Some(&repository.source_path)
                 && CanonicalPath::resolve(repository.worktree_path.as_path())
                     .ok()
                     .as_ref()
