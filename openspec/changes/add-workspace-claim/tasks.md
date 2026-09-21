@@ -15,9 +15,9 @@ Command dispatch will be connected in task 4.1 once the workflow is available.
 
 ## 3. Atomic Publication and Recovery
 
-- [ ] 3.1 Atomically publish the claim, access event, terminal success, and lease cleanup after final validation; verify transaction fault tests leave neither a partial claim nor a partial successful outcome and preserve stable workspace metadata.
+- [x] 3.1 Atomically publish the claim, access event, terminal success, and lease cleanup after final validation; verify transaction fault tests leave neither a partial claim nor a partial successful outcome and preserve stable workspace metadata.
 - [ ] 3.2 Preserve committed claims across output loss and support existing non-creation recovery for interrupted claims; verify interruption before publication, expired lease, lease takeover, output failure, and repeated claim behavior without Git mutation.
-- [ ] 3.3 Add deterministic multi-connection race tests for claim versus claim, automatic allocation, and GC/removal; verify exclusive admission, no duplicate claim, and no target fallback.
+- [x] 3.3 Add deterministic multi-connection race tests for claim versus claim, automatic allocation, and GC/removal; verify exclusive admission, no duplicate claim, and no target fallback.
 
 ## 4. Output and Lifecycle Integration
 

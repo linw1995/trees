@@ -59,13 +59,22 @@ struct AutomaticFixture {
 }
 
 fn automatic_fixture() -> AutomaticFixture {
+    automatic_fixture_with_repositories(1)
+}
+
+fn automatic_fixture_with_repositories(count: usize) -> AutomaticFixture {
     let root = test_root();
-    let source_path = root.join("source");
-    repository(&source_path);
+    let sources: Vec<_> = (0..count)
+        .map(|index| {
+            let path = root.join(format!("source-{index}"));
+            repository(&path);
+            path
+        })
+        .collect();
     let database_path = root.join("state.sqlite");
     let mut connection = trees::database::connect(&database_path).expect("database should open");
     let mut plan = prepare_automatic(&AutomaticCreateRequest {
-        repositories: vec![source_path],
+        repositories: sources,
         offline: false,
     })
     .expect("automatic plan should be prepared");
@@ -1261,4 +1270,254 @@ fn explicit_claim_defers_retained_operations_even_when_expired() {
         );
         fs::remove_dir_all(fixture.root).unwrap();
     }
+}
+
+#[test]
+fn explicit_claim_publication_rolls_back_every_partial_success() {
+    use diesel::connection::SimpleConnection;
+    for failure in ["claim", "access", "terminal", "expired", "takeover"] {
+        let mut fixture = automatic_fixture();
+        let trigger = match failure {
+            "claim" => "CREATE TRIGGER fail_claim BEFORE INSERT ON workspace_claims BEGIN SELECT RAISE(ABORT, 'injected claim failure'); END;",
+            "access" => "CREATE TRIGGER fail_claim BEFORE INSERT ON lifecycle_events WHEN NEW.event_type = 'workspace_claimed' BEGIN SELECT RAISE(ABORT, 'injected access failure'); END;",
+            "terminal" => "CREATE TRIGGER fail_claim BEFORE INSERT ON lifecycle_events WHEN NEW.event_type = 'operation_succeeded' BEGIN SELECT RAISE(ABORT, 'injected terminal failure'); END;",
+            "takeover" => "CREATE TRIGGER fail_claim AFTER INSERT ON workspace_claims BEGIN UPDATE operation_leases SET id = '00000000-0000-7000-8000-000000000001'; END;",
+            "expired" => "CREATE TRIGGER fail_claim AFTER INSERT ON workspace_claims BEGIN UPDATE operation_leases SET lease_expires_at = '2020-01-01T00:00:00Z'; END;",
+            _ => unreachable!(),
+        };
+        fixture.connection.batch_execute(trigger).unwrap();
+        assert!(claim_fixture(&mut fixture).is_err(), "case {failure}");
+        assert!(
+            find_workspace_claim(&mut fixture.connection, &fixture.workspace.id)
+                .unwrap()
+                .is_none()
+        );
+        let operation_id = trees::schema::operations::table
+            .filter(trees::schema::operations::workspace_id.eq(fixture.workspace.id))
+            .filter(trees::schema::operations::kind.eq("claim"))
+            .select(trees::schema::operations::id)
+            .first::<trees::domain::OperationId>(&mut fixture.connection)
+            .unwrap();
+        let events =
+            trees::storage::list_events_for_operation(&mut fixture.connection, &operation_id)
+                .unwrap();
+        assert!(!events.iter().any(|event| matches!(
+            event.event_type.as_str(),
+            "workspace_claimed" | "operation_succeeded"
+        )));
+        assert_eq!(
+            trees::storage::operation_state(&mut fixture.connection, &operation_id).unwrap(),
+            Some(trees::domain::OperationState::Failed)
+        );
+        assert!(
+            find_running_operation(&mut fixture.connection, &fixture.workspace.id)
+                .unwrap()
+                .is_none()
+        );
+        fixture
+            .connection
+            .batch_execute("DROP TRIGGER fail_claim;")
+            .unwrap();
+        claim_fixture(&mut fixture).unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+}
+
+#[test]
+fn explicit_claim_recovers_interruption_without_granting_or_removing_work() {
+    let mut fixture = automatic_fixture();
+    let intent = OperationIntent::new(
+        fixture.workspace.id,
+        "claim",
+        Timestamp::parse("2020-01-01T00:00:00Z").unwrap(),
+        "claim existing workspace",
+        trees::domain::JsonDocument::parse("{}").unwrap(),
+    );
+    begin_operation(&mut fixture.connection, &intent).unwrap();
+    fs::write(fixture.worktree_path.join("untracked"), "keep\n").unwrap();
+    assert!(matches!(
+        trees::reconciliation::recover_expired_operation(
+            &mut fixture.connection,
+            &fixture.workspace.id
+        )
+        .unwrap(),
+        trees::reconciliation::RecoveryOutcome::Failed
+    ));
+    assert_eq!(
+        fs::read(fixture.worktree_path.join("untracked")).unwrap(),
+        b"keep\n"
+    );
+    assert!(
+        find_workspace_claim(&mut fixture.connection, &fixture.workspace.id)
+            .unwrap()
+            .is_none()
+    );
+    claim_fixture(&mut fixture).unwrap();
+    fs::remove_dir_all(fixture.root).unwrap();
+}
+
+#[test]
+fn explicit_claim_serializes_two_connections() {
+    use std::sync::{Arc, Barrier};
+    let fixture = automatic_fixture();
+    let barrier = Arc::new(Barrier::new(2));
+    let threads: Vec<_> = (0..2)
+        .map(|_| {
+            let path = fixture.database_path.clone();
+            let id = fixture.workspace.id;
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                let mut db = trees::database::connect(&path).unwrap();
+                barrier.wait();
+                trees::workspace::claim_automatic_workspace(
+                    &mut db,
+                    trees::workspace_locator::WorkspaceSelector::Id(id),
+                )
+            })
+        })
+        .collect();
+    let results: Vec<_> = threads
+        .into_iter()
+        .map(|thread| thread.join().unwrap())
+        .collect();
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert!(results
+        .iter()
+        .filter_map(|result| result.as_ref().err())
+        .all(|error| matches!(
+            error,
+            WorkspaceError::ClaimActive { .. }
+                | WorkspaceError::ClaimBlocked { .. }
+                | WorkspaceError::OperationActive { .. }
+        )));
+    fs::remove_dir_all(fixture.root).unwrap();
+}
+
+#[test]
+fn explicit_claim_admission_excludes_other_lifecycle_operations() {
+    let mut fixture = automatic_fixture();
+    let intent = OperationIntent::new(
+        fixture.workspace.id,
+        "claim",
+        Timestamp::after_seconds(300),
+        "checking structure",
+        trees::domain::JsonDocument::parse("{}").unwrap(),
+    );
+    begin_operation(&mut fixture.connection, &intent).unwrap();
+    let mut other = trees::database::connect(&fixture.database_path).unwrap();
+    assert!(matches!(
+        trees::workspace::acquire_automatic_candidate(
+            &mut other,
+            &fixture.plan,
+            &fixture.workspace
+        ),
+        Err(WorkspaceError::OperationActive { .. })
+    ));
+    let report = gc::execute(&mut other, "1d".parse().unwrap(), false).unwrap();
+    assert!(report.removed.is_empty());
+    let report = gc::remove_workspace(&mut other, &fixture.workspace.id, true).unwrap();
+    assert!(!report.removed);
+    assert_eq!(report.reason, gc::GcCandidateReason::ActiveOperation);
+    assert!(fixture.worktree_path.exists());
+    assert_eq!(
+        find_running_operation(&mut other, &fixture.workspace.id)
+            .unwrap()
+            .unwrap()
+            .lease
+            .id,
+        intent.lease_id
+    );
+    fs::remove_dir_all(fixture.root).unwrap();
+}
+
+#[test]
+fn explicit_claim_refuses_operations_that_won_admission() {
+    for kind in ["claim", "acquire", "gc", "remove", "release"] {
+        let mut fixture = automatic_fixture();
+        let mut other = trees::database::connect(&fixture.database_path).unwrap();
+        let intent = OperationIntent::new(
+            fixture.workspace.id,
+            kind,
+            Timestamp::after_seconds(300),
+            "concurrent operation",
+            trees::domain::JsonDocument::parse("{}").unwrap(),
+        );
+        begin_operation(&mut other, &intent).unwrap();
+        assert!(matches!(
+            claim_fixture(&mut fixture),
+            Err(WorkspaceError::ClaimBlocked { .. })
+        ));
+        assert!(find_workspace_claim(&mut other, &fixture.workspace.id)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            find_running_operation(&mut other, &fixture.workspace.id)
+                .unwrap()
+                .unwrap()
+                .lease
+                .id,
+            intent.lease_id
+        );
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+}
+
+#[test]
+fn explicit_claim_refuses_unresolved_addition_journals() {
+    let mut fixture = automatic_fixture();
+    let intent = OperationIntent::new(
+        fixture.workspace.id,
+        "add",
+        Timestamp::after_seconds(300),
+        "unresolved addition",
+        trees::domain::JsonDocument::parse("{}").unwrap(),
+    );
+    begin_operation(&mut fixture.connection, &intent).unwrap();
+    trees::add::persistence::event(
+        &mut fixture.connection,
+        &intent.lease_id,
+        "workspace_add_unresolved",
+        trees::domain::JsonDocument::parse("{}").unwrap(),
+    )
+    .unwrap();
+    trees::storage::record_operation_transition(
+        &mut fixture.connection,
+        &intent.lease_id,
+        trees::domain::OperationState::Failed,
+        trees::storage::TransitionMetadata::new("operation_failed", "trees"),
+    )
+    .unwrap();
+    assert!(matches!(
+        claim_fixture(&mut fixture),
+        Err(WorkspaceError::Addition { .. })
+    ));
+    assert!(
+        find_workspace_claim(&mut fixture.connection, &fixture.workspace.id)
+            .unwrap()
+            .is_none()
+    );
+    fs::remove_dir_all(fixture.root).unwrap();
+}
+
+#[test]
+fn explicit_claim_validates_every_repository_in_a_pool() {
+    let mut fixture = automatic_fixture_with_repositories(2);
+    let claim = claim_fixture(&mut fixture).unwrap();
+    release_automatic_workspace(
+        &mut fixture.connection,
+        &claim.workspace_path,
+        claim.claim_id,
+    )
+    .unwrap();
+    let repositories = list_repo_worktrees(&mut fixture.connection, &fixture.workspace.id).unwrap();
+    assert_eq!(repositories.len(), 2);
+    fs::remove_dir_all(repositories[1].worktree_path.as_path()).unwrap();
+    assert!(claim_fixture(&mut fixture).is_err());
+    assert!(
+        find_workspace_claim(&mut fixture.connection, &fixture.workspace.id)
+            .unwrap()
+            .is_none()
+    );
+    assert!(repositories[0].worktree_path.as_path().exists());
+    fs::remove_dir_all(fixture.root).unwrap();
 }
