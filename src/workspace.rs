@@ -456,6 +456,246 @@ fn fail_acquire(
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ClaimResult {
+    pub workspace_id: WorkspaceId,
+    pub workspace_path: CanonicalPath,
+    pub pool_id: PoolId,
+    pub claim_id: ClaimId,
+}
+
+pub fn claim_automatic_workspace(
+    connection: &mut SqliteConnection,
+    target: WorkspaceSelector,
+) -> Result<ClaimResult, WorkspaceError> {
+    let located = locate(connection, &target)?;
+    let Some(located) = located else {
+        return match target {
+            WorkspaceSelector::Id(workspace_id) => UnknownWorkspaceSnafu { workspace_id }.fail(),
+            WorkspaceSelector::ExactPath(path) | WorkspaceSelector::ContainingDirectory(path) => {
+                WorkspaceNotFoundSnafu { path }.fail()
+            }
+            WorkspaceSelector::ClaimId(claim_id) => ClaimNotFoundSnafu { claim_id }.fail(),
+        };
+    };
+    let workspace_id = located.workspace.id;
+    if let Some(running) =
+        crate::storage::find_running_operation(connection, &workspace_id).context(DatabaseSnafu)?
+    {
+        return ClaimBlockedSnafu {
+            workspace_id,
+            operation_id: running.operation.id,
+            kind: running.operation.kind,
+        }
+        .fail();
+    }
+    validate_claim_metadata(connection, &workspace_id)?;
+    let intent = OperationIntent::new(
+        workspace_id,
+        "claim",
+        Timestamp::after_seconds(300),
+        "claim existing workspace",
+        JsonDocument::from_serializable(&serde_json::json!({ "workspace_id": workspace_id }))?,
+    );
+    try_begin_operation(connection, &intent).map_err(map_operation_error)?;
+    let result = claim_with_lease(connection, &intent);
+    if let Err(error) = &result {
+        fail_operation(connection, &intent.lease_id, error);
+    }
+    result
+}
+
+fn claim_with_lease(
+    connection: &mut SqliteConnection,
+    intent: &OperationIntent,
+) -> Result<ClaimResult, WorkspaceError> {
+    let (workspace, pool_id) = validate_claim_metadata(connection, &intent.workspace_id)?;
+    validate_claim_structure(connection, &workspace, &intent.lease_id)?;
+    reconciliation::reconcile_workspace_for_access_with_lease(
+        connection,
+        &workspace.id,
+        &intent.id,
+        &intent.lease_id,
+    )
+    .context(ReconciliationSnafu)?;
+    validate_claim_structure(connection, &workspace, &intent.lease_id)?;
+    let claim = WorkspaceClaim::new(workspace.id);
+    publish_explicit_claim(connection, intent, &workspace, pool_id, &claim)?;
+    Ok(ClaimResult {
+        workspace_id: workspace.id,
+        workspace_path: workspace.canonical_path,
+        pool_id,
+        claim_id: claim.id,
+    })
+}
+
+fn validate_claim_metadata(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+) -> Result<(WorkspaceRow, PoolId), WorkspaceError> {
+    let workspace = find_workspace(connection, workspace_id).context(DatabaseSnafu)?;
+    snafu::ensure!(
+        workspace.management_mode == WorkspaceManagementMode::Automatic,
+        NotAutomaticSnafu {
+            path: workspace.canonical_path.clone()
+        }
+    );
+    snafu::ensure!(
+        matches!(
+            workspace.state,
+            WorkspaceState::Ready | WorkspaceState::Degraded
+        ),
+        NotClaimableSnafu {
+            path: workspace.canonical_path.clone()
+        }
+    );
+    snafu::ensure!(
+        find_workspace_claim(connection, workspace_id)
+            .context(DatabaseSnafu)?
+            .is_none(),
+        ClaimActiveSnafu {
+            workspace_id: *workspace_id
+        }
+    );
+    crate::add::persistence::ensure_resolved(connection, workspace_id)?;
+    let pool_id = workspace.pool_id.context(RepositorySetMismatchSnafu {
+        workspace_id: *workspace_id,
+    })?;
+    let pool =
+        crate::storage::find_workspace_pool_by_id(connection, &pool_id).context(DatabaseSnafu)?;
+    let repositories =
+        crate::storage::list_repo_worktrees(connection, workspace_id).context(DatabaseSnafu)?;
+    let ids: Vec<_> = repositories
+        .iter()
+        .filter(|row| row.state != RepoWorktreeState::Removed)
+        .map(|row| row.origin_repository_id)
+        .collect();
+    let members = crate::storage::list_workspace_pool_repositories(connection, &pool_id)
+        .context(DatabaseSnafu)?;
+    let member_ids: Vec<_> = members.iter().map(|row| row.repository_id).collect();
+    let key = crate::pool::RepositorySetKey::from_repository_ids(&ids);
+    snafu::ensure!(
+        !ids.is_empty()
+            && key == crate::pool::RepositorySetKey::from_repository_ids(&member_ids)
+            && key.repository_ids() == pool.repository_ids
+            && key.hash_key() == pool.hash_key,
+        RepositorySetMismatchSnafu {
+            workspace_id: *workspace_id
+        }
+    );
+    Ok((workspace, pool_id))
+}
+
+fn validate_claim_structure(
+    connection: &mut SqliteConnection,
+    workspace: &WorkspaceRow,
+    lease_id: &LeaseId,
+) -> Result<(), WorkspaceError> {
+    let root = &workspace.canonical_path;
+    snafu::ensure!(
+        root.as_path().is_dir()
+            && CanonicalPath::resolve(root.as_path()).ok().as_ref() == Some(root),
+        NotClaimableSnafu { path: root.clone() }
+    );
+    let repositories =
+        crate::storage::list_repo_worktrees(connection, &workspace.id).context(DatabaseSnafu)?;
+    for repository in repositories
+        .into_iter()
+        .filter(|row| row.state != RepoWorktreeState::Removed)
+    {
+        snafu::ensure!(
+            !matches!(
+                repository.state,
+                RepoWorktreeState::Pending | RepoWorktreeState::Failed
+            ) && repository
+                .worktree_path
+                .as_path()
+                .starts_with(root.as_path())
+                && CanonicalPath::resolve(repository.worktree_path.as_path())
+                    .ok()
+                    .as_ref()
+                    == Some(&repository.worktree_path),
+            NotClaimableSnafu { path: root.clone() }
+        );
+        let mut heartbeat = || renew_claim_lease(connection, lease_id);
+        let source = git::inspect_repository_identity_with_heartbeat(
+            &repository.source_path,
+            &mut heartbeat,
+        )?;
+        let worktrees =
+            git::list_worktrees_with_heartbeat(&repository.source_path, &mut heartbeat)?;
+        let registered = worktrees.iter().any(|worktree| {
+            worktree.path == repository.worktree_path
+                && worktree.prunable.is_none()
+                && !worktree.bare
+        });
+        let identity = git::inspect_worktree_identity_with_heartbeat(
+            repository.worktree_path.as_path(),
+            &mut heartbeat,
+        )?;
+        snafu::ensure!(
+            source == repository.repository_identity
+                && identity == repository.repository_identity
+                && registered,
+            NotClaimableSnafu { path: root.clone() }
+        );
+    }
+    Ok(())
+}
+
+fn renew_claim_lease(
+    connection: &mut SqliteConnection,
+    lease_id: &LeaseId,
+) -> Result<(), GitError> {
+    match crate::storage::renew_operation_lease(connection, lease_id)
+        .map_err(GitError::from_heartbeat_source)?
+    {
+        true => Ok(()),
+        false => Err(GitError::Heartbeat {
+            message: "claim lease is no longer owned".to_owned(),
+        }),
+    }
+}
+
+fn publish_explicit_claim(
+    connection: &mut SqliteConnection,
+    intent: &OperationIntent,
+    observed: &WorkspaceRow,
+    pool_id: PoolId,
+    claim: &WorkspaceClaim,
+) -> Result<(), WorkspaceError> {
+    connection.immediate_transaction(|connection| {
+        let lease = crate::storage::operation_lease_for_mutation(connection, &intent.lease_id)
+            .context(DatabaseSnafu)?;
+        snafu::ensure!(
+            lease.workspace_id == observed.id && lease.operation_id == intent.id,
+            OperationActiveSnafu {
+                workspace_id: observed.id
+            }
+        );
+        let (current, current_pool) = validate_claim_metadata(connection, &observed.id)?;
+        snafu::ensure!(
+            current.canonical_path == observed.canonical_path && current_pool == pool_id,
+            NotClaimableSnafu {
+                path: observed.canonical_path.clone()
+            }
+        );
+        let details = acquire_details(claim, pool_id);
+        record_workspace_acquire(connection, &intent.lease_id, claim, Some(details.clone()))
+            .context(DatabaseSnafu)?;
+        record_operation_transition(
+            connection,
+            &intent.lease_id,
+            OperationState::Succeeded,
+            TransitionMetadata::new("operation_succeeded", "trees")
+                .with_pending_step("claim complete")
+                .with_details(details),
+        )
+        .context(DatabaseSnafu)?;
+        Ok(())
+    })
+}
+
 pub fn release_automatic_workspace_by_target(
     connection: &mut SqliteConnection,
     target: WorkspaceSelector,
@@ -1595,6 +1835,14 @@ pub enum WorkspaceError {
     OperationActive { workspace_id: WorkspaceId },
     #[snafu(display("workspace is not managed by the automatic workspace pool: {path}"))]
     NotAutomatic { path: CanonicalPath },
+    #[snafu(display("workspace is not structurally eligible for a claim: {path}"))]
+    NotClaimable { path: CanonicalPath },
+    #[snafu(display("workspace {workspace_id} is blocked by retained {kind} operation {operation_id}; recover that operation before claiming"))]
+    ClaimBlocked {
+        workspace_id: WorkspaceId,
+        operation_id: crate::domain::OperationId,
+        kind: String,
+    },
     #[snafu(display("automatic workspace is not reusable: {path}"))]
     NotReusable { path: CanonicalPath },
     #[snafu(display("workspace has an active claim: {workspace_id}"))]
@@ -1634,6 +1882,13 @@ pub enum WorkspaceError {
         path: PathBuf,
         source: std::io::Error,
     },
+}
+
+impl From<diesel::result::Error> for WorkspaceError {
+    fn from(source: diesel::result::Error) -> Self {
+        use snafu::IntoError;
+        DatabaseSnafu.into_error(source)
+    }
 }
 
 #[cfg(test)]

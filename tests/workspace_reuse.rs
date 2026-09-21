@@ -1055,3 +1055,210 @@ fn release_rejects_an_inner_boundary_without_releasing_the_outer_claim() {
     );
     cleanup_fixture(fixture);
 }
+
+fn claim_fixture(
+    fixture: &mut AutomaticFixture,
+) -> Result<trees::workspace::ClaimResult, WorkspaceError> {
+    trees::workspace::claim_automatic_workspace(
+        &mut fixture.connection,
+        trees::workspace_locator::WorkspaceSelector::Id(fixture.workspace.id),
+    )
+}
+
+#[test]
+fn explicit_claim_preserves_dirty_branch_and_workspace_identity() {
+    let mut fixture = automatic_fixture();
+    run_git(&fixture.worktree_path, &["switch", "-qc", "claim-work"]);
+    fs::write(fixture.worktree_path.join("README"), "staged\n").unwrap();
+    run_git(&fixture.worktree_path, &["add", "README"]);
+    fs::write(fixture.worktree_path.join("README"), "unstaged\n").unwrap();
+    fs::write(fixture.worktree_path.join("untracked"), "keep\n").unwrap();
+    fs::write(fixture.worktree_path.join(".gitignore"), "ignored\n").unwrap();
+    fs::write(fixture.worktree_path.join("ignored"), "ignored bytes\n").unwrap();
+    let before = git_output(&fixture.worktree_path, &["diff", "--binary"]);
+    let staged = git_output(&fixture.worktree_path, &["diff", "--cached", "--binary"]);
+    let head = git_output(&fixture.worktree_path, &["rev-parse", "HEAD"]);
+    let claim = claim_fixture(&mut fixture).unwrap();
+    assert_eq!(claim.workspace_id, fixture.workspace.id);
+    assert_eq!(claim.workspace_path, fixture.workspace.canonical_path);
+    assert_eq!(Some(claim.pool_id), fixture.workspace.pool_id);
+    assert_eq!(
+        git_output(&fixture.worktree_path, &["diff", "--binary"]),
+        before
+    );
+    assert_eq!(
+        git_output(&fixture.worktree_path, &["diff", "--cached", "--binary"]),
+        staged
+    );
+    assert_eq!(
+        git_output(&fixture.worktree_path, &["rev-parse", "HEAD"]),
+        head
+    );
+    assert_eq!(
+        git_output(&fixture.worktree_path, &["branch", "--show-current"]),
+        b"claim-work\n"
+    );
+    assert_eq!(
+        fs::read(fixture.worktree_path.join("untracked")).unwrap(),
+        b"keep\n"
+    );
+    assert_eq!(
+        fs::read(fixture.worktree_path.join("ignored")).unwrap(),
+        b"ignored bytes\n"
+    );
+    let current = find_workspace(&mut fixture.connection, &fixture.workspace.id).unwrap();
+    assert_eq!(current.last_released_at, fixture.workspace.last_released_at);
+    assert_eq!(current.state, WorkspaceState::Degraded);
+    assert!(find_running_operation(&mut fixture.connection, &current.id)
+        .unwrap()
+        .is_none());
+    let original = find_workspace_claim(&mut fixture.connection, &current.id)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        claim_fixture(&mut fixture),
+        Err(WorkspaceError::ClaimActive { .. })
+    ));
+    let retained = find_workspace_claim(&mut fixture.connection, &current.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(retained.id, original.id);
+    assert_eq!(retained.claimed_at, original.claimed_at);
+    assert!(release_automatic_workspace(
+        &mut fixture.connection,
+        &claim.workspace_path,
+        claim.claim_id
+    )
+    .is_err());
+    assert!(find_workspace_claim(&mut fixture.connection, &current.id)
+        .unwrap()
+        .is_some());
+    fs::remove_dir_all(fixture.root).unwrap();
+}
+
+fn git_output(path: &Path, args: &[&str]) -> Vec<u8> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output.stdout
+}
+
+#[test]
+fn explicit_claim_accepts_a_changed_detached_revision() {
+    let mut fixture = automatic_fixture();
+    run_git(
+        &fixture.worktree_path,
+        &["commit", "--allow-empty", "-qm", "workspace change"],
+    );
+    let head = git_output(&fixture.worktree_path, &["rev-parse", "HEAD"]);
+    claim_fixture(&mut fixture).unwrap();
+    assert_eq!(
+        git_output(&fixture.worktree_path, &["rev-parse", "HEAD"]),
+        head
+    );
+    fs::remove_dir_all(fixture.root).unwrap();
+}
+
+#[test]
+fn explicit_claim_rejects_ineligible_metadata_and_structure() {
+    for case in [
+        "manual", "removed", "creating", "failed", "missing", "identity", "pool", "pending",
+    ] {
+        let mut fixture = automatic_fixture();
+        match case {
+            "manual" => {
+                diesel::update(trees::schema::workspaces::table.find(fixture.workspace.id))
+                    .set(
+                        trees::schema::workspaces::management_mode
+                            .eq(WorkspaceManagementMode::Manual),
+                    )
+                    .execute(&mut fixture.connection)
+                    .unwrap();
+            }
+            "removed" | "creating" | "failed" => {
+                let state = match case {
+                    "removed" => WorkspaceState::Removed,
+                    "creating" => WorkspaceState::Creating,
+                    _ => WorkspaceState::Failed,
+                };
+                diesel::update(trees::schema::workspaces::table.find(fixture.workspace.id))
+                    .set(trees::schema::workspaces::state.eq(state))
+                    .execute(&mut fixture.connection)
+                    .unwrap();
+            }
+            "missing" => fs::remove_dir_all(&fixture.worktree_path).unwrap(),
+            "identity" => {
+                fs::remove_dir_all(&fixture.worktree_path).unwrap();
+                repository(&fixture.worktree_path);
+            }
+            "pool" => {
+                diesel::delete(
+                    trees::schema::workspace_pool_repositories::table.filter(
+                        trees::schema::workspace_pool_repositories::pool_id
+                            .eq(fixture.workspace.pool_id.unwrap()),
+                    ),
+                )
+                .execute(&mut fixture.connection)
+                .unwrap();
+            }
+            "pending" => {
+                diesel::update(
+                    trees::schema::repo_worktrees::table.filter(
+                        trees::schema::repo_worktrees::workspace_id.eq(fixture.workspace.id),
+                    ),
+                )
+                .set(trees::schema::repo_worktrees::state.eq(RepoWorktreeState::Pending))
+                .execute(&mut fixture.connection)
+                .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        assert!(claim_fixture(&mut fixture).is_err(), "case {case}");
+        assert!(
+            find_workspace_claim(&mut fixture.connection, &fixture.workspace.id)
+                .unwrap()
+                .is_none(),
+            "case {case}"
+        );
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+}
+
+#[test]
+fn explicit_claim_defers_retained_operations_even_when_expired() {
+    for expires in [
+        Timestamp::after_seconds(300),
+        Timestamp::parse("2020-01-01T00:00:00Z").unwrap(),
+    ] {
+        let mut fixture = automatic_fixture();
+        let intent = OperationIntent::new(
+            fixture.workspace.id,
+            "add",
+            expires,
+            "pending addition",
+            trees::domain::JsonDocument::parse("{}").unwrap(),
+        );
+        begin_operation(&mut fixture.connection, &intent).unwrap();
+        assert!(
+            matches!(claim_fixture(&mut fixture), Err(WorkspaceError::ClaimBlocked { operation_id, .. }) if operation_id == intent.id)
+        );
+        let running = find_running_operation(&mut fixture.connection, &fixture.workspace.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(running.lease.id, intent.lease_id);
+        assert!(
+            find_workspace_claim(&mut fixture.connection, &fixture.workspace.id)
+                .unwrap()
+                .is_none()
+        );
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+}

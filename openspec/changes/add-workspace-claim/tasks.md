@@ -9,9 +9,9 @@ Command dispatch will be connected in task 4.1 once the workflow is available.
 
 ## 2. Admission and Structural Validation
 
-- [ ] 2.1 Add lease-owned claim orchestration and typed errors in the existing workspace module; verify manual, missing, removed, creating, failed, already-claimed, retained-lease, and unresolved-journal targets are rejected without fallback.
-- [ ] 2.2 Implement structural checks independent of clean/detached reuse checks; verify pool membership, source identity, worktree identity and registration, missing/prunable worktrees, and incomplete multi-repository layouts.
-- [ ] 2.3 Preserve dirty content, branches, and changed revisions while reconciling health; verify staged and unstaged diffs, untracked and ignored bytes, `HEAD` values, refs, and worktree associations remain unchanged on success and rejection.
+- [x] 2.1 Add lease-owned claim orchestration and typed errors in the existing workspace module; verify manual, missing, removed, creating, failed, already-claimed, retained-lease, and unresolved-journal targets are rejected without fallback.
+- [x] 2.2 Implement structural checks independent of clean/detached reuse checks; verify pool membership, source identity, worktree identity and registration, missing/prunable worktrees, and incomplete multi-repository layouts.
+- [x] 2.3 Preserve dirty content, branches, and changed revisions while reconciling health; verify staged and unstaged diffs, untracked and ignored bytes, `HEAD` values, refs, and worktree associations remain unchanged on success and rejection.
 
 ## 3. Atomic Publication and Recovery
 
