@@ -162,11 +162,18 @@ where
 {
     heartbeat()?;
     let mut info = inspect_upstream_repository(repository)?;
+    eprintln!("Fetching upstream: {}", info.root);
+    let fetch_started = Instant::now();
     run_git_with_heartbeat(
         info.root.as_path(),
         &[arg("fetch"), arg("--quiet")],
         &mut heartbeat,
     )?;
+    eprintln!(
+        "Fetched upstream: {} ({:.1}s)",
+        info.root,
+        fetch_started.elapsed().as_secs_f64()
+    );
 
     let primary = list_worktrees(&info.root)?
         .into_iter()
