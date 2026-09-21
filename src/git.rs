@@ -1,4 +1,5 @@
 use std::ffi::OsString;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -733,35 +734,62 @@ where
         .stderr(Stdio::piped())
         .spawn()
         .context(IoSnafu { operation })?;
-    let mut last_heartbeat = Instant::now();
+    let result = (|| {
+        // Drain both pipes while polling: waiting first can deadlock when either pipe fills.
+        let stdout = spawn_output_reader(child.stdout.take().expect("stdout is piped"))
+            .context(IoSnafu { operation })?;
+        let stderr = spawn_output_reader(child.stderr.take().expect("stderr is piped"))
+            .context(IoSnafu { operation })?;
+        let mut last_heartbeat = Instant::now();
 
-    loop {
-        match child.try_wait().context(IoSnafu { operation })? {
-            Some(_) => break,
-            None => {
-                if last_heartbeat.elapsed() >= poll_interval {
-                    if let Err(error) = heartbeat() {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return Err(error);
+        let status = loop {
+            match child.try_wait().context(IoSnafu { operation })? {
+                Some(status) => break status,
+                None => {
+                    if last_heartbeat.elapsed() >= poll_interval {
+                        heartbeat()?;
+                        last_heartbeat = Instant::now();
+                    } else {
+                        std::thread::sleep(Duration::from_millis(10));
                     }
-                    last_heartbeat = Instant::now();
-                } else {
-                    std::thread::sleep(Duration::from_millis(10));
                 }
             }
-        }
-    }
+        };
 
-    let output = child.wait_with_output().context(IoSnafu { operation })?;
-    if !output.status.success() {
-        return Err(GitError::CommandFailed {
-            operation: operation.to_owned(),
-            status: output.status.code(),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        });
+        let stdout = join_output_reader(stdout).context(IoSnafu { operation })?;
+        let stderr = join_output_reader(stderr).context(IoSnafu { operation })?;
+        if !status.success() {
+            return Err(GitError::CommandFailed {
+                operation: operation.to_owned(),
+                status: status.code(),
+                stderr: String::from_utf8_lossy(&stderr).trim().to_owned(),
+            });
+        }
+        String::from_utf8(stdout).context(InvalidUtf8Snafu { operation })
+    })();
+
+    if result.is_err() {
+        // Do not join readers on cancellation: descendants may still hold the pipes open.
+        let _ = child.kill();
+        let _ = child.wait();
     }
-    String::from_utf8(output.stdout).context(InvalidUtf8Snafu { operation })
+    result
+}
+
+fn spawn_output_reader(
+    mut pipe: impl Read + Send + 'static,
+) -> io::Result<std::thread::JoinHandle<io::Result<Vec<u8>>>> {
+    std::thread::Builder::new().spawn(move || {
+        let mut output = Vec::new();
+        pipe.read_to_end(&mut output)?;
+        Ok(output)
+    })
+}
+
+fn join_output_reader(reader: std::thread::JoinHandle<io::Result<Vec<u8>>>) -> io::Result<Vec<u8>> {
+    reader
+        .join()
+        .unwrap_or_else(|_| Err(io::Error::other("command output reader panicked")))
 }
 
 fn command_operation(program: &str, args: &[OsString]) -> String {
@@ -1055,6 +1083,70 @@ mod tests {
         )
         .expect("long-running command should complete");
         assert!(heartbeats >= 2);
+    }
+
+    #[test]
+    fn drains_large_stdout_and_stderr_while_polling() {
+        let line = "x".repeat(128);
+        let expected = format!("{line}\n").repeat(4096);
+        for exit_code in [0, 7] {
+            let script = format!(
+                "i=0; while [ $i -lt 4096 ]; do printf '%s\\n' '{line}'; \
+                 printf '%s\\n' '{line}' >&2; i=$((i + 1)); done; exit {exit_code}"
+            );
+            let started = Instant::now();
+            let result = run_command_with_heartbeat(
+                "sh",
+                &[arg("-c"), arg(&script)],
+                "large output",
+                Duration::from_millis(20),
+                || {
+                    // Bound regressions so a full pipe fails the test instead of hanging it.
+                    if started.elapsed() > Duration::from_secs(5) {
+                        return HeartbeatSnafu {
+                            message: "command output was not drained",
+                        }
+                        .fail();
+                    }
+                    Ok(())
+                },
+            );
+            if exit_code == 0 {
+                assert_eq!(result.expect("large output should be drained"), expected);
+            } else {
+                match result.expect_err("nonzero exit should preserve stderr") {
+                    GitError::CommandFailed { status, stderr, .. } => {
+                        assert_eq!(status, Some(exit_code));
+                        assert_eq!(stderr, expected.trim());
+                    }
+                    error => panic!("unexpected command error: {error}"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cancels_a_command_while_draining_output() {
+        let mut heartbeats = 0;
+        let error = run_command_with_heartbeat(
+            "sh",
+            &[
+                arg("-c"),
+                arg("while :; do printf 'stdout\\n'; printf 'stderr\\n' >&2; done"),
+            ],
+            "continuous output",
+            Duration::from_millis(20),
+            || {
+                heartbeats += 1;
+                HeartbeatSnafu {
+                    message: "lease lost",
+                }
+                .fail()
+            },
+        )
+        .expect_err("heartbeat failure should stop an output-producing command");
+        assert_eq!(heartbeats, 1);
+        assert!(matches!(error, GitError::Heartbeat { message } if message == "lease lost"));
     }
 
     #[test]
