@@ -204,7 +204,7 @@ trees open WORKSPACE_ID
 trees open --workspace-id WORKSPACE_ID
 trees open --workspace-dir ./workspace
 trees open --claim-id CLAIM_ID
-trees open WORKSPACE_ID --program=program
+trees open WORKSPACE_ID --program=codex
 ```
 
 Both commands accept `--workspace-id` for a stored ID, `--workspace-dir` for an

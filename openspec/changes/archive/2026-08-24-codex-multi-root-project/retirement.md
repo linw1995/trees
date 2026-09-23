@@ -7,6 +7,8 @@ app-server Project synchronization code, and the Project checker. The archived
 proposal, design, tasks, and capability spec preserve the original plan; they
 do not describe current product behavior. The independent, read-only Codex
 session provider and generic `trees open` program launcher remain available.
+For example, `trees create --open=codex` still starts Codex as an ordinary
+program in the workspace; it does not synchronize a multi-root Project.
 
 ## Missing Codex Capabilities
 
