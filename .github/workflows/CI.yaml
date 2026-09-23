@@ -29,6 +29,9 @@ jobs:
       - name: Run repository checks
         run: nix develop --command prek -a
 
+      - name: Check release tag selection
+        run: python3 tests/test_previous_release.py
+
   coverage:
     needs: lint
     runs-on: ubuntu-latest
