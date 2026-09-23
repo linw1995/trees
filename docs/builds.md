@@ -6,7 +6,11 @@ The [release workflow](../.github/workflows/CD.yaml) runs when a
 `release/<version>` branch is pushed. The branch version must match the Cargo
 package version, for example `release/0.3.0` for package version `0.3.0`.
 The workflow creates the matching `v<version>` tag.
-Generated release notes start from the most recent published release.
+Generated release notes start from the highest earlier published semantic version.
+Stable releases skip prerelease tags as comparison bases, so a patch backport
+compares against the preceding stable release even if a newer minor release exists.
+Backport branches created from an older tag must include the current release
+workflow, version selection script, and its test before they are pushed.
 After tests pass on all four platforms, it publishes Linux (`glibc` 2.35 or newer)
 and macOS archives for x86_64 and ARM64 to
 [GitHub Releases](https://github.com/linw1995/trees/releases).

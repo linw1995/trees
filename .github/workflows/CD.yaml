@@ -91,6 +91,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Check release tag selection
+        run: python3 tests/test_previous_release.py
+
       - name: Validate release tag
         run: |
           release_tag="v${RELEASE_BRANCH#release/}"
@@ -115,9 +118,14 @@ jobs:
           GH_REPO: ${{ github.repository }}
         working-directory: dist
         run: |
+          set -euo pipefail
           sha256sum ./*.tar.gz > SHA256SUMS
           flags=()
-          previous_tag=$(gh release list --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName // empty')
+          previous_tag=$(
+            gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
+              --jq '.[] | select(.draft | not) | .tag_name' |
+              python3 ../scripts/select_previous_release.py "$RELEASE_TAG"
+          )
           if [[ -n "$previous_tag" ]]; then
             flags+=(--notes-start-tag "$previous_tag")
           fi
