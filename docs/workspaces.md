@@ -136,13 +136,13 @@ expire when the invoking process or shell exits.
 
 ```sh
 trees create --open --repo /path/to/api
-trees create --open=codex --repo /path/to/api --repo /path/to/web
+trees create --open=program --repo /path/to/api --repo /path/to/web
 ```
 
 Pass `--open` to replace the Trees process with `$SHELL` in the created or
 allocated workspace. Exiting that shell returns to the original shell in its
 original directory. Use `--open=<PROGRAM>` to select another executable, such
-as `--open=codex`. The program inherits the terminal and environment and starts
+as `--open=program`. The program inherits the terminal and environment and starts
 with the workspace as its current directory. `--open` and `--json` are mutually
 exclusive. If `$SHELL` is unset or empty, provide an explicit program.
 

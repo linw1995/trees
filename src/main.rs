@@ -1,7 +1,9 @@
 use std::ffi::{OsStr, OsString};
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::process::{ExitCode, ExitStatus};
+use std::process::ExitCode;
+#[cfg(not(unix))]
+use std::process::ExitStatus;
 
 use clap::Parser;
 use snafu::{ResultExt, Snafu};
@@ -27,7 +29,6 @@ fn run(cli: trees::cli::Cli) -> Result<ExitCode, CliError> {
         trees::cli::Command::Remove(arguments) => run_remove(arguments),
         trees::cli::Command::Status(arguments) => run_status(arguments),
         trees::cli::Command::Open(arguments) => run_open(arguments),
-        trees::cli::Command::Codex(arguments) => run_codex(arguments),
     }
 }
 
@@ -655,37 +656,7 @@ fn print_json<T: serde::Serialize>(value: &T) -> Result<ExitCode, CliError> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn run_codex(arguments: trees::cli::CodexArgs) -> Result<ExitCode, CliError> {
-    let trees::cli::CodexArgs {
-        codex_bin,
-        subcommand,
-        codex_args,
-    } = arguments;
-
-    let native_args = match &subcommand {
-        None => &codex_args,
-        Some(trees::cli::CodexSubcommand::Resume(resume)) => &resume.codex_args,
-    };
-    let workspace_path = trees::codex::args::workspace_path_from_codex_args(native_args)?;
-
-    let result = match subcommand {
-        None => trees::codex::launch::launch(trees::codex::launch::LaunchRequest {
-            workspace_path,
-            codex_bin,
-            codex_args,
-        }),
-        Some(trees::cli::CodexSubcommand::Resume(resume)) => {
-            trees::codex::launch::resume(trees::codex::launch::ResumeRequest {
-                workspace_path,
-                codex_bin,
-                codex_args: resume.codex_args,
-            })
-        }
-    };
-
-    Ok(exit_code(result?))
-}
-
+#[cfg(not(unix))]
 fn exit_code(status: ExitStatus) -> ExitCode {
     if status.success() {
         return ExitCode::SUCCESS;
@@ -777,14 +748,6 @@ enum CliError {
     ClaimOutput { source: io::Error },
     #[snafu(display("failed to serialize JSON output: {source}"))]
     SerializeJson { source: serde_json::Error },
-    #[snafu(transparent)]
-    CodexArguments {
-        source: trees::codex::args::CodexArgumentError,
-    },
-    #[snafu(transparent)]
-    CodexLaunch {
-        source: trees::codex::launch::CodexLaunchError,
-    },
 }
 
 #[cfg(test)]
