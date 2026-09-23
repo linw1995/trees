@@ -20,11 +20,11 @@ use crate::storage::{
     find_workspace_claim, find_workspace_pool, insert_managed_workspace, insert_repo_worktree,
     insert_workspace_claim, insert_workspace_pool_repositories, persist_operation_intent,
     persist_operation_step_intent, record_operation_transition, record_repo_worktree_transition,
-    record_workspace_acquire, record_workspace_acquire_failure, record_workspace_release,
-    record_workspace_release_rejection, record_workspace_transition, record_worktree_step_result,
-    release_workspace_claim, try_begin_operation, with_retrying_short_transaction, EventDraft,
-    NewManagedWorkspace, NewRepoWorktree, NewWorkspacePoolRepository, OperationIntent,
-    OperationIntentError, RepoWorktreeRow, TransitionMetadata, WorkspaceRow,
+    record_workspace_acquire, record_workspace_release, record_workspace_release_rejection,
+    record_workspace_transition, record_worktree_step_result, release_workspace_claim,
+    try_begin_operation, with_retrying_short_transaction, EventDraft, NewManagedWorkspace,
+    NewRepoWorktree, NewWorkspacePoolRepository, OperationIntent, OperationIntentError,
+    RepoWorktreeRow, TransitionMetadata, WorkspaceRow,
 };
 use crate::validation::{self, ValidationError};
 use crate::workspace_locator::{locate, LocateError, WorkspaceSelector};
@@ -294,41 +294,6 @@ pub fn acquire_automatic_candidate(
         return Err(primary);
     }
 
-    let final_boundary = match reconciliation::reconcile_workspace_for_access_with_lease(
-        connection,
-        &candidate.id,
-        &operation.id,
-        &lease_id,
-    ) {
-        Ok(boundary) => boundary,
-        Err(error) => {
-            let primary = WorkspaceError::Reconciliation { source: error };
-            return Err(fail_acquire(
-                connection,
-                &lease_id,
-                &candidate.id,
-                &claim.id,
-                primary,
-                Some(details_json),
-            ));
-        }
-    };
-    if final_boundary.summary.workspace_state != WorkspaceState::Ready
-        || final_boundary.claim.as_ref().map(|value| value.id) != Some(claim.id)
-    {
-        let primary = WorkspaceError::NotReusable {
-            path: candidate.canonical_path.clone(),
-        };
-        return Err(fail_acquire(
-            connection,
-            &lease_id,
-            &candidate.id,
-            &claim.id,
-            primary,
-            Some(details_json),
-        ));
-    }
-
     if let Err(error) = record_operation_transition(
         connection,
         &lease_id,
@@ -429,31 +394,6 @@ fn fail_operation(connection: &mut SqliteConnection, lease_id: &LeaseId, error: 
             .with_pending_step("operation failed")
             .with_error(error_document(error)),
     );
-}
-
-fn fail_acquire(
-    connection: &mut SqliteConnection,
-    lease_id: &LeaseId,
-    workspace_id: &WorkspaceId,
-    claim_id: &ClaimId,
-    primary: WorkspaceError,
-    details_json: Option<JsonDocument>,
-) -> WorkspaceError {
-    let error_json = error_document(&primary);
-    match record_workspace_acquire_failure(
-        connection,
-        lease_id,
-        workspace_id,
-        claim_id,
-        details_json,
-        error_json,
-    ) {
-        Ok(()) => primary,
-        Err(error) => WorkspaceError::Rollback {
-            primary: Box::new(primary),
-            rollback: Box::new(WorkspaceError::Database { source: error }),
-        },
-    }
 }
 
 #[derive(Debug, Clone, Serialize)]
