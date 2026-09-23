@@ -117,6 +117,10 @@ jobs:
         run: |
           sha256sum ./*.tar.gz > SHA256SUMS
           flags=()
+          previous_tag=$(gh release list --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName // empty')
+          if [[ -n "$previous_tag" ]]; then
+            flags+=(--notes-start-tag "$previous_tag")
+          fi
           if [[ "$RELEASE_TAG" == *-* ]]; then
             flags+=(--prerelease)
           fi
