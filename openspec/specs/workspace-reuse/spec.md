@@ -103,6 +103,13 @@ workspace path and claim identifier.
   selected repository revision, claims it, returns its path and a claim
   identifier, and does not create another workspace or worktree
 
+#### Scenario: Claim After Alignment
+
+- **WHEN** a reusable slot passes reconciliation under the acquisition lease
+  and every required worktree alignment succeeds
+- **THEN** Trees records the selected revision of each aligned worktree and
+  grants the claim without another full workspace reconciliation
+
 #### Scenario: Select the Oldest Idle Slot
 
 - **WHEN** multiple safe automatic workspaces have the exact repository-set
@@ -193,10 +200,14 @@ source repository identity and canonical path SHALL match the persisted
 association. The worktree SHALL be present, not prunable, and detached. Its
 `HEAD` SHALL match `last_head`. The command `git status
 --porcelain=v1 --untracked-files=all` SHALL report no staged, unstaged, or
-untracked changes. Ignored files SHALL NOT make a worktree dirty. Automatic pool acquisition SHALL
-reconcile this predicate against Git's authoritative metadata before returning
-success. Release SHALL establish this predicate through the release alignment
-requirement before making the workspace available. Explicit in-place claim SHALL use the structural eligibility requirement below instead of requiring a clean, detached reusable snapshot.
+untracked changes. Ignored files SHALL NOT make a worktree dirty. Automatic pool
+acquisition SHALL reconcile this predicate against Git's authoritative metadata
+under its operation lease before alignment. Successful alignment SHALL record
+the selected revision before granting the claim; acquisition SHALL NOT repeat
+full workspace reconciliation after alignment. Release SHALL establish this
+predicate through the release alignment requirement before making the workspace
+available. Explicit in-place claim SHALL use the structural eligibility
+requirement below instead of requiring a clean, detached reusable snapshot.
 
 #### Scenario: Reject a Dirty Worktree
 
@@ -454,7 +465,7 @@ SHALL remain append-only.
   worktree snapshot reflect the observed health, the active claim remains, and
   the event log contains the rejection reason and claim identifier
 
-#### Scenario: Audit Repeated Reconciliation
+#### Scenario: Audit Unchanged Reconciliation
 
 - **WHEN** acquire or release observes no change from the stored reusable
   snapshot
