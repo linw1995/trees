@@ -2,8 +2,10 @@
 
 ## Release Archives
 
-The [release workflow](../.github/workflows/CD.yaml) runs when a `v*` tag is pushed.
-The tag must match the Cargo package version, for example `v0.1.0`.
+The [release workflow](../.github/workflows/CD.yaml) runs when a
+`release/<version>` branch is pushed. The branch version must match the Cargo
+package version, for example `release/0.3.0` for package version `0.3.0`.
+The workflow creates the matching `v<version>` tag.
 After tests pass on all four platforms, it publishes Linux (`glibc` 2.35 or newer)
 and macOS archives for x86_64 and ARM64 to
 [GitHub Releases](https://github.com/linw1995/trees/releases).
