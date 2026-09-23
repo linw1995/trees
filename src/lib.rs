@@ -1,7 +1,6 @@
 pub mod add;
 pub mod claim;
 pub mod cli;
-pub mod codex;
 pub mod config;
 pub mod database;
 pub mod domain;

@@ -7,9 +7,8 @@
 Trees is a Rust CLI for managing coding workspaces composed of Git worktrees.
 
 Create an isolated workspace from repository names or remote URLs, reuse
-automatic workspaces between tasks, and launch Codex with the managed worktrees
-as project roots. Trees tracks workspace state and immutable events
-in a shared SQLite database.
+automatic workspaces between tasks, and open programs in managed worktrees.
+Trees tracks workspace state and immutable events in a shared SQLite database.
 
 ## Install
 
@@ -41,7 +40,7 @@ Create a workspace from remote URLs, replacing these example URLs with your own:
 
 ```sh
 trees create ./workspace --repo https://github.com/example/api.git --repo https://github.com/example/web.git
-trees codex -C ./workspace
+trees open --workspace-dir ./workspace
 ```
 
 Trees reuses a matching registered source or clones and registers it when none
@@ -90,7 +89,6 @@ source directories stay at their original paths.
 | [Status and opening](docs/status.md) | Pool capacity, workspace health, source inventory, JSON output, and opening a workspace. |
 | [Storage configuration](docs/configuration.md) | Automatic workspace and source clone directories. |
 | [Cleanup](docs/cleanup.md) | Automatic GC, workspace removal, and source record removal. |
-| [Codex integration](docs/codex.md) | Starting and resuming sessions, argument forwarding, project verification, and limitations. |
 
 Branch selection, repair, and user-facing history commands are not currently
 available.

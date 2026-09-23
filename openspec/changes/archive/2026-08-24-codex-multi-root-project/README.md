@@ -12,5 +12,7 @@ The change was validated with:
 openspec validate codex-multi-root-project --strict
 ```
 
-Desktop UI navigation and hosted ChatGPT App invocation remain separate
-follow-up changes.
+The launcher was removed on 2026-09-23. The proposal, design, tasks, and
+capability spec remain here as the historical implementation plan. See
+[retirement record](retirement.md) for the missing Codex capabilities and the
+reason the narrower CLI integration was retired.

@@ -470,11 +470,14 @@ fn consumers_read_committed_child_paths() {
     let opened =
         trees::workspace_open::resolve_target(&mut fixture.db, &fixture.workspace).unwrap();
     assert_eq!(opened, fixture.path);
-    let prepared =
-        trees::codex::workspace::prepare(&mut fixture.db, fixture.path.as_path()).unwrap();
-    assert_eq!(prepared.roots.len(), 2);
-    assert!(prepared.roots.contains(&fixture.path.as_path().join("api")));
-    assert!(prepared.roots.contains(&fixture.path.as_path().join("web")));
+    let repositories = storage::list_repo_worktrees(&mut fixture.db, &fixture.workspace).unwrap();
+    assert_eq!(repositories.len(), 2);
+    let paths: Vec<_> = repositories
+        .iter()
+        .map(|repository| repository.worktree_path.as_path())
+        .collect();
+    assert!(paths.contains(&fixture.path.as_path().join("api").as_path()));
+    assert!(paths.contains(&fixture.path.as_path().join("web").as_path()));
 }
 
 #[test]
