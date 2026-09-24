@@ -584,16 +584,40 @@ pub fn record_workspace_release(
             .find(workspace_id)
             .select(WorkspaceRow::as_select())
             .first(connection)?;
+        let repositories = list_repo_worktrees(connection, workspace_id)?;
+        if repositories.iter().any(|repository| {
+            repository.state != RepoWorktreeState::Attached || repository.last_head.is_none()
+        }) {
+            return Err(Error::NotFound);
+        }
         if !release_workspace_claim(connection, workspace_id, claim_id)? {
             return Err(Error::NotFound);
         }
         let occurred_at = Timestamp::now();
         diesel::update(workspaces::table.find(workspace_id))
             .set((
+                workspaces::state.eq(WorkspaceState::Ready),
                 workspaces::last_released_at.eq(&occurred_at),
                 workspaces::updated_at.eq(&occurred_at),
             ))
             .execute(connection)?;
+        if workspace.state != WorkspaceState::Ready {
+            append_event(
+                connection,
+                &EventDraft {
+                    operation_id,
+                    entity_type: "workspace".to_owned(),
+                    entity_id: workspace_id.to_string(),
+                    event_type: "workspace_ready".to_owned(),
+                    source: "trees".to_owned(),
+                    occurred_at: occurred_at.clone(),
+                    previous_state: Some(workspace.state.to_string()),
+                    current_state: Some(WorkspaceState::Ready.to_string()),
+                    details_json: None,
+                    error_json: None,
+                },
+            )?;
+        }
         finish_operation_in_transaction(
             connection,
             lease_id,
@@ -602,6 +626,10 @@ pub fn record_workspace_release(
                 .with_pending_step("release complete")
                 .with_details(details_json.clone().unwrap_or_else(empty_json)),
         )?;
+        let workspace = workspaces::table
+            .find(workspace_id)
+            .select(WorkspaceRow::as_select())
+            .first(connection)?;
         append_event(
             connection,
             &workspace_access_event(

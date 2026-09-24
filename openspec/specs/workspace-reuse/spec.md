@@ -240,14 +240,16 @@ is supplied, release SHALL select the nearest managed workspace containing the
 canonical current directory. A claim identifier SHALL select its active claim
 and associated workspace.
 
-Release SHALL snapshot the active claim and reconcile the workspace while
-retaining that claim. Before changing any worktree, release SHALL verify that
-every managed worktree is present, non-prunable, identity-matched, and reports
-no staged, unstaged, or untracked changes. If every worktree passes preflight,
-release SHALL align each worktree to its persisted origin repository's current
-local `HEAD` in detached mode, update the recorded worktree head, and perform a
-final reconciliation. Release SHALL remove the claim only after every aligned
-worktree satisfies the reusable snapshot requirement. Release SHALL NOT fetch
+Release SHALL snapshot the active claim and reconcile the workspace once under
+operation admission while retaining that claim. Before changing any worktree,
+release SHALL verify that every managed worktree is present, non-prunable,
+identity-matched, and reports no staged, unstaged, or untracked changes. If
+every worktree passes preflight, release SHALL align each worktree to its
+persisted origin repository's current local `HEAD` in detached mode and record
+the aligned head and attached state without repeating full reconciliation.
+Release SHALL remove the claim only after every aligned worktree satisfies the
+reusable snapshot requirement and SHALL atomically mark the workspace ready
+with claim release. Release SHALL NOT fetch
 remotes, delete branches or commits, or remove ignored files.
 On success, the CLI SHALL report the released workspace identifier, workspace
 path, claim identifier, and release timestamp.
@@ -257,12 +259,12 @@ path, claim identifier, and release timestamp.
 - **WHEN** a claimed worktree is clean but branch-attached or at a revision
   different from its origin repository's current `HEAD`
 - **THEN** release checks out the origin repository `HEAD` in detached mode,
-  records the aligned head, and releases the claim after final reconciliation
+  records the aligned head, and releases the claim without another reconciliation
 
 #### Scenario: Release a Reusable Workspace
 
 - **WHEN** one release target resolves an active claim and every managed
-  worktree passes preflight and final reconciliation
+  worktree passes reconciliation and alignment preflight
 - **THEN** the selected active claim is removed atomically, a release operation
   and immutable release event are recorded, and the workspace can be acquired
   again

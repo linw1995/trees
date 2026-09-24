@@ -710,8 +710,8 @@ pub fn release_automatic_workspace(
         &lease_id,
     ) {
         Ok(boundary) => boundary,
-        Err(error) => {
-            let primary = WorkspaceError::Reconciliation { source: error };
+        Err(source) => {
+            let primary = WorkspaceError::Reconciliation { source };
             fail_operation(connection, &lease_id, &primary);
             return Err(primary);
         }
@@ -723,48 +723,13 @@ pub fn release_automatic_workspace(
         fail_operation(connection, &lease_id, &primary);
         return Err(primary);
     }
-    let Some(active_claim) = boundary.claim.as_ref() else {
-        let primary = WorkspaceError::ClaimNotFound { claim_id };
-        fail_operation(connection, &lease_id, &primary);
-        return Err(primary);
-    };
-    if active_claim.id != claim_id {
+    if boundary.claim.as_ref().map(|claim| claim.id) != Some(claim_id) {
         let primary = WorkspaceError::ClaimNotFound { claim_id };
         fail_operation(connection, &lease_id, &primary);
         return Err(primary);
     }
     let details_json = release_details(workspace_path, claim_id);
     if let Err(primary) = align_release_worktrees(connection, &workspace, &lease_id) {
-        return Err(fail_release(
-            connection,
-            &lease_id,
-            &workspace.id,
-            primary,
-            Some(details_json),
-        ));
-    }
-    let final_boundary = match reconciliation::reconcile_workspace_for_access_with_lease(
-        connection,
-        &workspace.id,
-        &operation.id,
-        &lease_id,
-    ) {
-        Ok(boundary) => boundary,
-        Err(error) => {
-            let primary = WorkspaceError::Reconciliation { source: error };
-            return Err(fail_release(
-                connection,
-                &lease_id,
-                &workspace.id,
-                primary,
-                Some(details_json),
-            ));
-        }
-    };
-    if final_boundary.summary.workspace_state != WorkspaceState::Ready {
-        let primary = WorkspaceError::NotReusable {
-            path: workspace.canonical_path.clone(),
-        };
         return Err(fail_release(
             connection,
             &lease_id,
@@ -910,7 +875,10 @@ fn execute_worktree_alignments(
     alignments: Vec<ReleaseAlignment>,
 ) -> Result<(), WorkspaceError> {
     for alignment in alignments {
-        if !alignment.needs_checkout {
+        let needs_record = alignment.needs_checkout
+            || alignment.repository.state != RepoWorktreeState::Attached
+            || alignment.repository.last_head.as_deref() != Some(alignment.target_head.as_str());
+        if !needs_record {
             continue;
         }
         let details = JsonDocument::from_serializable(&serde_json::json!({
@@ -919,24 +887,26 @@ fn execute_worktree_alignments(
             "worktree_path": alignment.repository.worktree_path,
         }))
         .expect("worktree alignment details should serialize");
-        persist_operation_step_intent(
-            connection,
-            lease_id,
-            format!("align {}", alignment.repository.worktree_path),
-            details.clone(),
-        )
-        .context(DatabaseSnafu)?;
-        git::checkout_detached_with_heartbeat(
-            alignment.repository.worktree_path.as_path(),
-            &alignment.target_head,
-            || match crate::storage::renew_operation_lease(connection, lease_id) {
-                Ok(true) => Ok(()),
-                Ok(false) => Err(GitError::Heartbeat {
-                    message: "operation lease is no longer owned".to_owned(),
-                }),
-                Err(error) => Err(GitError::from_heartbeat_source(error)),
-            },
-        )?;
+        if alignment.needs_checkout {
+            persist_operation_step_intent(
+                connection,
+                lease_id,
+                format!("align {}", alignment.repository.worktree_path),
+                details.clone(),
+            )
+            .context(DatabaseSnafu)?;
+            git::checkout_detached_with_heartbeat(
+                alignment.repository.worktree_path.as_path(),
+                &alignment.target_head,
+                || match crate::storage::renew_operation_lease(connection, lease_id) {
+                    Ok(true) => Ok(()),
+                    Ok(false) => Err(GitError::Heartbeat {
+                        message: "operation lease is no longer owned".to_owned(),
+                    }),
+                    Err(error) => Err(GitError::from_heartbeat_source(error)),
+                },
+            )?;
+        }
         record_worktree_step_result(
             connection,
             &alignment.repository.id,
@@ -2346,6 +2316,23 @@ mod tests {
         release_automatic_workspace(&mut connection, &candidate.canonical_path, acquire.claim_id)
             .expect("clean changed worktree should be aligned and released");
 
+        let release_event = crate::schema::lifecycle_events::table
+            .filter(crate::schema::lifecycle_events::entity_id.eq(candidate.id.to_string()))
+            .filter(crate::schema::lifecycle_events::event_type.eq("workspace_released"))
+            .select(crate::storage::EventRow::as_select())
+            .first::<crate::storage::EventRow>(&mut connection)
+            .expect("release event should exist");
+        let pre_alignment_observations: i64 = crate::schema::lifecycle_events::table
+            .filter(crate::schema::lifecycle_events::operation_id.eq(release_event.operation_id))
+            .filter(crate::schema::lifecycle_events::event_type.eq("external_worktree_changed"))
+            .count()
+            .get_result(&mut connection)
+            .expect("release observations should be queryable");
+        assert_eq!(pre_alignment_observations, 1);
+        let workspace = crate::storage::find_workspace(&mut connection, &candidate.id)
+            .expect("workspace should remain queryable");
+        assert_eq!(workspace.state, WorkspaceState::Ready);
+
         let worktree = git::find_worktree(&plan.repositories[0].source_path, &worktree_path)
             .expect("worktree should remain registered");
         assert!(worktree.detached);
@@ -2363,6 +2350,67 @@ mod tests {
             crate::storage::find_workspace_claim(&mut connection, &candidate.id)
                 .expect("claim lookup should succeed")
                 .is_none()
+        );
+
+        git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
+            .expect("test worktree should be removable");
+        drop(connection);
+        fs::remove_file(database_path).expect("state database should be removable");
+        fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn release_restores_a_clean_detached_worktree_without_checkout() {
+        let (root, database_path, mut connection, plan, candidate, worktree_path) =
+            automatic_candidate_fixture();
+        let acquire = acquire_automatic_candidate(&mut connection, &plan, &candidate)
+            .expect("automatic acquire should succeed");
+        let repository = crate::storage::list_repo_worktrees(&mut connection, &candidate.id)
+            .expect("worktree lookup should succeed")
+            .into_iter()
+            .next()
+            .expect("workspace should have a worktree");
+        diesel::update(crate::schema::repo_worktrees::table.find(repository.id))
+            .set(
+                crate::schema::repo_worktrees::last_head
+                    .eq(Some("0000000000000000000000000000000000000000")),
+            )
+            .execute(&mut connection)
+            .expect("stored head should be changed");
+
+        release_automatic_workspace(&mut connection, &candidate.canonical_path, acquire.claim_id)
+            .expect("clean detached worktree should be released");
+
+        let release_event = crate::schema::lifecycle_events::table
+            .filter(crate::schema::lifecycle_events::entity_id.eq(candidate.id.to_string()))
+            .filter(crate::schema::lifecycle_events::event_type.eq("workspace_released"))
+            .select(crate::storage::EventRow::as_select())
+            .first::<crate::storage::EventRow>(&mut connection)
+            .expect("release event should exist");
+        let checkout_intents: i64 = crate::schema::lifecycle_events::table
+            .filter(crate::schema::lifecycle_events::operation_id.eq(release_event.operation_id))
+            .filter(crate::schema::lifecycle_events::event_type.eq("operation_step_started"))
+            .count()
+            .get_result(&mut connection)
+            .expect("checkout intents should be queryable");
+        assert_eq!(checkout_intents, 0);
+
+        let workspace = crate::storage::find_workspace(&mut connection, &candidate.id)
+            .expect("workspace should remain queryable");
+        let repository = crate::storage::list_repo_worktrees(&mut connection, &candidate.id)
+            .expect("worktree lookup should succeed")
+            .into_iter()
+            .next()
+            .expect("workspace should have a worktree");
+        assert_eq!(workspace.state, WorkspaceState::Ready);
+        assert_eq!(repository.state, RepoWorktreeState::Attached);
+        assert_eq!(
+            repository.last_head,
+            Some(
+                git::inspect_repository(&plan.repositories[0].source_path)
+                    .unwrap()
+                    .head
+            )
         );
 
         git::remove_worktree(&plan.repositories[0].source_path, &worktree_path)
