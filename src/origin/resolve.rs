@@ -162,7 +162,7 @@ fn provision_inputs(
             let row = provision::provision(&mut connection, &url, &root, &locks)?;
             published(&row);
             eprintln!(
-                "Origin available for reuse: {} ({})",
+                "[trees] Origin available for reuse: {} ({})",
                 row.id, row.source_path
             );
             let info = inspect_primary(&row.source_path)?;
