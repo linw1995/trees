@@ -65,6 +65,7 @@ program exits and open a recovery shell if release fails, opt in with:
 ```sh
 trees create --repo api --open --release-on-exit
 trees create --repo api --open=program --release-on-exit
+trees create --repo api --open=program --release-on-exit -- --program-option value
 ```
 
 In recovery, save your work and leave the worktrees clean; exiting the recovery

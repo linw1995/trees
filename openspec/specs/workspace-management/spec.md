@@ -147,6 +147,9 @@ additional `--mode` flag is required or accepted.
 ### Requirement: Open a Program in a Created Workspace
 
 The CLI SHALL accept `--open[=<PROGRAM>]` for manual and automatic create.
+Arguments after `--` SHALL be passed directly to the opened program and SHALL
+require `--open`. The separator SHALL distinguish program arguments from Trees
+options and the optional workspace path.
 When the option has no explicit program, Trees SHALL resolve the program from a
 nonempty `$SHELL`. Trees SHALL reject a missing or empty default, an explicitly
 empty program, or the combination of `--open` and `--json` before database,
@@ -169,6 +172,11 @@ release and recovery requirements in workspace-reuse.
 
 - **WHEN** create receives `--open=<PROGRAM>`
 - **THEN** Trees opens that executable directly without parsing its value as shell syntax
+
+#### Scenario: Pass Program Arguments
+
+- **WHEN** create receives `--open=<PROGRAM> -- <ARG>...`
+- **THEN** Trees passes each argument to that program unchanged, including when `--release-on-exit` is present
 
 #### Scenario: Preserve the Parent Shell Directory
 
