@@ -40,6 +40,7 @@ pub enum Command {
     Remove(RemoveArgs),
     #[command(about = "Inspect persisted pools, workspaces, or source repositories")]
     Status(StatusArgs),
+    #[command(about = "Open a program in a workspace or source repository")]
     Open(OpenArgs),
 }
 
@@ -290,7 +291,7 @@ pub enum StatusView {
 #[derive(Debug, Args)]
 #[command(group(workspace_locator::group(Self::SELECTION_DEFAULT)))]
 pub struct OpenArgs {
-    #[arg(id = "legacy_workspace_id", group = workspace_locator::GROUP, value_name = "WORKSPACE_ID")]
+    #[arg(id = "legacy_workspace_id", group = workspace_locator::GROUP, value_name = "ID", help = "Select a workspace or source repository by ID")]
     pub workspace_id: Option<crate::domain::WorkspaceId>,
 
     #[command(flatten)]

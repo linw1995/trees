@@ -165,6 +165,91 @@ mod unix {
     }
 
     #[test]
+    fn opens_origins_and_rejects_ambiguous_ids() {
+        let root = test_root();
+        let database_path = database_path(&root);
+        fs::create_dir_all(database_path.parent().unwrap()).unwrap();
+        let mut connection = database::connect(&database_path).unwrap();
+        let source = root.join("source");
+        fs::create_dir_all(&source).unwrap();
+        let source = CanonicalPath::resolve(&source).unwrap();
+        let identity = CanonicalPath::from_absolute(source.as_path().join(".git")).unwrap();
+        let origin =
+            trees::storage::ensure_origin_repository(&mut connection, &identity, &source).unwrap();
+
+        for explicit_program in [false, true] {
+            let mut cmd = command(&root);
+            cmd.args(["open", &origin.id.to_string()])
+                .env("SHELL", "pwd");
+            if explicit_program {
+                cmd.arg("--program=pwd");
+            }
+            let output = cmd.output().unwrap();
+            assert!(output.status.success(), "{}", trim(&output.stderr));
+            assert_eq!(trim(&output.stdout), source.to_string());
+        }
+        let output = command(&root)
+            .args([
+                "open",
+                "--workspace-id",
+                &origin.id.to_string(),
+                "--program=pwd",
+            ])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(trim(&output.stderr).contains("workspace not found"));
+
+        let (workspace_id, workspace_path) = insert_workspace(
+            &mut connection,
+            &root,
+            "workspace",
+            WorkspaceState::Ready,
+            WorkspaceManagementMode::Manual,
+            None,
+        );
+        trees::storage::insert_origin_repository(
+            &mut connection,
+            &trees::storage::NewOriginRepository {
+                id: workspace_id.to_string().parse().unwrap(),
+                repository_identity: workspace_path.clone(),
+                source_path: source.clone(),
+            },
+        )
+        .unwrap();
+        let output = command(&root)
+            .args(["open", &workspace_id.to_string(), "--program=pwd"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(trim(&output.stderr).contains("ID matches both"));
+        let output = command(&root)
+            .args([
+                "open",
+                "--workspace-id",
+                &workspace_id.to_string(),
+                "--program=pwd",
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(trim(&output.stdout), workspace_path.to_string());
+
+        fs::remove_dir_all(source.as_path()).unwrap();
+        let output = command(&root)
+            .args(["open", &origin.id.to_string(), "--program=pwd"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(trees::storage::origin::find(&mut connection, origin.id)
+            .unwrap()
+            .is_some());
+        drop(connection);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn rejects_ineligible_workspace_ids_without_mutation() {
         let root = test_root();
         let database_path = database_path(&root);

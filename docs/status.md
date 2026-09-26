@@ -197,10 +197,11 @@ This view reads stored metadata without probing Git, migrating storage, or
 recovering clone operations. A missing source remains visible. `--all` applies
 only to the workspace view; repos has no hidden registration state.
 
-## Open an Existing Workspace
+## Open an Existing Workspace or Source Repository
 
 ```sh
 trees open WORKSPACE_ID
+trees open ORIGIN_REPOSITORY_ID
 trees open --workspace-id WORKSPACE_ID
 trees open --workspace-dir ./workspace
 trees open --claim-id CLAIM_ID
@@ -212,7 +213,14 @@ exact registered root, and `--claim-id` for the workspace associated with an
 active claim. Named selectors and the positional ID are mutually exclusive,
 even if they identify the same workspace. Explicit missing targets fail. Open requires one explicit selector;
 status retains its current-directory default. All open selectors apply the same
-removal and operation checks.
+removal and operation checks for workspace targets.
+
+The positional ID also accepts an `origin_repository_id` from `trees status repos`.
+For an origin repository, open uses the stored `source_path` as the working directory.
+It does not clone or fetch the repository. A missing source directory fails when
+starting the program. If an ID matches both a workspace and an origin repository,
+open reports an ambiguity; `--workspace-id` explicitly selects the workspace.
+Named workspace selectors only resolve workspaces.
 
 The human workspace view identifies each record by stable workspace ID rather
 than path. `trees open` resolves the selected workspace and starts `$SHELL` in the persisted

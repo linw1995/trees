@@ -1,3 +1,4 @@
+use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 use diesel::Connection;
 use snafu::{OptionExt, Snafu};
@@ -5,6 +6,26 @@ use snafu::{OptionExt, Snafu};
 use crate::domain::{CanonicalPath, ClaimId, WorkspaceId, WorkspaceState};
 use crate::storage::find_workspace_open_snapshot;
 use crate::workspace_locator::{locate, LocateError, WorkspaceSelector};
+
+/// Resolves a positional ID across workspace and origin repository records.
+pub fn resolve_id(
+    connection: &mut SqliteConnection,
+    id: WorkspaceId,
+) -> Result<CanonicalPath, WorkspaceOpenError> {
+    connection.transaction(|connection| {
+        let workspace = crate::storage::find_workspace(connection, &id).optional()?;
+        let origin = crate::schema::origin_repositories::table
+            .filter(crate::schema::origin_repositories::id.eq(id.to_string()))
+            .select(crate::storage::OriginRepositoryRow::as_select())
+            .first(connection)
+            .optional()?;
+        match (workspace, origin) {
+            (Some(_), Some(_)) => AmbiguousIdSnafu { id }.fail(),
+            (None, Some(origin)) => Ok(origin.source_path),
+            _ => resolve_target(connection, &id),
+        }
+    })
+}
 
 pub fn resolve_target(
     connection: &mut SqliteConnection,
@@ -53,6 +74,8 @@ pub fn resolve_selector(
 
 #[derive(Debug, Snafu)]
 pub enum WorkspaceOpenError {
+    #[snafu(display("ID matches both a workspace and an origin repository: {id}; use --workspace-id for the workspace"))]
+    AmbiguousId { id: WorkspaceId },
     #[snafu(transparent)]
     Locate { source: LocateError },
     #[snafu(display("workspace not found: {path}"))]
