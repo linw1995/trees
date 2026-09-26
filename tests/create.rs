@@ -396,6 +396,48 @@ fn manual_create_opens_an_explicit_program_in_the_workspace() {
 
 #[cfg(unix)]
 #[test]
+fn manual_create_passes_open_arguments_in_the_workspace() {
+    let root = test_root();
+    let source = repository(&root, "source");
+    let workspace_path = root.join("workspace");
+
+    let output = trees_command(&root)
+        .arg("create")
+        .arg(&workspace_path)
+        .arg("--repo")
+        .arg(&source)
+        .args([
+            "--open=/bin/sh",
+            "--",
+            "-c",
+            "printf '%s\\n' \"$PWD\" \"$1\" \"$2\"",
+            "sh",
+            "two words",
+            "--flag",
+        ])
+        .output()
+        .expect("trees create should run");
+
+    assert!(
+        output.status.success(),
+        "trees create failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("program output should be UTF-8"),
+        format!(
+            "{}\ntwo words\n--flag\n",
+            CanonicalPath::resolve(&workspace_path).expect("workspace should resolve")
+        )
+    );
+
+    git::remove_worktree(&CanonicalPath::resolve(&source).unwrap(), &workspace_path)
+        .expect("created worktree should be removable");
+    fs::remove_dir_all(root).expect("test root should be removable");
+}
+
+#[cfg(unix)]
+#[test]
 fn automatic_create_opens_the_shell_program_in_the_workspace() {
     let root = test_root();
     let source = repository(&root, "source");

@@ -83,6 +83,7 @@ pub enum SessionEvent<'a> {
 pub fn run(
     identity: &SessionIdentity,
     program: &OsStr,
+    args: &[OsString],
     mut report: impl FnMut(SessionEvent<'_>),
 ) -> SessionReport {
     let supervisor = match ProcessSupervisor::new() {
@@ -95,7 +96,7 @@ pub fn run(
             };
         }
     };
-    let initial = ProgramOutcome(supervisor.run(identity, program, false));
+    let initial = ProgramOutcome(supervisor.run(identity, program, args, false));
     if let Err(error) = &initial.0 {
         report(SessionEvent::InitialFailed(error));
     }
@@ -137,7 +138,7 @@ fn recover(
             .context(RecoveryShellSnafu)?;
         report(SessionEvent::Recovering);
         supervisor
-            .run(identity, &shell, true)
+            .run(identity, &shell, &[], true)
             .context(RecoveryProcessSnafu)?;
     }
 }
@@ -209,9 +210,11 @@ impl ProcessSupervisor {
         &self,
         identity: &SessionIdentity,
         program: &OsStr,
+        args: &[OsString],
         interactive: bool,
     ) -> Result<ExitStatus, ProcessError> {
         let mut command = Command::new(program);
+        command.args(args);
         command.current_dir(identity.workspace_path.as_path());
         command.env("TREES_RELEASE_ON_EXIT", "1");
         let locale = ["LC_ALL", "LC_CTYPE", "LANG"]
@@ -342,12 +345,14 @@ mod tests {
         };
         let supervisor = ProcessSupervisor::new().unwrap();
         assert_eq!(
-            ProgramOutcome(supervisor.run(&identity, OsStr::new("true"), false)).exit_code(true),
+            ProgramOutcome(supervisor.run(&identity, OsStr::new("true"), &[], false))
+                .exit_code(true),
             0
         );
         let missing = ProgramOutcome(supervisor.run(
             &identity,
             OsStr::new("/nonexistent/trees-program"),
+            &[],
             false,
         ));
         assert!(matches!(missing.0, Err(ProcessError::Start { .. })));

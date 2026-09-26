@@ -334,6 +334,32 @@ fn releases_clean_workspaces_and_retains_dirty_claims() {
 }
 
 #[test]
+fn release_on_exit_passes_open_arguments_to_the_program() {
+    let fixture = Fixture::new();
+    let program = fixture.script("program", "printf '%s\\n' \"$1\" \"$2\"");
+    let output = fixture
+        .create(&program)
+        .args(["--", "two words", "--flag"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"two words\n--flag\n");
+    let mut connection = fixture.connection();
+    let workspace = trees::storage::list_workspaces(&mut connection, false)
+        .unwrap()
+        .remove(0);
+    assert!(
+        trees::storage::find_workspace_claim(&mut connection, &workspace.id)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
 fn ends_cleanup_after_manual_release_without_adopting_a_replacement_claim() {
     let fixture = Fixture::new();
     let program = fixture.script("program", "\"$TREES_BINARY\" release && \"$TREES_BINARY\" create --repo \"$SESSION_SOURCE\" --offline --json");

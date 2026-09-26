@@ -72,6 +72,14 @@ pub struct CreateArgs {
     pub open: Option<Option<OsString>>,
 
     #[arg(
+        last = true,
+        requires = "open",
+        value_name = "ARG",
+        help = "Pass arguments after -- to the opened program"
+    )]
+    pub open_args: Vec<OsString>,
+
+    #[arg(
         long,
         requires = "open",
         conflicts_with_all = ["workspace_path", "json"],
@@ -407,6 +415,34 @@ mod tests {
             panic!("expected create command");
         };
         assert_eq!(arguments.open, Some(Some(OsString::from("/usr/bin/env"))));
+    }
+
+    #[test]
+    fn parses_open_arguments_after_double_dash() {
+        let cli = Cli::try_parse_from([
+            "trees",
+            "create",
+            "--repo",
+            "/tmp/one",
+            "--open=codex",
+            "--",
+            "--sandbox",
+            "read only",
+        ])
+        .expect("create command should parse");
+
+        let Command::Create(arguments) = cli.command else {
+            panic!("expected create command");
+        };
+        assert_eq!(arguments.open_args, ["--sandbox", "read only"]);
+    }
+
+    #[test]
+    fn rejects_open_arguments_without_open() {
+        assert!(
+            Cli::try_parse_from(["trees", "create", "--repo", "/tmp/one", "--", "--sandbox"])
+                .is_err()
+        );
     }
 
     #[test]

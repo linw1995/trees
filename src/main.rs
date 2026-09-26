@@ -84,6 +84,7 @@ fn run_create(arguments: trees::cli::CreateArgs) -> Result<ExitCode, CliError> {
         json,
         offline,
         open,
+        open_args,
         release_on_exit,
     } = arguments;
     let open = resolve_open_program(open)?;
@@ -107,7 +108,7 @@ fn run_create(arguments: trees::cli::CreateArgs) -> Result<ExitCode, CliError> {
                 &expected,
             )?;
             if let Some(program) = open.as_deref() {
-                return open_workspace(program, result.workspace_path.as_path());
+                return open_workspace(program, &open_args, result.workspace_path.as_path());
             }
             if json {
                 return print_json(&result);
@@ -123,6 +124,7 @@ fn run_create(arguments: trees::cli::CreateArgs) -> Result<ExitCode, CliError> {
             json,
             offline,
             open.as_deref(),
+            &open_args,
             release_on_exit,
             &expected,
         ),
@@ -154,6 +156,7 @@ fn run_automatic_create(
     json: bool,
     offline: bool,
     open: Option<&OsStr>,
+    open_args: &[OsString],
     release_on_exit: bool,
     expected: &[trees::git::RepositoryInfo],
 ) -> Result<ExitCode, CliError> {
@@ -170,7 +173,7 @@ fn run_automatic_create(
     if let Some(program) = open {
         if release_on_exit {
             let identity = result.into();
-            let report = trees::workspace_session::run(&identity, program, |event| {
+            let report = trees::workspace_session::run(&identity, program, open_args, |event| {
                 use trees::workspace_session::SessionEvent;
                 match event {
                     SessionEvent::InitialFailed(error) => eprintln!("Error: {error}"),
@@ -190,7 +193,7 @@ fn run_automatic_create(
             }
             return Ok(ExitCode::from(report.exit_code()));
         }
-        return open_workspace(program, result.workspace_path.as_path());
+        return open_workspace(program, open_args, result.workspace_path.as_path());
     }
     if json {
         print_json(&result)
@@ -201,10 +204,15 @@ fn run_automatic_create(
 }
 
 #[cfg(unix)]
-fn open_workspace(program: &OsStr, workspace_path: &Path) -> Result<ExitCode, CliError> {
+fn open_workspace(
+    program: &OsStr,
+    args: &[OsString],
+    workspace_path: &Path,
+) -> Result<ExitCode, CliError> {
     use std::os::unix::process::CommandExt;
 
     let error = std::process::Command::new(program)
+        .args(args)
         .current_dir(workspace_path)
         .exec();
     Err(CliError::OpenWorkspace {
@@ -220,12 +228,17 @@ fn run_open(arguments: trees::cli::OpenArgs) -> Result<ExitCode, CliError> {
     let mut connection = trees::database::open_read_only()?;
     let workspace_path = trees::workspace_open::resolve_selector(&mut connection, &selector)?;
     drop(connection);
-    open_workspace(&program, workspace_path.as_path())
+    open_workspace(&program, &[], workspace_path.as_path())
 }
 
 #[cfg(not(unix))]
-fn open_workspace(program: &OsStr, workspace_path: &Path) -> Result<ExitCode, CliError> {
+fn open_workspace(
+    program: &OsStr,
+    args: &[OsString],
+    workspace_path: &Path,
+) -> Result<ExitCode, CliError> {
     match std::process::Command::new(program)
+        .args(args)
         .current_dir(workspace_path)
         .status()
     {

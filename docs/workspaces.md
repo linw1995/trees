@@ -137,6 +137,7 @@ expire when the invoking process or shell exits.
 ```sh
 trees create --open --repo /path/to/api
 trees create --open=codex --repo /path/to/api --repo /path/to/web
+trees create --repo /path/to/api --open=codex -- --sandbox read-only
 ```
 
 Pass `--open` to replace the Trees process with `$SHELL` in the created or
@@ -145,6 +146,9 @@ original directory. Use `--open=<PROGRAM>` to select another executable, such
 as `--open=codex`. The program inherits the terminal and environment and starts
 with the workspace as its current directory. `--open` and `--json` are mutually
 exclusive. If `$SHELL` is unset or empty, provide an explicit program.
+Place program arguments after `--`. Each argument is passed directly to the
+program, including values that begin with `-`; quote values containing spaces
+as usual in your shell. The `--` separator requires `--open`.
 
 ### Release After Program Exit
 
