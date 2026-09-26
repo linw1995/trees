@@ -334,6 +334,41 @@ fn releases_clean_workspaces_and_retains_dirty_claims() {
 }
 
 #[test]
+fn session_messages_are_distinct_from_program_output() {
+    let fixture = Fixture::new();
+    let program = fixture.script(
+        "program",
+        "printf 'program stdout\\n'; printf 'program stderr\\n' >&2",
+    );
+    let output = fixture.create(&program).output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"program stdout\n");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let lines: Vec<_> = stderr.lines().collect();
+    let program_line = lines
+        .iter()
+        .position(|line| *line == "program stderr")
+        .unwrap();
+    assert!(
+        lines[program_line - 1].starts_with("[trees] Opening "),
+        "{stderr}"
+    );
+    assert!(
+        lines
+            .last()
+            .unwrap()
+            .starts_with("[trees] Claim released: "),
+        "{stderr}"
+    );
+    assert!(
+        lines
+            .iter()
+            .all(|line| *line == "program stderr" || line.starts_with("[trees] ")),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn release_on_exit_passes_open_arguments_to_the_program() {
     let fixture = Fixture::new();
     let program = fixture.script("program", "printf '%s\\n' \"$1\" \"$2\"");

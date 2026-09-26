@@ -410,7 +410,7 @@ fn manual_create_passes_open_arguments_in_the_workspace() {
             "--open=/bin/sh",
             "--",
             "-c",
-            "printf '%s\\n' \"$PWD\" \"$1\" \"$2\"",
+            "printf '%s\\n' \"$PWD\" \"$1\" \"$2\"; printf 'program stderr\\n' >&2",
             "sh",
             "two words",
             "--flag",
@@ -430,6 +430,17 @@ fn manual_create_passes_open_arguments_in_the_workspace() {
             CanonicalPath::resolve(&workspace_path).expect("workspace should resolve")
         )
     );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.ends_with(&format!(
+            "[trees] Opening /bin/sh in {}\nprogram stderr\n",
+            CanonicalPath::resolve(&workspace_path).unwrap()
+        )),
+        "{stderr}"
+    );
+    assert!(stderr
+        .lines()
+        .all(|line| line == "program stderr" || line.starts_with("[trees] ")));
 
     git::remove_worktree(&CanonicalPath::resolve(&source).unwrap(), &workspace_path)
         .expect("created worktree should be removable");

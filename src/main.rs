@@ -172,24 +172,29 @@ fn run_automatic_create(
     drop(connection);
     if let Some(program) = open {
         if release_on_exit {
-            let identity = result.into();
+            let identity = trees::workspace_session::SessionIdentity::from(result);
+            print_open_notice(program, identity.workspace_path.as_path());
             let report = trees::workspace_session::run(&identity, program, open_args, |event| {
                 use trees::workspace_session::SessionEvent;
                 match event {
-                    SessionEvent::InitialFailed(error) => eprintln!("Error: {error}"),
-                    SessionEvent::ReleaseFailed(error) => eprintln!("Release failed: {error}"),
+                    SessionEvent::InitialFailed(error) => eprintln!("[trees] Error: {error}"),
+                    SessionEvent::ReleaseFailed(error) => {
+                        eprintln!("[trees] Release failed: {error}")
+                    }
                     SessionEvent::Recovering => eprintln!(
-                        "Opening $SHELL in {}. Exiting the shell will retry release.",
+                        "[trees] Opening $SHELL in {}. Exiting the shell will retry release.",
                         identity.workspace_path
                     ),
                 }
             });
             if let Err(error) = &report.cleanup {
-                eprintln!("Error: {error}");
+                eprintln!("[trees] Error: {error}");
                 eprintln!(
-                    "Workspace: {}\nClaim: {}\nManual recovery: trees release --claim-id {}",
+                    "[trees] Workspace: {}\n[trees] Claim: {}\n[trees] Manual recovery: trees release --claim-id {}",
                     identity.workspace_path, identity.claim_id, identity.claim_id
                 );
+            } else {
+                eprintln!("[trees] Claim released: {}", identity.claim_id);
             }
             return Ok(ExitCode::from(report.exit_code()));
         }
@@ -203,6 +208,14 @@ fn run_automatic_create(
     }
 }
 
+fn print_open_notice(program: &OsStr, workspace_path: &Path) {
+    eprintln!(
+        "[trees] Opening {} in {}",
+        program.to_string_lossy(),
+        workspace_path.display()
+    );
+}
+
 #[cfg(unix)]
 fn open_workspace(
     program: &OsStr,
@@ -211,6 +224,7 @@ fn open_workspace(
 ) -> Result<ExitCode, CliError> {
     use std::os::unix::process::CommandExt;
 
+    print_open_notice(program, workspace_path);
     let error = std::process::Command::new(program)
         .args(args)
         .current_dir(workspace_path)
@@ -240,6 +254,7 @@ fn open_workspace(
     args: &[OsString],
     workspace_path: &Path,
 ) -> Result<ExitCode, CliError> {
+    print_open_notice(program, workspace_path);
     match std::process::Command::new(program)
         .args(args)
         .current_dir(workspace_path)

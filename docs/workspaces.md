@@ -150,6 +150,12 @@ Place program arguments after `--`. Each argument is passed directly to the
 program, including values that begin with `-`; quote values containing spaces
 as usual in your shell. The `--` separator requires `--open`.
 
+Trees uses a `[trees]` prefix for create and release progress messages and the
+opening notice on standard error.
+The opened program's standard output and standard error pass through unchanged.
+With `--release-on-exit`, Trees also prefixes its release and recovery messages
+with `[trees]`, so they can be distinguished from the program's output.
+
 ### Release After Program Exit
 
 ```sh

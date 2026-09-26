@@ -163,7 +163,7 @@ where
 {
     heartbeat()?;
     let mut info = inspect_upstream_repository(repository)?;
-    eprintln!("Fetching upstream: {}", info.root);
+    eprintln!("[trees] Fetching upstream: {}", info.root);
     let fetch_started = Instant::now();
     run_git_with_heartbeat(
         info.root.as_path(),
@@ -171,7 +171,7 @@ where
         &mut heartbeat,
     )?;
     eprintln!(
-        "Fetched upstream: {} ({:.1}s)",
+        "[trees] Fetched upstream: {} ({:.1}s)",
         info.root,
         fetch_started.elapsed().as_secs_f64()
     );
@@ -308,7 +308,7 @@ where
     F: FnMut() -> Result<(), GitError>,
 {
     eprintln!(
-        "Creating worktree: {} at {revision}",
+        "[trees] Creating worktree: {} at {revision}",
         worktree_path.display()
     );
     let started = Instant::now();
@@ -324,7 +324,7 @@ where
         heartbeat,
     )?;
     eprintln!(
-        "Created worktree: {} ({:.1}s)",
+        "[trees] Created worktree: {} ({:.1}s)",
         worktree_path.display(),
         started.elapsed().as_secs_f64()
     );
@@ -505,7 +505,7 @@ where
     F: FnMut() -> Result<(), GitError>,
 {
     eprintln!(
-        "Aligning worktree: {} to {revision}",
+        "[trees] Aligning worktree: {} to {revision}",
         worktree_path.display()
     );
     let started = Instant::now();
@@ -520,7 +520,7 @@ where
         heartbeat,
     )?;
     eprintln!(
-        "Aligned worktree: {} ({:.1}s)",
+        "[trees] Aligned worktree: {} ({:.1}s)",
         worktree_path.display(),
         started.elapsed().as_secs_f64()
     );
