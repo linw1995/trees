@@ -41,6 +41,7 @@ Create a workspace from remote URLs, replacing these example URLs with your own:
 ```sh
 trees create ./workspace --repo https://github.com/example/api.git --repo https://github.com/example/web.git
 trees open --workspace-dir ./workspace
+trees open ORIGIN_REPOSITORY_ID
 ```
 
 Trees reuses a matching registered source or clones and registers it when none
