@@ -12,6 +12,14 @@ If direnv is enabled, entering the repository loads the same development shell a
 
 ## Local Checks
 
+Install the local hooks after cloning the repository:
+
+```sh
+prek install
+```
+
+This installs both `pre-commit` and `commit-msg` hooks. Commit messages and PR titles must follow `<type>[optional scope][!]: <description>`, for example `feat(cli): add workspace status` or `fix: handle missing config`. The commit hook checks only the first line, so the message body is unrestricted. CI checks PR titles with the same validator, including after title edits.
+
 Run the complete local hook suite before submitting a change:
 
 ```sh
