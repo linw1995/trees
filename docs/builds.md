@@ -18,26 +18,8 @@ Tags containing a prerelease suffix produce prereleases.
 
 Each archive includes `trees`, `BUILD_INFO.txt`, `LICENSE`,
 `THIRD_PARTY_NOTICES.html`, and Bash and `zsh` completion loaders under
-`completions/`. Verify downloads against the release's `SHA256SUMS`, extract
-the archive, and copy `trees` to a directory on your `PATH`. Source the matching
-loader from the extracted directory to enable completion for that shell session.
-
-Bash:
-
-```sh
-source completions/trees.bash
-```
-
-`zsh`:
-
-```sh
-source completions/trees.zsh
-```
-
-For persistent setup, use the initialization commands in
-[Shell Completion](../README.md#shell-completion). The Nix package
-installs loaders in standard Bash and `zsh` completion directories; automatic
-discovery depends on the shell's completion initialization and search paths.
+`completions/`. See [Installation](installation.md) for checksum verification,
+binary placement, and shell completion setup.
 
 ## Build Metadata
 
