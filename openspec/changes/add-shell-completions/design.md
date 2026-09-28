@@ -22,7 +22,7 @@ The namespaced environment variable avoids treating unrelated `COMPLETE` setting
 
 ### 2. Query Candidate Data Directly Through Read-Only Storage
 
-Put one shared completion module under `src/cli/`. It owns the completion command factory, ID argument binding registry, candidate policies, and focused read-only queries. Use a small candidate-kind enum for all workspace IDs, non-removed workspace IDs, active claim IDs, registered origin IDs, and the cross-entity union. Bind `(command, argument ID)` entries from the spec's argument table to those kinds.
+Put one shared completion module under `src/cli/`. It owns the completion command factory, ID argument binding registry, and candidate policies. Focused projections in `src/storage/` provide the read-only queries. Use a small candidate-kind enum for all workspace IDs, non-removed workspace IDs, active claim IDs, registered origin IDs, and the cross-entity union. Bind `(command, argument ID)` entries from the spec's argument table to those kinds.
 
 Keep the binding registry in one place, including the `WorkspaceLocatorArgs` fields flattened into several commands. That shared struct cannot own a single workspace-ID callback because `status` includes removed records while other commands do not. The command factory applies the appropriate policy to each flattened instance. Register `--claim-id` even though its parse field is a `String`.
 

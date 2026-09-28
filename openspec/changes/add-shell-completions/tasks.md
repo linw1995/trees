@@ -8,10 +8,10 @@
 
 ## 2. Persisted Identifier Candidates
 
-- [ ] 2.1 Add one shared ID completion module with focused read-only queries. Cover all workspaces, non-removed workspaces, active claims, origins, and cross-entity positional IDs. Verify prefix, sorting, deduplication, removed-state, and collision tests against a temporary database.
-- [ ] 2.2 Register every positional and named ID argument in the spec table, including flattened locator fields and the string-typed `--claim-id`; verify integration tests cover every listed position in `status`, `open`, `remove`, `add`, `claim`, and `release` without executing those commands.
-- [ ] 2.3 Compare the derived CLI tree's ID-valued arguments against the central registry; verify the test fails when an ID argument has no binding.
-- [ ] 2.4 Return empty, quiet candidate sets when read-only storage is missing, incompatible, or failing; verify tests leave state paths unchanged, invoke no hook or Git command, and preserve ordinary command errors.
+- [x] 2.1 Add one shared ID completion module with focused read-only queries. Cover all workspaces, non-removed workspaces, active claims, origins, and cross-entity positional IDs. Verify prefix, sorting, deduplication, removed-state, and collision tests against a temporary database.
+- [x] 2.2 Register every positional and named ID argument in the spec table, including flattened locator fields and the string-typed `--claim-id`; verify integration tests cover every listed position in `status`, `open`, `remove`, `add`, `claim`, and `release` without executing those commands.
+- [x] 2.3 Compare the derived CLI tree's ID-valued arguments against the central registry; verify the test fails when an ID argument has no binding.
+- [x] 2.4 Return empty, quiet candidate sets when read-only storage is missing, incompatible, or failing; verify tests leave state paths unchanged, invoke no hook or Git command, and preserve ordinary command errors.
 
 ## 3. Repository Input Candidates
 
