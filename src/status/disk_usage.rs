@@ -65,6 +65,52 @@ impl Observation {
     }
 }
 
+pub fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 7] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut unit = 0;
+    let mut scale = 1_u128;
+    while unit + 1 < UNITS.len() && u128::from(bytes) >= scale * 1024 {
+        unit += 1;
+        scale *= 1024;
+    }
+    let tenths = (u128::from(bytes) * 10 + scale / 2) / scale;
+    format!("{}.{} {}", tenths / 10, tenths % 10, UNITS[unit])
+}
+
+pub fn summary_cell(observation: &Observation) -> String {
+    let reasons = observation
+        .issues
+        .iter()
+        .map(|issue| issue.code)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .map(IssueCode::reason)
+        .collect::<Vec<_>>()
+        .join("; ");
+    match observation.status {
+        Completeness::Complete => format_bytes(observation.allocated_bytes.unwrap_or_default()),
+        Completeness::Partial => format!(
+            "{} (partial: {reasons})",
+            format_bytes(observation.allocated_bytes.unwrap_or_default())
+        ),
+        Completeness::Unavailable => format!("unavailable ({reasons})"),
+    }
+}
+
+pub fn inventory_cell(observation: &Observation) -> String {
+    match observation.status {
+        Completeness::Complete => format_bytes(observation.allocated_bytes.unwrap_or_default()),
+        Completeness::Partial => format!(
+            "{} (partial)",
+            format_bytes(observation.allocated_bytes.unwrap_or_default())
+        ),
+        Completeness::Unavailable => "unavailable".to_owned(),
+    }
+}
+
 #[derive(Default)]
 struct Accumulator {
     allocated_bytes: u64,
@@ -487,6 +533,48 @@ mod tests {
         assert_eq!(json["status"], "unavailable");
         assert!(json["allocated_bytes"].is_null());
         assert_eq!(json["issues"][0]["affected_count"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn renders_exact_binary_units_and_compact_incomplete_cells() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(1023), "1023 B");
+        assert_eq!(format_bytes(1024), "1.0 KiB");
+        assert_eq!(format_bytes(1536), "1.5 KiB");
+        assert_eq!(format_bytes(1024 * 1024 * 1024), "1.0 GiB");
+        assert_eq!(format_bytes(u64::MAX), "16.0 EiB");
+
+        let observed_at = Timestamp::now();
+        let partial = Observation {
+            observed_at: observed_at.clone(),
+            status: Completeness::Partial,
+            allocated_bytes: Some(1536),
+            issues: vec![
+                Issue {
+                    code: IssueCode::EntryUnreadable,
+                    affected_count: Some(1),
+                },
+                Issue {
+                    code: IssueCode::EntryChanged,
+                    affected_count: Some(1),
+                },
+                Issue {
+                    code: IssueCode::EntryChanged,
+                    affected_count: Some(1),
+                },
+            ],
+        };
+        assert_eq!(inventory_cell(&partial), "1.5 KiB (partial)");
+        assert_eq!(
+            summary_cell(&partial),
+            "1.5 KiB (partial: some workspace entries changed during observation; some workspace entries could not be read)"
+        );
+        let unavailable = Observation::unavailable(observed_at, IssueCode::RootMissing);
+        assert_eq!(inventory_cell(&unavailable), "unavailable");
+        assert_eq!(
+            summary_cell(&unavailable),
+            "unavailable (workspace directory missing)"
+        );
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]

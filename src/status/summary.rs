@@ -1,7 +1,9 @@
 use time::{OffsetDateTime, UtcOffset};
 
 use super::combined::Snapshot;
+use super::disk_usage;
 use super::processes::{Completeness, Observation};
+use super::report::{Report, WorkspaceDiskUsage};
 use super::{repos, LeaseStatus, WorkspaceStatus};
 use crate::domain::Timestamp;
 use crate::workspace_locator::WorkspaceSelector;
@@ -22,18 +24,42 @@ pub fn render_with_sessions(
     processes: Option<&Observation>,
     sessions: Option<&super::session_hook::Observation>,
 ) -> String {
+    render_with_usage(snapshot, selector, color, processes, sessions, None, &[])
+}
+
+pub fn render_report(report: &Report, selector: &WorkspaceSelector, color: bool) -> String {
+    render_with_usage(
+        &report.snapshot,
+        selector,
+        color,
+        report.target_processes.as_ref(),
+        report.workspace_sessions.as_ref(),
+        report.target_disk_usage.as_ref(),
+        &report.workspace_disk_usage,
+    )
+}
+
+fn render_with_usage(
+    snapshot: &Snapshot,
+    selector: &WorkspaceSelector,
+    color: bool,
+    processes: Option<&Observation>,
+    sessions: Option<&super::session_hook::Observation>,
+    target_usage: Option<&disk_usage::Observation>,
+    workspace_usage: &[WorkspaceDiskUsage],
+) -> String {
     let (heading, inventory) = match snapshot {
         Snapshot::Pools(snapshot) => ("Pools", super::render_pools_human(snapshot, color)),
         Snapshot::Workspaces(snapshot) => (
             "Workspaces",
-            super::render_workspaces_with_sessions(snapshot, color, sessions),
+            super::render_workspaces_with_sessions(snapshot, color, sessions, workspace_usage),
         ),
         Snapshot::Repos(snapshot) => ("Repositories", repos::render(snapshot)),
     };
     match snapshot.target() {
         Some(target) => format!(
             "{}\n\n{heading}\n{inventory}",
-            render_target(target, selector, color, processes)
+            render_target(target, selector, color, processes, target_usage)
         ),
         None => inventory,
     }
@@ -44,8 +70,9 @@ fn render_target(
     selector: &WorkspaceSelector,
     color: bool,
     processes: Option<&Observation>,
+    disk_usage: Option<&disk_usage::Observation>,
 ) -> String {
-    render_target_with_offset(target, selector, color, processes, |instant| {
+    render_target_with_offset(target, selector, color, processes, disk_usage, |instant| {
         UtcOffset::local_offset_at(instant).ok()
     })
 }
@@ -55,6 +82,7 @@ fn render_target_with_offset(
     selector: &WorkspaceSelector,
     color: bool,
     processes: Option<&Observation>,
+    disk_usage: Option<&disk_usage::Observation>,
     offset_at: impl FnOnce(OffsetDateTime) -> Option<UtcOffset>,
 ) -> String {
     let heading = match selector {
@@ -95,6 +123,9 @@ fn render_target_with_offset(
         "Repos",
         super::repository_summary(&target.repo_worktrees, color),
     ));
+    if let Some(disk_usage) = disk_usage {
+        rows.push(("Disk usage", disk_usage::summary_cell(disk_usage)));
+    }
     if let Some(processes) = processes {
         rows.push(("Processes", process_count(processes)));
     }
@@ -203,6 +234,15 @@ mod tests {
         }
     }
 
+    fn disk_observation(bytes: u64) -> disk_usage::Observation {
+        disk_usage::Observation {
+            observed_at: Timestamp::now(),
+            status: disk_usage::Completeness::Complete,
+            allocated_bytes: Some(bytes),
+            issues: Vec::new(),
+        }
+    }
+
     fn target() -> WorkspaceStatus {
         WorkspaceStatus {
             workspace_id: WorkspaceId::new(),
@@ -229,7 +269,7 @@ mod tests {
         let mut target = target();
         let selector = WorkspaceSelector::Id(target.workspace_id);
         let render = |target: &WorkspaceStatus| {
-            render_target_with_offset(target, &selector, false, None, |_| {
+            render_target_with_offset(target, &selector, false, None, None, |_| {
                 UtcOffset::from_hms(8, 0, 0).ok()
             })
         };
@@ -271,6 +311,7 @@ mod tests {
             &selector,
             false,
             Some(&empty_observation()),
+            Some(&disk_observation(1536)),
             |_| UtcOffset::from_hms(8, 0, 0).ok(),
         );
         let example = format!("{summary}\n\nPools\nNo workspace pools.");
@@ -301,7 +342,7 @@ mod tests {
             },
         ];
         observation.count = Some(3);
-        let output = render_target(&target, &selector, false, Some(&observation));
+        let output = render_target(&target, &selector, false, Some(&observation), None);
         assert!(output.contains("  Processes   3\n    PID   NAME   CWD\n    1201  zsh    .\n    1248  cargo  api\n    1302  node   web\n  Reconciled"));
         observation.status = Completeness::Partial;
         observation.issues = vec![Issue {
@@ -314,7 +355,7 @@ mod tests {
         );
         observation.processes.clear();
         observation.count = Some(0);
-        let output = render_target(&target, &selector, false, Some(&observation));
+        let output = render_target(&target, &selector, false, Some(&observation), None);
         assert!(output.contains("Processes   0 (partial:"));
         assert!(!output.contains("PID"));
         let unavailable = Observation::unavailable(Timestamp::now(), IssueCode::EnumerationFailed);
@@ -398,13 +439,13 @@ mod tests {
             RepoWorktreeState::Dirty,
         ));
         let selector = WorkspaceSelector::Id(target.workspace_id);
-        let plain = render_target(&target, &selector, false, None);
+        let plain = render_target(&target, &selector, false, None, None);
         assert_eq!(plain.lines().count(), 8);
         assert!(!plain.contains('\u{1b}'));
         assert!(plain.contains("/work/line\\n\\u{1b}[31m"));
         assert!(plain.contains("release\\n\\u{1b} / running"));
         assert!(plain.contains("0/1 api(dirty)"));
-        let colored = render_target(&target, &selector, true, None);
+        let colored = render_target(&target, &selector, true, None, None);
         assert!(colored.contains("\u{1b}[31mapi(dirty)\u{1b}[0m"));
         for (plain, colored) in plain.lines().zip(colored.lines()) {
             assert_eq!(

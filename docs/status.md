@@ -45,6 +45,7 @@ Workspace (current directory)
   Status      ready 🔒
   Mode        automatic 🤖
   Repos       0/0
+  Disk usage  1.5 KiB
   Processes   0
   Reconciled  2026-09-11 14:32:05
 
@@ -213,6 +214,18 @@ also retain explicit suffixes such as `(dirty)`, `(missing)`, `(mismatch)`, and
 Path-derived labels escape control characters and table delimiters before color
 is applied, preventing repository names from injecting terminal output.
 
+The workspace table adds `SIZE` between `REPOS` and `RECONCILED`. It shows the
+same allocated disk amount as the target summary when that workspace is
+selected. A partial scan uses a compact value such as `1.5 KiB (partial)`; an
+unavailable scan uses `unavailable`. JSON contains the detailed issue codes.
+Removed rows displayed with `--all` also have a size result, which is normally
+unavailable when the directory has already been removed.
+
+```text
+STATUS       MODE  REPOS               SIZE     RECONCILED  ID
+degraded 🔒  🤖    0/1 example(dirty)  1.5 KiB  10:00       01990000-0000-7000-8000-000000000002
+```
+
 ## Source Repositories
 
 Use `--view repos` for source repositories, with `REPO`, `PATH`, and `ID`
@@ -278,8 +291,8 @@ JSON retains full titles and every session. Target summaries remain unchanged.
 Trees runs one batch after closing lifecycle storage and before observing target
 processes. It does not persist session results or use them for release, reuse, or
 removal decisions. No hook runs for other views, empty inventories, or failed
-persisted loading. Without configuration or with `--no-hooks`, human output keeps
-its existing columns.
+persisted loading. Without configuration or with `--no-hooks`, human output
+omits `LATEST SESSION`.
 
 All version-2 JSON views add nullable top-level `workspace_sessions`. It is null
 when unconfigured or skipped. Otherwise, it contains:

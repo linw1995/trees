@@ -7,6 +7,7 @@ pub mod session_hook;
 pub mod summary;
 pub mod target;
 
+use self::report::WorkspaceDiskUsage;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -241,19 +242,24 @@ fn load_workspaces_in_transaction(
 }
 
 pub fn render_workspaces_human(snapshot: &StatusSnapshot, color: bool) -> String {
-    render_workspaces_with_sessions(snapshot, color, None)
+    render_workspaces_with_sessions(snapshot, color, None, &[])
 }
 
 pub fn render_workspaces_with_sessions(
     snapshot: &StatusSnapshot,
     color: bool,
     sessions: Option<&session_hook::Observation>,
+    usage: &[WorkspaceDiskUsage],
 ) -> String {
     if snapshot.workspaces.is_empty() {
         return "No workspaces.".to_owned();
     }
 
-    let headers = ["STATUS", "MODE", "REPOS", "RECONCILED", "ID"];
+    let headers = ["STATUS", "MODE", "REPOS", "SIZE", "RECONCILED", "ID"];
+    let usage = usage
+        .iter()
+        .map(|entry| (entry.workspace_id, &entry.observation))
+        .collect::<HashMap<_, _>>();
     let rows = snapshot
         .workspaces
         .iter()
@@ -262,6 +268,10 @@ pub fn render_workspaces_with_sessions(
                 workspace_status_summary(workspace),
                 mode_symbol(workspace.management_mode).to_owned(),
                 repository_summary(&workspace.repo_worktrees, color),
+                usage.get(&workspace.workspace_id).map_or_else(
+                    || "unavailable".to_owned(),
+                    |usage| disk_usage::inventory_cell(usage),
+                ),
                 workspace.last_reconciled_at.as_ref().map_or_else(
                     || "never".to_owned(),
                     |timestamp| compact_timestamp(timestamp, &snapshot.snapshot_at),
@@ -277,11 +287,12 @@ pub fn render_workspaces_with_sessions(
                 .into_iter()
                 .zip(&snapshot.workspaces)
                 .map(|(row, workspace)| {
-                    let [status, mode, repos, reconciled, id] = row;
+                    let [status, mode, repos, size, reconciled, id] = row;
                     [
                         status,
                         mode,
                         repos,
+                        size,
                         reconciled,
                         id,
                         session_hook::cell(sessions, &workspace.workspace_id.to_string()),
@@ -293,6 +304,7 @@ pub fn render_workspaces_with_sessions(
                     "STATUS",
                     "MODE",
                     "REPOS",
+                    "SIZE",
                     "RECONCILED",
                     "ID",
                     "LATEST SESSION",
@@ -1099,7 +1111,7 @@ mod tests {
             "No workspaces."
         );
 
-        let workspace_id = WorkspaceId::new();
+        let workspace_id = "01990000-0000-7000-8000-000000000002".parse().unwrap();
         let snapshot = StatusSnapshot {
             schema_version: STATUS_SCHEMA_VERSION,
             view: StatusView::Workspaces,
@@ -1138,10 +1150,36 @@ mod tests {
         assert_eq!(
             output,
             format!(
-                "STATUS       MODE  REPOS               RECONCILED  ID\n\
-                 degraded 🔒  🤖    0/1 example(dirty)  10:00       {workspace_id}"
+                "STATUS       MODE  REPOS               SIZE         RECONCILED  ID\n\
+                 degraded 🔒  🤖    0/1 example(dirty)  unavailable  10:00       {workspace_id}"
             )
         );
+
+        let usage = vec![WorkspaceDiskUsage {
+            workspace_id,
+            observation: disk_usage::Observation {
+                observed_at: Timestamp::now(),
+                status: disk_usage::Completeness::Complete,
+                allocated_bytes: Some(1536),
+                issues: Vec::new(),
+            },
+        }];
+        let with_usage = render_workspaces_with_sessions(&snapshot, false, None, &usage);
+        assert!(with_usage.contains("1.5 KiB"));
+        assert!(
+            include_str!("../docs/status.md").contains(&with_usage),
+            "{with_usage}"
+        );
+
+        let mut partial = usage;
+        partial[0].observation.status = disk_usage::Completeness::Partial;
+        partial[0].observation.issues = vec![disk_usage::Issue {
+            code: disk_usage::IssueCode::EntryUnreadable,
+            affected_count: Some(1),
+        }];
+        let output = render_workspaces_with_sessions(&snapshot, false, None, &partial);
+        assert_eq!(output.lines().count(), 2);
+        assert!(output.contains("1.5 KiB (partial)"));
     }
 
     #[test]

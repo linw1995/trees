@@ -155,6 +155,32 @@ fn status_reports_disk_usage_for_targets_and_workspace_rows() {
         }
     }
 
+    let human = command(&root)
+        .current_dir(&root)
+        .args(["status", "--view", "workspaces"])
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    assert!(human.status.success());
+    let human = String::from_utf8(human.stdout).unwrap();
+    assert!(human.starts_with("STATUS"));
+    assert!(human.lines().next().unwrap().contains("REPOS"));
+    assert!(human.lines().next().unwrap().contains("SIZE"));
+    assert_eq!(human.lines().count(), 2);
+    assert!(!human.contains('\u{1b}'));
+
+    let human = command(&root)
+        .current_dir(&root)
+        .args(["status", &active.to_string(), "--view", "workspaces"])
+        .output()
+        .unwrap();
+    assert!(human.status.success());
+    let human = String::from_utf8(human.stdout).unwrap();
+    assert!(human.contains("  Disk usage  "));
+    assert!(human.find("  Repos").unwrap() < human.find("  Disk usage").unwrap());
+    assert!(human.find("  Disk usage").unwrap() < human.find("  Processes").unwrap());
+    assert!(human.contains("\n\nWorkspaces\nSTATUS"));
+
     #[cfg(unix)]
     if unsafe { libc::geteuid() } != 0 {
         use std::os::unix::fs::PermissionsExt;
@@ -173,7 +199,6 @@ fn status_reports_disk_usage_for_targets_and_workspace_rows() {
             ])
             .output()
             .unwrap();
-        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o700)).unwrap();
         assert!(output.status.success());
         let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(json["target_disk_usage"]["status"], "partial");
@@ -182,6 +207,16 @@ fn status_reports_disk_usage_for_targets_and_workspace_rows() {
             "entry_unreadable"
         );
         assert_eq!(json["workspace_disk_usage"][0]["status"], "partial");
+        let human = command(&root)
+            .current_dir(&root)
+            .args(["status", &active.to_string(), "--view", "workspaces"])
+            .output()
+            .unwrap();
+        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(human.status.success());
+        let human = String::from_utf8(human.stdout).unwrap();
+        assert!(human.contains("(partial: some workspace entries could not be read)"));
+        assert!(human.contains("(partial)"));
         fs::remove_dir(blocked).unwrap();
     }
 
@@ -214,6 +249,15 @@ fn status_reports_disk_usage_for_targets_and_workspace_rows() {
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["target_disk_usage"]["status"], "unavailable");
     assert_eq!(json["workspace_disk_usage"], serde_json::json!([]));
+    let human = command(&root)
+        .current_dir(&root)
+        .args(["status", &removed.to_string()])
+        .output()
+        .unwrap();
+    assert!(human.status.success());
+    assert!(String::from_utf8(human.stdout)
+        .unwrap()
+        .contains("Disk usage  unavailable (workspace directory missing)"));
     assert_eq!(fs::read(&database_path).unwrap(), before_database);
     assert_eq!(fs::read(workspace_dir.join("data")).unwrap(), before_file);
     fs::remove_dir_all(root).unwrap();

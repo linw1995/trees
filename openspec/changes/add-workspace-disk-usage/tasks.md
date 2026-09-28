@@ -28,14 +28,14 @@
 
 ## 3. Human Status Output
 
-- [ ] 3.1 Render Disk usage between Repos and Processes with binary units and
+- [x] 3.1 Render Disk usage between Repos and Processes with binary units and
   stable incomplete reasons; verify exact output for bytes, KiB, higher units,
   partial and unavailable results, alignment, and `NO_COLOR` or piped output.
-- [ ] 3.2 Add `SIZE` between `REPOS` and `RECONCILED` in each workspace row,
+- [x] 3.2 Add `SIZE` between `REPOS` and `RECONCILED` in each workspace row,
   retaining `LATEST SESSION` at the end; verify complete, partial, unavailable,
   and removed rows remain single-line and that pools and repos tables keep
   their columns.
-- [ ] 3.3 Update target and workspace-table examples in `docs/status.md`;
+- [x] 3.3 Update target and workspace-table examples in `docs/status.md`;
   verify the rendered fixtures match both examples and no-target output has
   no extra heading or blank line.
 
