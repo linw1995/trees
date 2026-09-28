@@ -52,6 +52,10 @@ IDs accepted by each command. Positional `open` and `remove` accept workspace
 and source repository IDs. For `create --repo` and `add --repo`, completion also
 suggests unique registered source names and local directories.
 
+The Nix package also installs Bash and `zsh` loaders in standard completion
+directories. Shells with completion discovery configured can load those files
+automatically.
+
 See [release installation](docs/builds.md#release-archives) for prebuilt binaries.
 
 ## Quick Start

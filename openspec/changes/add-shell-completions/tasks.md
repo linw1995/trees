@@ -20,9 +20,9 @@
 
 ## 4. Package and Release Integration
 
-- [ ] 4.1 Add shell-discoverable loader files to the Nix package; verify the built output includes Bash and `zsh` registrations that call the installed binary.
-- [ ] 4.2 Include Bash and `zsh` loader files that can be sourced in release archives; verify archive contents and registration from an extracted package.
-- [ ] 4.3 Update installation and release documentation for the packaged files and shell discovery; verify the instructions in clean Bash and `zsh` sessions, including `zsh` autoload.
+- [x] 4.1 Add shell-discoverable loader files to the Nix package; verify the built output includes Bash and `zsh` registrations that call the installed binary.
+- [x] 4.2 Include Bash and `zsh` loader files that can be sourced in release archives; verify archive contents and registration from an extracted package.
+- [x] 4.3 Update installation and release documentation for the packaged files and shell discovery; verify the instructions in clean Bash and `zsh` sessions, including `zsh` autoload.
 
 ## 5. Cross-Cutting Validation
 

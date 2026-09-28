@@ -18,6 +18,7 @@
       (root + /LICENSE)
       (root + /about.hbs)
       (root + /about.toml)
+      (root + /completions)
       (root + /docs/status.md)
       (root + /migrations)
       (root + /scripts/generate-third-party-notices.sh)
@@ -28,6 +29,8 @@
     inherit version src;
     strictDeps = true;
     nativeBuildInputs = [
+      packagePkgs.bashInteractive
+      packagePkgs.zsh
       packagePkgs.cargo-about
       packagePkgs.git
     ];
@@ -53,6 +56,8 @@
       CARGO_ABOUT_OFFLINE=1 bash scripts/generate-third-party-notices.sh "$notices"
       install -Dm644 LICENSE "$out/share/licenses/trees/LICENSE"
       install -Dm644 "$notices" "$out/share/licenses/trees/THIRD_PARTY_NOTICES.html"
+      install -Dm644 completions/trees.bash "$out/share/bash-completion/completions/trees"
+      install -Dm644 completions/_trees "$out/share/zsh/site-functions/_trees"
     '';
     meta = {
       inherit description;

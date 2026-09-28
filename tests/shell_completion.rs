@@ -198,7 +198,7 @@ fn documented_shell_commands_register_completion() {
         ),
         (
             "zsh",
-            "autoload -Uz compinit; compinit -D; source <(TREES_COMPLETE=zsh \"$1\")",
+            "autoload -Uz compinit; compinit -D -u; source <(TREES_COMPLETE=zsh \"$1\")",
         ),
     ] {
         let output = Command::new(shell)
@@ -210,6 +210,64 @@ fn documented_shell_commands_register_completion() {
         assert!(output.stderr.is_empty(), "{shell}: {output:?}");
     }
     fs::remove_dir_all(home).expect("temporary home should be removed");
+}
+
+#[cfg(unix)]
+#[test]
+fn packaged_loaders_register_completion() {
+    use std::os::unix::fs::symlink;
+
+    let home = temporary_home();
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("completions");
+    let binary_dir = home.join("bin");
+    fs::create_dir(&binary_dir).unwrap();
+    symlink(binary(), binary_dir.join("trees")).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(binary_dir.clone())
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+
+    for (shell, script, file) in [
+        (
+            "bash",
+            "PATH=\"$2:$PATH\"; export PATH; source \"$1\"; complete -p trees",
+            source.join("trees.bash"),
+        ),
+        (
+            "zsh",
+            "path=(\"$2\" $path); autoload -Uz compinit; compinit -D -u; source \"$1\"; (( ${+functions[_clap_dynamic_completer_trees]} ))",
+            source.join("trees.zsh"),
+        ),
+    ] {
+        let output = Command::new(shell)
+            .args(["-c", script, "shell"])
+            .arg(file)
+            .arg(&binary_dir)
+            .env("HOME", &home)
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{shell}: {output:?}");
+        assert!(output.stderr.is_empty(), "{shell}: {output:?}");
+    }
+
+    let output = Command::new("zsh")
+        .args([
+            "-fc",
+            "path=(\"$2\" $path); fpath=(\"$1\" $fpath); autoload -Uz compinit; compinit -D -u; [[ $_comps[trees] == _trees ]] || exit 1; words=(trees status --view ''); CURRENT=4; function _describe { return 0; }; _trees; (( ${+functions[_clap_dynamic_completer_trees]} ))",
+            "shell",
+        ])
+        .arg(&source)
+        .arg(&binary_dir)
+        .env("HOME", &home)
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "zsh autoload: {output:?}");
+    assert!(output.stderr.is_empty(), "zsh autoload: {output:?}");
+
+    fs::remove_dir_all(home).unwrap();
 }
 
 #[test]
