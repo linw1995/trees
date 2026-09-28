@@ -48,9 +48,9 @@
 
 ## 5. Verification
 
-- [ ] 5.1 Run formatting, Clippy, the full test suite, repository hooks, and
+- [x] 5.1 Run formatting, Clippy, the full test suite, repository hooks, and
   strict OpenSpec validation. Record commands, outcomes, and platform coverage
   in `verification.md`.
-- [ ] 5.2 Measure status over a large and a many-workspace inventory and verify
+- [x] 5.2 Measure status over a large and a many-workspace inventory and verify
   no directory traversal or database writes occur. Record representative
   latency and the remaining cache freshness limits in `verification.md`.
