@@ -145,6 +145,14 @@ paths become unavailable or partial observations; a changed path is skipped.
 Human output reports `complete`, `partial`, `unavailable`, and `skipped`
 counts. These values describe the last refresh, not changes made afterward.
 
+Successful `create`, `add`, and `release` commands refresh the affected
+workspace and repository measurements after physical work completes. Workspace
+removal, including GC, invalidates the removed workspace and worktree values;
+source repositories retain their own measurements while registered. `claim`
+and `open` do not refresh sizes. A refresh problem after a completed lifecycle
+operation emits a warning but does not undo that operation. Files changed by
+other programs need an explicit refresh to update the stored amount.
+
 ## Processes
 
 Every selected target includes a live process observation on Linux and macOS.

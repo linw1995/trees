@@ -38,13 +38,13 @@
 
 ## 4. Lifecycle Refresh
 
-- [ ] 4.1 Refresh affected caches after successful create, add, and release
+- [x] 4.1 Refresh affected caches after successful create, add, and release
   without holding a long write transaction. Verify CLI integration tests read
   newly stored sizes and a scan failure cannot reverse completed operations.
-- [ ] 4.2 Invalidate removed workspace and worktree caches and avoid refresh
+- [x] 4.2 Invalidate removed workspace and worktree caches and avoid refresh
   for claim and open. Verify removal and selector tests preserve lifecycle
   behavior and do not expose stale pre-removal sizes.
-- [ ] 4.3 Document automatic refresh boundaries and warning behavior in
+- [x] 4.3 Document automatic refresh boundaries and warning behavior in
   `docs/status.md`. Verify the documented cases against integration tests.
 
 ## 5. Verification

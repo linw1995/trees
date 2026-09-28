@@ -326,6 +326,25 @@ fn cli_migrates_pool_and_release_reuses_the_expanded_workspace() {
         json_output(cli(&fixture.root).args(["create", "--repo", "api", "--offline", "--json"]));
     let workspace_path = created["workspace_path"].as_str().unwrap();
     let claim = created["claim_id"].as_str().unwrap();
+    let after_create = json_output(cli(&fixture.root).args([
+        "status",
+        "--workspace-dir",
+        workspace_path,
+        "--view",
+        "workspaces",
+        "--json",
+    ]));
+    assert_eq!(after_create["target_disk_usage"]["status"], "complete");
+    assert_eq!(
+        after_create["target_workspace"]["repo_worktrees"][0]["disk_usage"]["status"],
+        "complete"
+    );
+    let origin_status =
+        json_output(cli(&fixture.root).args(["status", "--view", "repos", "--json"]));
+    assert_eq!(
+        origin_status["repos"][0]["disk_usage"]["status"],
+        "complete"
+    );
     let added = json_output(cli(&fixture.root).args([
         "add",
         "--claim-id",
@@ -351,6 +370,12 @@ fn cli_migrates_pool_and_release_reuses_the_expanded_workspace() {
     assert!(status
         .to_string()
         .contains(added["pool_id"].as_str().unwrap()));
+    assert_eq!(status["target_disk_usage"]["status"], "complete");
+    assert!(status["target_workspace"]["repo_worktrees"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|worktree| worktree["disk_usage"]["status"] == "complete"));
     let released = cli(&fixture.root)
         .args(["release", "--claim-id", claim])
         .output()
@@ -359,6 +384,17 @@ fn cli_migrates_pool_and_release_reuses_the_expanded_workspace() {
         released.status.success(),
         "{}",
         String::from_utf8_lossy(&released.stderr)
+    );
+    let after_release = json_output(cli(&fixture.root).args([
+        "status",
+        "--workspace-dir",
+        workspace_path,
+        "--json",
+    ]));
+    assert_eq!(after_release["target_disk_usage"]["status"], "complete");
+    assert_ne!(
+        after_release["target_disk_usage"]["observed_at"],
+        status["target_disk_usage"]["observed_at"]
     );
     let idle = cli(&fixture.root)
         .args([
@@ -407,6 +443,18 @@ fn cli_migrates_pool_and_release_reuses_the_expanded_workspace() {
         String::from_utf8_lossy(&removed.stderr)
     );
     assert!(!Path::new(workspace_path).exists());
+    let removed_status = json_output(cli(&fixture.root).args([
+        "status",
+        added["workspace_id"].as_str().unwrap(),
+        "--json",
+    ]));
+    assert_eq!(removed_status["target_workspace"]["state"], "removed");
+    assert_eq!(removed_status["target_disk_usage"]["status"], "unknown");
+    assert!(removed_status["target_workspace"]["repo_worktrees"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|worktree| worktree["disk_usage"]["status"] == "unknown"));
 }
 
 #[test]

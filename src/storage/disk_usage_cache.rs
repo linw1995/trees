@@ -497,4 +497,41 @@ mod tests {
             Err(CacheError::Invalid { .. })
         ));
     }
+
+    #[test]
+    fn removed_states_invalidate_workspace_and_worktree_sizes() {
+        let mut connection = crate::database::connect(std::path::Path::new(":memory:")).unwrap();
+        let (workspace_id, worktree_id, origin_id) = fixture(&mut connection);
+        let measured = observation(Completeness::Complete);
+        for (entity, entity_path) in [
+            (EntityId::Workspace(workspace_id), path("/workspace")),
+            (EntityId::Worktree(worktree_id), path("/workspace/repo")),
+            (EntityId::Origin(origin_id), path("/origin")),
+        ] {
+            save_if_path_unchanged(&mut connection, entity, &entity_path, Some(&measured)).unwrap();
+        }
+        diesel::update(repo_worktrees::table.find(worktree_id))
+            .set(repo_worktrees::state.eq(RepoWorktreeState::Removed))
+            .execute(&mut connection)
+            .unwrap();
+        assert_eq!(workspaces(&mut connection).unwrap()[&workspace_id], None);
+        assert_eq!(worktrees(&mut connection).unwrap()[&worktree_id], None);
+        assert_eq!(
+            origins(&mut connection).unwrap()[&origin_id],
+            Some(measured.clone())
+        );
+
+        save_if_path_unchanged(
+            &mut connection,
+            EntityId::Workspace(workspace_id),
+            &path("/workspace"),
+            Some(&measured),
+        )
+        .unwrap();
+        diesel::update(workspaces::table.find(workspace_id))
+            .set(workspaces::state.eq(WorkspaceState::Removed))
+            .execute(&mut connection)
+            .unwrap();
+        assert_eq!(workspaces(&mut connection).unwrap()[&workspace_id], None);
+    }
 }

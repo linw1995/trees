@@ -74,9 +74,9 @@ without claiming that all results were saved.
 
 ### Requirement: Refresh After Physical Lifecycle Changes
 
-Successful workspace creation and repository addition SHALL refresh the
-affected workspace, its worktrees, and their origins after physical work
-completes. Successful workspace release SHALL refresh the affected workspace
+Successful Trees CLI workspace creation and repository addition SHALL refresh
+the affected workspace, its worktrees, and their origins after physical work
+completes. Successful CLI workspace release SHALL refresh the affected workspace
 and worktrees. Successful workspace removal SHALL invalidate the removed
 workspace and worktree observations. Claiming or opening a workspace SHALL NOT
 refresh sizes. Refresh failure after a completed lifecycle operation SHALL

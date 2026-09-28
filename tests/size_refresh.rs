@@ -210,6 +210,30 @@ fn refreshes_current_workspace_and_all_entities_without_duplicate_origins() {
         workspace_status["target_workspace"]["repo_worktrees"][0]["disk_usage"]["status"],
         "complete"
     );
+    let measured_at = workspace_status["target_disk_usage"]["observed_at"].clone();
+    let opened = command(&root)
+        .current_dir(&root)
+        .args([
+            "open",
+            "--workspace-id",
+            &first.to_string(),
+            "--program=/usr/bin/true",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        opened.status.success(),
+        "{}",
+        String::from_utf8_lossy(&opened.stderr)
+    );
+    let after_open = command(&root)
+        .current_dir(&root)
+        .args(["status", &first.to_string(), "--json"])
+        .output()
+        .unwrap();
+    assert!(after_open.status.success());
+    let after_open: serde_json::Value = serde_json::from_slice(&after_open.stdout).unwrap();
+    assert_eq!(after_open["target_disk_usage"]["observed_at"], measured_at);
 
     fs::remove_dir_all(&origin_dir).unwrap();
     let stale_status = command(&root)

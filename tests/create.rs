@@ -389,6 +389,20 @@ fn manual_create_opens_an_explicit_program_in_the_workspace() {
             .to_string()
     );
 
+    let status = trees_command(&root)
+        .args(["status", "--workspace-dir"])
+        .arg(&workspace_path)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["target_disk_usage"]["status"], "complete");
+    assert_eq!(
+        status["target_workspace"]["repo_worktrees"][0]["disk_usage"]["status"],
+        "complete"
+    );
+
     git::remove_worktree(&CanonicalPath::resolve(&source).unwrap(), &workspace_path)
         .expect("created worktree should be removable");
     fs::remove_dir_all(root).expect("test root should be removable");

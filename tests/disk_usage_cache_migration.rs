@@ -25,6 +25,9 @@ fn migration_is_reversible_for_all_three_tables() {
     connection
         .revert_last_migration(trees::database::MIGRATIONS)
         .unwrap();
+    connection
+        .revert_last_migration(trees::database::MIGRATIONS)
+        .unwrap();
     for table in ["workspaces", "repo_worktrees", "origin_repositories"] {
         assert!(!has_cache_column(&mut connection, table));
     }
