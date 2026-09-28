@@ -102,6 +102,7 @@ fn status_reports_disk_usage_for_targets_and_workspace_rows() {
     let workspace_dir = root.join("workspaces/live");
     fs::create_dir_all(&workspace_dir).unwrap();
     fs::write(workspace_dir.join("data"), vec![1; 8192]).unwrap();
+    fs::write(workspace_dir.join(".git"), b"gitdir: /tmp/worktree\n").unwrap();
     let mut connection = database::connect(&database_path).unwrap();
     let active = insert_workspace(
         &mut connection,
@@ -120,6 +121,7 @@ fn status_reports_disk_usage_for_targets_and_workspace_rows() {
     drop(connection);
     let before_database = fs::read(&database_path).unwrap();
     let before_file = fs::read(workspace_dir.join("data")).unwrap();
+    let before_git_marker = fs::read(workspace_dir.join(".git")).unwrap();
 
     for view in ["pools", "workspaces", "repos"] {
         let output = command(&root)
@@ -260,6 +262,10 @@ fn status_reports_disk_usage_for_targets_and_workspace_rows() {
         .contains("Disk usage  unavailable (workspace directory missing)"));
     assert_eq!(fs::read(&database_path).unwrap(), before_database);
     assert_eq!(fs::read(workspace_dir.join("data")).unwrap(), before_file);
+    assert_eq!(
+        fs::read(workspace_dir.join(".git")).unwrap(),
+        before_git_marker
+    );
     fs::remove_dir_all(root).unwrap();
 }
 

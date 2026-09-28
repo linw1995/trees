@@ -41,9 +41,9 @@
 
 ## 4. Integration Checks
 
-- [ ] 4.1 Run formatting, Clippy, the relevant status and CLI tests, and strict
+- [x] 4.1 Run formatting, Clippy, the relevant status and CLI tests, and strict
   OpenSpec validation; verify all checks pass.
-- [ ] 4.2 Measure representative large-workspace and many-workspace scans,
+- [x] 4.2 Measure representative large-workspace and many-workspace scans,
   confirm bounded scan concurrency and unchanged database, Git metadata, and
   workspace contents, and record timing and platform coverage in
   `verification.md`.
