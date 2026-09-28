@@ -24,6 +24,7 @@ leases
 v7
 diagnosable
 lifecycle
+inode
 rustfmt
 worktree
 worktrees
