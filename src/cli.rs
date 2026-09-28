@@ -41,37 +41,8 @@ pub enum Command {
     Remove(RemoveArgs),
     #[command(about = "Inspect persisted pools, workspaces, or source repositories")]
     Status(StatusArgs),
-    #[command(about = "Manage cached workspace and repository disk usage")]
-    Size(SizeArgs),
     #[command(about = "Open a program in a workspace or source repository")]
     Open(OpenArgs),
-}
-
-#[derive(Debug, Args)]
-pub struct SizeArgs {
-    #[command(subcommand)]
-    pub command: SizeCommand,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum SizeCommand {
-    #[command(about = "Measure and store registered disk usage")]
-    Refresh(SizeRefreshArgs),
-}
-
-#[derive(Debug, Args)]
-pub struct SizeRefreshArgs {
-    #[arg(long, value_name = "WORKSPACE_ID", conflicts_with_all = ["origin_id", "all"])]
-    pub workspace_id: Option<crate::domain::WorkspaceId>,
-
-    #[arg(long, value_name = "ORIGIN_ID", conflicts_with_all = ["workspace_id", "all"])]
-    pub origin_id: Option<crate::domain::OriginRepositoryId>,
-
-    #[arg(long, conflicts_with_all = ["workspace_id", "origin_id"])]
-    pub all: bool,
-
-    #[arg(long, help = "Print refresh counts as JSON")]
-    pub json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -347,48 +318,6 @@ mod tests {
     use clap::Parser;
 
     use super::*;
-
-    #[test]
-    fn parses_size_refresh_targets_and_rejects_conflicts() {
-        for args in [
-            vec!["trees", "size", "refresh"],
-            vec!["trees", "size", "refresh", "--all"],
-            vec!["trees", "size", "refresh", "--json"],
-        ] {
-            assert!(matches!(
-                Cli::try_parse_from(args).unwrap().command,
-                Command::Size(_)
-            ));
-        }
-        let workspace_id = crate::domain::WorkspaceId::new().to_string();
-        let origin_id = crate::domain::OriginRepositoryId::new().to_string();
-        assert!(
-            Cli::try_parse_from(["trees", "size", "refresh", "--workspace-id", &workspace_id])
-                .is_ok()
-        );
-        assert!(
-            Cli::try_parse_from(["trees", "size", "refresh", "--origin-id", &origin_id]).is_ok()
-        );
-        assert!(Cli::try_parse_from([
-            "trees",
-            "size",
-            "refresh",
-            "--all",
-            "--workspace-id",
-            &workspace_id
-        ])
-        .is_err());
-        assert!(Cli::try_parse_from([
-            "trees",
-            "size",
-            "refresh",
-            "--origin-id",
-            &origin_id,
-            "--workspace-id",
-            &workspace_id
-        ])
-        .is_err());
-    }
 
     #[test]
     fn parses_multiple_repository_arguments() {

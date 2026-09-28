@@ -11,8 +11,8 @@ observation, and worktree sizes cannot be added to derive the workspace size.
 ## Goals / Non-Goals
 
 **Goals:** Make status latency independent of directory entry counts, keep
-measurement age visible, refresh all three entity types on demand and after
-physical lifecycle changes, and preserve nonfatal scan failures.
+measurement age visible, refresh all three entity types after physical
+lifecycle changes, and preserve nonfatal scan failures.
 
 **Non-Goals:** Detecting arbitrary edits made outside Trees, background
 scheduling, quota accounting, or deriving reclaimable space from stored sizes.
@@ -39,15 +39,12 @@ edits do not pass through Trees.
 
 ### Refresh Outside Database Transactions
 
-An explicit `trees size refresh` command selects the current workspace by
-default, `--workspace-id` selects another workspace, `--origin-id` selects a
-source repository, and `--all` refreshes all registered paths. A workspace
-refresh includes its root, its repository worktrees, and their referenced
-origins. `--all` deduplicates shared origin repositories and scans each stored
-entity once. It scans paths without holding a database transaction, then
-writes observations in a short transaction only if each entity still has the
-same stored path. A path changed during scanning is skipped rather than
-receiving a result for the old path.
+An internal refresh service selects the affected workspace root, its active
+repository worktrees, and their referenced origins after a successful lifecycle
+operation. It scans paths without holding a database transaction, then writes
+observations in short transactions only if each entity still has the same
+stored path. A path changed during scanning is skipped rather than receiving
+a result for the old path.
 
 Successful create, add, and release operations refresh affected workspace and
 repository observations after their physical work completes. Successful
@@ -73,14 +70,15 @@ remain independent of tree size, including `--json` and `--all`.
 ## Risks / Trade-Offs
 
 - Cached values can be stale immediately after external edits. Always expose
-  `observed_at`, document explicit refresh, and label unmeasured values
+  `observed_at`, document lifecycle-only updates, and label unmeasured values
   `unknown`.
 - Lifecycle refresh adds latency to write commands. Run it after physical work
   and outside long database transactions, and keep failures nonfatal.
 - JSON stored in SQLite needs validation. Serialize from one typed model and
   reject malformed persisted values on read.
 - Existing databases start with unknown sizes. The migration does not scan
-  filesystem paths; users can refresh all values explicitly.
+  filesystem paths; each value is populated when an affected lifecycle command
+  next runs.
 
 ## Migration Plan
 

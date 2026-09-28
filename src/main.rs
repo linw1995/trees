@@ -31,7 +31,6 @@ fn run(cli: trees::cli::Cli) -> Result<ExitCode, CliError> {
         trees::cli::Command::Gc(arguments) => run_gc(arguments),
         trees::cli::Command::Remove(arguments) => run_remove(arguments),
         trees::cli::Command::Status(arguments) => run_status(arguments),
-        trees::cli::Command::Size(arguments) => run_size(arguments),
         trees::cli::Command::Open(arguments) => run_open(arguments),
     }
 }
@@ -175,10 +174,10 @@ fn run_automatic_create(
     )?;
     let mut connection = trees::database::open_default()?;
     let result = trees::workspace::allocate_automatic_workspace(&mut connection, &plan)?;
-    warn_refresh_selection(
+    report_refresh(trees::size_refresh::refresh_path(
         &mut connection,
-        trees::size_refresh::Selection::CurrentDirectory(result.workspace_path.clone()),
-    );
+        &result.workspace_path,
+    ));
     drop(connection);
     if let Some(program) = open {
         if release_on_exit {
@@ -328,24 +327,22 @@ fn warn_refresh_workspace(
     connection: &mut diesel::SqliteConnection,
     id: trees::domain::WorkspaceId,
 ) {
-    warn_refresh_selection(connection, trees::size_refresh::Selection::Workspace(id));
+    report_refresh(trees::size_refresh::refresh_workspace(connection, id));
 }
 
 fn warn_refresh_path(path: &trees::domain::CanonicalPath) {
     match trees::database::open_existing() {
-        Ok(mut connection) => warn_refresh_selection(
-            &mut connection,
-            trees::size_refresh::Selection::CurrentDirectory(path.clone()),
-        ),
+        Ok(mut connection) => {
+            report_refresh(trees::size_refresh::refresh_path(&mut connection, path))
+        }
         Err(error) => eprintln!("[trees] Warning: disk usage refresh failed: {error}"),
     }
 }
 
-fn warn_refresh_selection(
-    connection: &mut diesel::SqliteConnection,
-    selection: trees::size_refresh::Selection,
+fn report_refresh(
+    result: Result<trees::size_refresh::RefreshSummary, trees::size_refresh::RefreshError>,
 ) {
-    match trees::size_refresh::refresh(connection, selection) {
+    match result {
         Ok(summary) if summary.partial + summary.unavailable + summary.skipped > 0 => {
             eprintln!(
                 "[trees] Warning: disk usage refresh incomplete: partial={} unavailable={} skipped={}",
@@ -697,36 +694,6 @@ fn run_status(arguments: trees::cli::StatusArgs) -> Result<ExitCode, CliError> {
     }
 }
 
-fn run_size(arguments: trees::cli::SizeArgs) -> Result<ExitCode, CliError> {
-    match arguments.command {
-        trees::cli::SizeCommand::Refresh(arguments) => {
-            let selection = if let Some(id) = arguments.workspace_id {
-                trees::size_refresh::Selection::Workspace(id)
-            } else if let Some(id) = arguments.origin_id {
-                trees::size_refresh::Selection::Origin(id)
-            } else if arguments.all {
-                trees::size_refresh::Selection::All
-            } else {
-                let cwd = std::env::current_dir().context(SizeCurrentDirectorySnafu)?;
-                trees::size_refresh::Selection::CurrentDirectory(
-                    trees::domain::CanonicalPath::resolve(cwd)?,
-                )
-            };
-            let mut connection = trees::database::open_default()?;
-            let summary = trees::size_refresh::refresh(&mut connection, selection)?;
-            if arguments.json {
-                print_json(&summary)
-            } else {
-                println!(
-                    "complete={} partial={} unavailable={} skipped={}",
-                    summary.complete, summary.partial, summary.unavailable, summary.skipped
-                );
-                Ok(ExitCode::SUCCESS)
-            }
-        }
-    }
-}
-
 fn status_color_enabled() -> bool {
     io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
 }
@@ -796,12 +763,6 @@ enum CliError {
     Database {
         source: trees::database::DatabaseError,
     },
-    #[snafu(transparent)]
-    SizeRefresh {
-        source: trees::size_refresh::RefreshError,
-    },
-    #[snafu(display("failed to resolve size refresh invocation directory: {source}"))]
-    SizeCurrentDirectory { source: io::Error },
     #[snafu(transparent)]
     Workspace {
         source: trees::workspace::WorkspaceError,

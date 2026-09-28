@@ -99,7 +99,7 @@ fn add_workspace(
 }
 
 #[test]
-fn refreshes_current_workspace_and_all_entities_without_duplicate_origins() {
+fn lifecycle_refresh_updates_workspace_worktree_and_origin_caches() {
     let root = root();
     let origin_dir = root.join("origin");
     let first_dir = root.join("workspaces/first");
@@ -123,23 +123,12 @@ fn refreshes_current_workspace_and_all_entities_without_duplicate_origins() {
     .unwrap();
     let (first, first_worktree) = add_workspace(&mut connection, &first_dir, origin.id);
     let (second, _) = add_workspace(&mut connection, &second_dir, origin.id);
-    drop(connection);
-
-    let output = command(&root)
-        .current_dir(first_dir.join("repo"))
-        .args(["size", "refresh"])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
     assert_eq!(
-        output.stdout,
-        b"complete=3 partial=0 unavailable=0 skipped=0\n"
+        trees::size_refresh::refresh_workspace(&mut connection, first)
+            .unwrap()
+            .complete,
+        3
     );
-    let mut connection = database::connect_read_only(&database_path).unwrap();
     assert_eq!(
         disk_usage_cache::workspaces(&mut connection).unwrap()[&first]
             .as_ref()
@@ -163,17 +152,13 @@ fn refreshes_current_workspace_and_all_entities_without_duplicate_origins() {
             > 0
     );
     assert!(disk_usage_cache::workspaces(&mut connection).unwrap()[&second].is_none());
+    assert_eq!(
+        trees::size_refresh::refresh_workspace(&mut connection, second)
+            .unwrap()
+            .complete,
+        3
+    );
     drop(connection);
-
-    let output = command(&root)
-        .current_dir(&root)
-        .args(["size", "refresh", "--all", "--json"])
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["complete"], 5);
-    assert_eq!(json["skipped"], 0);
 
     let repo_status = command(&root)
         .current_dir(&root)
@@ -244,21 +229,9 @@ fn refreshes_current_workspace_and_all_entities_without_duplicate_origins() {
     assert!(stale_status.status.success());
     let stale_status: serde_json::Value = serde_json::from_slice(&stale_status.stdout).unwrap();
     assert_eq!(stale_status["repos"][0]["disk_usage"]["status"], "complete");
-    let output = command(&root)
-        .current_dir(&root)
-        .args([
-            "size",
-            "refresh",
-            "--origin-id",
-            &origin.id.to_string(),
-            "--json",
-        ])
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["unavailable"], 1);
-    let mut connection = database::connect_read_only(&database_path).unwrap();
+    let mut connection = database::connect(&database_path).unwrap();
+    let summary = trees::size_refresh::refresh_workspace(&mut connection, first).unwrap();
+    assert_eq!(summary.unavailable, 1);
     assert_eq!(
         disk_usage_cache::origins(&mut connection).unwrap()[&origin.id]
             .as_ref()
@@ -266,19 +239,20 @@ fn refreshes_current_workspace_and_all_entities_without_duplicate_origins() {
             .status,
         Completeness::Unavailable
     );
+    assert!(trees::size_refresh::refresh_workspace(&mut connection, WorkspaceId::new()).is_err());
     drop(connection);
 
-    let output = command(&root)
-        .current_dir(&root)
-        .args([
-            "size",
-            "refresh",
-            "--workspace-id",
-            &WorkspaceId::new().to_string(),
-        ])
+    let command_help = command(&root).arg("--help").output().unwrap();
+    assert!(command_help.status.success());
+    let command_help = String::from_utf8(command_help.stdout).unwrap();
+    assert!(!command_help
+        .lines()
+        .any(|line| line.trim_start().starts_with("size ")));
+    assert!(!command(&root)
+        .args(["size", "refresh"])
         .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
+        .unwrap()
+        .status
+        .success());
     fs::remove_dir_all(root).unwrap();
 }

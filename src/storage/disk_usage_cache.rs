@@ -7,8 +7,8 @@ use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 use snafu::{ensure, ResultExt, Snafu};
 
+use crate::domain::RepoWorktreeState;
 use crate::domain::{CanonicalPath, OriginRepositoryId, RepoWorktreeId, WorkspaceId};
-use crate::domain::{RepoWorktreeState, WorkspaceState};
 use crate::schema::{origin_repositories, repo_worktrees, workspaces};
 use crate::status::disk_usage::{Completeness, Observation};
 
@@ -203,71 +203,6 @@ pub fn workspace_candidates(
             }),
     );
     Ok(Some(candidates))
-}
-
-pub fn origin_candidate(
-    connection: &mut SqliteConnection,
-    id: OriginRepositoryId,
-) -> Result<Option<Candidate>, CacheError> {
-    origin_repositories::table
-        .find(id)
-        .select((origin_repositories::id, origin_repositories::source_path))
-        .first::<(OriginRepositoryId, CanonicalPath)>(connection)
-        .optional()
-        .context(QuerySnafu { kind: "origin" })
-        .map(|row| {
-            row.map(|(id, path)| Candidate {
-                entity: EntityId::Origin(id),
-                path,
-            })
-        })
-}
-
-pub fn all_candidates(connection: &mut SqliteConnection) -> Result<Vec<Candidate>, CacheError> {
-    let workspaces = workspaces::table
-        .filter(workspaces::state.ne(WorkspaceState::Removed))
-        .order(workspaces::canonical_path.asc())
-        .select((workspaces::id, workspaces::canonical_path))
-        .load::<(WorkspaceId, CanonicalPath)>(connection)
-        .context(QuerySnafu { kind: "workspace" })?;
-    let current_ids = workspaces
-        .iter()
-        .map(|(id, _)| *id)
-        .collect::<std::collections::HashSet<_>>();
-    let worktrees = repo_worktrees::table
-        .filter(repo_worktrees::state.ne(RepoWorktreeState::Removed))
-        .order(repo_worktrees::worktree_path.asc())
-        .select((
-            repo_worktrees::id,
-            repo_worktrees::workspace_id,
-            repo_worktrees::worktree_path,
-        ))
-        .load::<(RepoWorktreeId, WorkspaceId, CanonicalPath)>(connection)
-        .context(QuerySnafu { kind: "worktree" })?;
-    let origins = origin_repositories::table
-        .order(origin_repositories::source_path.asc())
-        .select((origin_repositories::id, origin_repositories::source_path))
-        .load::<(OriginRepositoryId, CanonicalPath)>(connection)
-        .context(QuerySnafu { kind: "origin" })?;
-    let mut candidates = Vec::with_capacity(workspaces.len() + worktrees.len() + origins.len());
-    candidates.extend(workspaces.into_iter().map(|(id, path)| Candidate {
-        entity: EntityId::Workspace(id),
-        path,
-    }));
-    candidates.extend(
-        worktrees
-            .into_iter()
-            .filter(|(_, workspace_id, _)| current_ids.contains(workspace_id))
-            .map(|(id, _, path)| Candidate {
-                entity: EntityId::Worktree(id),
-                path,
-            }),
-    );
-    candidates.extend(origins.into_iter().map(|(id, path)| Candidate {
-        entity: EntityId::Origin(id),
-        path,
-    }));
-    Ok(candidates)
 }
 
 pub fn save_if_path_unchanged(

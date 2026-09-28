@@ -11,16 +11,15 @@
 - [x] 1.3 Document the migration and unknown initial state in `docs/status.md`.
   Verify the documented upgrade path matches the read-only database behavior.
 
-## 2. Explicit Refresh
+## 2. Internal Refresh Service
 
-- [x] 2.1 Add `trees size refresh` selectors for current workspace, workspace
-  ID, origin ID, and all entities. Verify parser conflicts and missing targets.
-- [x] 2.2 Scan selected workspace, worktree, and origin paths once per entity
-  outside write transactions, then persist conditional results. Verify shared
-  origins, missing directories, partial scans, changed paths, and summary
-  counts with controlled fixtures.
-- [x] 2.3 Document refresh commands and measurement age in `docs/status.md`.
-  Verify command examples against CLI tests.
+- [x] 2.1 Select an affected workspace by stored ID or path for internal
+  refresh. Verify missing targets do not start a scan.
+- [x] 2.2 Scan its workspace, worktree, and origin paths once per entity outside
+  write transactions, then persist conditional results. Verify shared origins,
+  missing directories, partial scans, and changed paths with fixtures.
+- [x] 2.3 Document lifecycle measurement timing and age in `docs/status.md`.
+  Verify the documented cases against CLI lifecycle tests.
 
 ## 3. Cached Status Output
 

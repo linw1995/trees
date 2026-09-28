@@ -15,7 +15,9 @@ struct StoredRow {
 #[test]
 fn removal_upgrade_and_rollback_preserve_records_and_history() {
     let mut db = database::connect(std::path::Path::new(":memory:")).unwrap();
-    db.revert_last_migration(database::MIGRATIONS).unwrap();
+    for _ in 0..3 {
+        db.revert_last_migration(database::MIGRATIONS).unwrap();
+    }
     let workspace_id = WorkspaceId::new();
     let repo_id = WorkspaceId::new();
     let worktree_id = WorkspaceId::new();
@@ -96,7 +98,9 @@ fn removal_upgrade_and_rollback_preserve_records_and_history() {
             .load::<ForeignKeyViolation>(&mut db)
             .unwrap()
             .is_empty());
-        db.revert_last_migration(database::MIGRATIONS).unwrap();
+        for _ in 0..3 {
+            db.revert_last_migration(database::MIGRATIONS).unwrap();
+        }
         let row = diesel::sql_query("SELECT state, reclaimed_at AS timestamp FROM workspaces")
             .get_result::<StoredRow>(&mut db)
             .unwrap();

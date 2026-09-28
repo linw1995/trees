@@ -31,6 +31,20 @@ fn workspace(id: WorkspaceId, path: CanonicalPath) -> NewWorkspace {
     }
 }
 
+fn revert_to_foundation(connection: &mut diesel::sqlite::SqliteConnection) {
+    for migration in [
+        "removal cache",
+        "disk usage cache",
+        "terminology",
+        "origin",
+        "feature",
+    ] {
+        connection
+            .revert_last_migration(database::MIGRATIONS)
+            .unwrap_or_else(|error| panic!("{migration} migration should revert: {error}"));
+    }
+}
+
 #[test]
 fn embedded_migrations_can_be_reverted_and_rerun() {
     let path = database_path();
@@ -55,15 +69,7 @@ fn embedded_migrations_can_be_reverted_and_rerun() {
 fn combined_feature_migration_preserves_legacy_workspace() {
     let path = database_path();
     let mut connection = database::connect(&path).expect("database should open");
-    connection
-        .revert_last_migration(database::MIGRATIONS)
-        .expect("terminology migration should revert");
-    connection
-        .revert_last_migration(database::MIGRATIONS)
-        .expect("origin migration should revert");
-    connection
-        .revert_last_migration(database::MIGRATIONS)
-        .expect("feature migration should revert");
+    revert_to_foundation(&mut connection);
 
     let workspace_id = WorkspaceId::new();
     let repo_worktree_id = trees::domain::RepoWorktreeId::new();
@@ -126,15 +132,7 @@ fn combined_feature_migration_preserves_legacy_workspace() {
 fn combined_feature_migration_preserves_legacy_operation_lease() {
     let path = database_path();
     let mut connection = database::connect(&path).expect("database should open");
-    connection
-        .revert_last_migration(database::MIGRATIONS)
-        .expect("terminology migration should revert");
-    connection
-        .revert_last_migration(database::MIGRATIONS)
-        .expect("origin migration should revert");
-    connection
-        .revert_last_migration(database::MIGRATIONS)
-        .expect("feature migration should revert");
+    revert_to_foundation(&mut connection);
 
     let workspace_id = WorkspaceId::new();
     let operation_id = trees::domain::OperationId::new();
@@ -252,9 +250,11 @@ fn migration_preserves_operation_and_event_rows_without_rebuilding_them() {
     )
     .expect("event should be inserted");
 
-    connection
-        .revert_last_migration(database::MIGRATIONS)
-        .expect("migration should downgrade");
+    for _ in 0..3 {
+        connection
+            .revert_last_migration(database::MIGRATIONS)
+            .expect("migration should downgrade");
+    }
     assert_eq!(
         find_operation(&mut connection, &operation.id)
             .expect("operation should survive downgrade")
@@ -319,7 +319,7 @@ fn embedded_migrations_are_consolidated() {
     let mut connection = database::connect(&path).expect("database should open");
     let migrations = MigrationSource::<diesel::sqlite::Sqlite>::migrations(&database::MIGRATIONS)
         .expect("embedded migrations should load");
-    assert_eq!(migrations.len(), 4);
+    assert_eq!(migrations.len(), 6);
     assert!(trees::storage::find_workspace_claim_by_id(
         &mut connection,
         &trees::domain::ClaimId::new(),

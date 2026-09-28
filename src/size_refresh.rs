@@ -2,23 +2,20 @@ use std::path::Path;
 
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
-use serde::Serialize;
 use snafu::{OptionExt, Snafu};
 
-use crate::domain::{CanonicalPath, OriginRepositoryId, WorkspaceId};
+use crate::domain::{CanonicalPath, WorkspaceId};
 use crate::status::disk_usage::{self, Completeness, Observation};
 use crate::storage::disk_usage_cache::{self, CacheError, Candidate};
 use crate::workspace_locator::{locate, LocateError, WorkspaceSelector};
 
 #[derive(Debug, Clone)]
-pub enum Selection {
-    CurrentDirectory(CanonicalPath),
+enum Target {
+    Path(CanonicalPath),
     Workspace(WorkspaceId),
-    Origin(OriginRepositoryId),
-    All,
 }
 
-#[derive(Debug, Default, Clone, Copy, Eq, PartialEq, Serialize)]
+#[derive(Debug, Default, Clone, Copy, Eq, PartialEq)]
 pub struct RefreshSummary {
     pub complete: usize,
     pub partial: usize,
@@ -41,16 +38,14 @@ pub enum RefreshError {
     CurrentWorkspaceUnknown { path: CanonicalPath },
     #[snafu(display("unknown workspace: {id}"))]
     WorkspaceUnknown { id: WorkspaceId },
-    #[snafu(display("unknown source repository: {id}"))]
-    OriginUnknown { id: OriginRepositoryId },
 }
 
 fn candidates(
     connection: &mut SqliteConnection,
-    selection: &Selection,
+    target: &Target,
 ) -> Result<Vec<Candidate>, RefreshError> {
-    match selection {
-        Selection::CurrentDirectory(path) => {
+    match target {
+        Target::Path(path) => {
             let located = locate(
                 connection,
                 &WorkspaceSelector::ContainingDirectory(path.clone()),
@@ -62,29 +57,32 @@ fn candidates(
                 },
             )
         }
-        Selection::Workspace(id) => disk_usage_cache::workspace_candidates(connection, *id)?
+        Target::Workspace(id) => disk_usage_cache::workspace_candidates(connection, *id)?
             .context(WorkspaceUnknownSnafu { id: *id }),
-        Selection::Origin(id) => disk_usage_cache::origin_candidate(connection, *id)?
-            .map(|candidate| vec![candidate])
-            .context(OriginUnknownSnafu { id: *id }),
-        Selection::All => Ok(disk_usage_cache::all_candidates(connection)?),
     }
 }
 
-pub fn refresh(
+pub fn refresh_workspace(
     connection: &mut SqliteConnection,
-    selection: Selection,
+    id: WorkspaceId,
 ) -> Result<RefreshSummary, RefreshError> {
-    refresh_with_observer(connection, selection, disk_usage::observe)
+    refresh_with_observer(connection, Target::Workspace(id), disk_usage::observe)
+}
+
+pub fn refresh_path(
+    connection: &mut SqliteConnection,
+    path: &CanonicalPath,
+) -> Result<RefreshSummary, RefreshError> {
+    refresh_with_observer(connection, Target::Path(path.clone()), disk_usage::observe)
 }
 
 fn refresh_with_observer(
     connection: &mut SqliteConnection,
-    selection: Selection,
+    target: Target,
     mut observe: impl FnMut(&Path) -> Observation,
 ) -> Result<RefreshSummary, RefreshError> {
     let selected = connection
-        .transaction::<_, RefreshError, _>(|connection| candidates(connection, &selection))?;
+        .transaction::<_, RefreshError, _>(|connection| candidates(connection, &target))?;
     let mut summary = RefreshSummary::default();
     for candidate in selected {
         let observation = observe(candidate.path.as_path());
@@ -112,7 +110,8 @@ mod tests {
 
     use super::*;
     use crate::domain::{
-        RepoWorktreeId, RepoWorktreeState, Timestamp, WorkspaceManagementMode, WorkspaceState,
+        OriginRepositoryId, RepoWorktreeId, RepoWorktreeState, Timestamp, WorkspaceManagementMode,
+        WorkspaceState,
     };
     use crate::status::disk_usage::{Issue, IssueCode};
     use crate::storage::{
@@ -184,18 +183,18 @@ mod tests {
     }
 
     #[test]
-    fn all_deduplicates_shared_origins_and_selectors_limit_scans() {
+    fn workspace_refresh_includes_each_worktree_and_shared_origin_once() {
         let mut connection = crate::database::connect(std::path::Path::new(":memory:")).unwrap();
         let (first, second, origin) = fixture(&mut connection);
         let calls = RefCell::new(Vec::new());
-        let summary = refresh_with_observer(&mut connection, Selection::All, |path| {
+        let summary = refresh_with_observer(&mut connection, Target::Workspace(first), |path| {
             calls.borrow_mut().push(path.to_path_buf());
             observation(Completeness::Complete)
         })
         .unwrap();
-        assert_eq!(summary.complete, 5);
+        assert_eq!(summary.complete, 3);
         let calls = calls.into_inner();
-        assert_eq!(calls.len(), 5);
+        assert_eq!(calls.len(), 3);
         assert_eq!(
             calls
                 .iter()
@@ -208,23 +207,21 @@ mod tests {
             2
         );
 
-        let summary = refresh_with_observer(&mut connection, Selection::Workspace(first), |_| {
+        assert!(disk_usage_cache::origins(&mut connection).unwrap()[&origin].is_some());
+        assert!(disk_usage_cache::workspaces(&mut connection).unwrap()[&second].is_none());
+
+        let summary = refresh_with_observer(&mut connection, Target::Workspace(first), |_| {
             observation(Completeness::Partial)
         })
         .unwrap();
         assert_eq!(summary.partial, 3);
         let summary = refresh_with_observer(
             &mut connection,
-            Selection::CurrentDirectory(path("/work/b/repo/nested")),
+            Target::Path(path("/work/b/repo/nested")),
             |_| observation(Completeness::Unavailable),
         )
         .unwrap();
         assert_eq!(summary.unavailable, 3);
-        let summary = refresh_with_observer(&mut connection, Selection::Origin(origin), |_| {
-            observation(Completeness::Complete)
-        })
-        .unwrap();
-        assert_eq!(summary.complete, 1);
         assert!(disk_usage_cache::workspaces(&mut connection)
             .unwrap()
             .contains_key(&second));
@@ -236,18 +233,16 @@ mod tests {
         assert!(matches!(
             refresh_with_observer(
                 &mut connection,
-                Selection::Workspace(WorkspaceId::new()),
+                Target::Workspace(WorkspaceId::new()),
                 |_| { panic!("unknown target must not be scanned") }
             ),
             Err(RefreshError::WorkspaceUnknown { .. })
         ));
         assert!(matches!(
-            refresh_with_observer(
-                &mut connection,
-                Selection::Origin(OriginRepositoryId::new()),
-                |_| { panic!("unknown origin must not be scanned") }
-            ),
-            Err(RefreshError::OriginUnknown { .. })
+            refresh_with_observer(&mut connection, Target::Path(path("/outside")), |_| {
+                panic!("unknown path must not be scanned")
+            }),
+            Err(RefreshError::CurrentWorkspaceUnknown { .. })
         ));
     }
 
@@ -257,17 +252,26 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let database_path = root.join("state.sqlite");
         let mut connection = crate::database::connect(&database_path).unwrap();
-        let (_, _, origin) = fixture(&mut connection);
-        let summary = refresh_with_observer(&mut connection, Selection::Origin(origin), |_| {
-            let mut writer = crate::database::connect(&database_path).unwrap();
-            diesel::update(crate::schema::origin_repositories::table.find(origin))
-                .set(crate::schema::origin_repositories::source_path.eq(path("/new-origin")))
-                .execute(&mut writer)
-                .unwrap();
-            observation(Completeness::Complete)
-        })
+        let (workspace, _, origin) = fixture(&mut connection);
+        let summary = refresh_with_observer(
+            &mut connection,
+            Target::Workspace(workspace),
+            |observed_path| {
+                if observed_path == Path::new("/origin") {
+                    let mut writer = crate::database::connect(&database_path).unwrap();
+                    diesel::update(crate::schema::origin_repositories::table.find(origin))
+                        .set(
+                            crate::schema::origin_repositories::source_path.eq(path("/new-origin")),
+                        )
+                        .execute(&mut writer)
+                        .unwrap();
+                }
+                observation(Completeness::Complete)
+            },
+        )
         .unwrap();
         assert_eq!(summary.skipped, 1);
+        assert_eq!(summary.complete, 2);
         assert_eq!(
             disk_usage_cache::origins(&mut connection).unwrap()[&origin],
             None

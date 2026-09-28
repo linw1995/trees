@@ -132,12 +132,14 @@ fn status_reports_disk_usage_for_targets_and_workspace_rows() {
     assert_eq!(unknown["target_disk_usage"]["status"], "unknown");
     assert!(unknown["target_disk_usage"]["observed_at"].is_null());
 
-    let refresh = command(&root)
-        .current_dir(&root)
-        .args(["size", "refresh", "--workspace-id", &active.to_string()])
-        .output()
-        .unwrap();
-    assert!(refresh.status.success());
+    let mut connection = database::connect(&database_path).unwrap();
+    assert_eq!(
+        trees::size_refresh::refresh_workspace(&mut connection, active)
+            .unwrap()
+            .complete,
+        1
+    );
+    drop(connection);
 
     for view in ["pools", "workspaces", "repos"] {
         let output = command(&root)
@@ -206,12 +208,14 @@ fn status_reports_disk_usage_for_targets_and_workspace_rows() {
         let blocked = workspace_dir.join("blocked");
         fs::create_dir(&blocked).unwrap();
         fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000)).unwrap();
-        let refresh = command(&root)
-            .current_dir(&root)
-            .args(["size", "refresh", "--workspace-id", &active.to_string()])
-            .output()
-            .unwrap();
-        assert!(refresh.status.success());
+        let mut connection = database::connect(&database_path).unwrap();
+        assert_eq!(
+            trees::size_refresh::refresh_workspace(&mut connection, active)
+                .unwrap()
+                .partial,
+            1
+        );
+        drop(connection);
         let output = command(&root)
             .current_dir(&root)
             .args([
@@ -244,12 +248,14 @@ fn status_reports_disk_usage_for_targets_and_workspace_rows() {
         fs::remove_dir(blocked).unwrap();
     }
 
-    let refresh = command(&root)
-        .current_dir(&root)
-        .args(["size", "refresh", "--workspace-id", &removed.to_string()])
-        .output()
-        .unwrap();
-    assert!(refresh.status.success());
+    let mut connection = database::connect(&database_path).unwrap();
+    assert_eq!(
+        trees::size_refresh::refresh_workspace(&mut connection, removed)
+            .unwrap()
+            .unavailable,
+        1
+    );
+    drop(connection);
     let before_database = fs::read(&database_path).unwrap();
 
     let output = command(&root)

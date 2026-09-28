@@ -145,7 +145,7 @@ workspace lifecycle eligibility or imply current or reclaimable space.
 
 #### Scenario: Count Allocated Space Without Following Links
 
-- **WHEN** an explicit refresh measures sparse files, hard links, hidden entries,
+- **WHEN** a lifecycle refresh measures sparse files, hard links, hidden entries,
   and a symbolic link outside a registered path
 - **THEN** status later displays the stored allocated-block observation without
   running another filesystem scan

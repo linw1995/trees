@@ -124,34 +124,22 @@ not scan paths; existing records begin without a stored observation. As with
 other schema changes, a writable command applies the migration before
 read-only status can use the updated database.
 
-## Refresh Stored Disk Usage
+## Measurement Timing
 
-Use `trees size refresh` from a workspace to measure its root, repository
-worktrees, and referenced source repositories. Explicit selectors and an all
-inventory option are also available:
-
-```sh
-trees size refresh
-trees size refresh --workspace-id WORKSPACE_ID
-trees size refresh --origin-id ORIGIN_ID
-trees size refresh --all
-trees size refresh --all --json
-```
-
-The command stores each measurement and its `observed_at` time. It scans
-outside database write transactions and writes each result only if the
-registered path still matches the path it measured. Missing or unreadable
-paths become unavailable or partial observations; a changed path is skipped.
-Human output reports `complete`, `partial`, `unavailable`, and `skipped`
-counts. These values describe the last refresh, not changes made afterward.
-
-Successful `create`, `add`, and `release` commands refresh the affected
-workspace and repository measurements after physical work completes. Workspace
+Trees measures disk usage after successful `create`, `add`, and `release`
+commands complete their physical work. It measures the affected workspace,
+its repository worktrees, and their registered source repositories. Workspace
 removal, including GC, invalidates the removed workspace and worktree values;
-source repositories retain their own measurements while registered. `claim`
-and `open` do not refresh sizes. A refresh problem after a completed lifecycle
-operation emits a warning but does not undo that operation. Files changed by
-other programs need an explicit refresh to update the stored amount.
+source repositories retain their own measurements while registered. `claim`,
+`open`, and `status` do not scan directories for size.
+
+A measurement runs outside long database write transactions and is saved only
+if the registered path still matches the measured path. Missing or unreadable
+paths produce unavailable or partial observations. A refresh problem after a
+completed lifecycle command emits a warning without undoing that command.
+Files changed by other programs do not automatically update the cached amount;
+its `observed_at` value shows when Trees last measured it. Existing records
+remain `unknown` until an affected lifecycle command measures them.
 
 ## Processes
 

@@ -31,46 +31,36 @@ filesystem facts.
 - **THEN** its stored observation records the failed measurement and time
   without replacing it with a fabricated zero
 
-### Requirement: Refresh Registered Disk Usage Explicitly
+### Requirement: Measure Affected Entity Paths
 
-The CLI SHALL provide `trees size refresh` for the workspace containing the
-current directory, `--workspace-id WORKSPACE_ID` for a selected workspace,
-`--origin-id ORIGIN_ID` for a source repository, and `--all` for all registered
-entities. These selectors SHALL be mutually exclusive. A workspace refresh
-SHALL include its root, its repository worktrees, and their referenced origin
-repositories. An all refresh SHALL include every current workspace, worktree,
-and origin, deduplicating shared entities. A missing explicit target SHALL
-fail before scanning. Each entity SHALL be scanned at most once per request.
+When a successful lifecycle command requests a size update, Trees SHALL
+measure the affected workspace root, its active repository worktrees, and
+referenced origin repositories. Shared origins SHALL be measured once per
+operation. Trees SHALL read entity IDs and paths, end the selection transaction,
+measure without holding a database write transaction, and persist each result
+only if that entity still has the same stored path. A changed path SHALL be
+skipped. An unreadable or missing entity SHALL produce a partial or unavailable
+observation without preventing other selected entities from being measured.
+Trees SHALL NOT expose a separate size refresh command.
 
-The command SHALL read entity IDs and paths, close the read transaction,
-measure without holding a database write transaction, and persist results in
-short writes only if the stored entity path still matches the measured path.
-The command SHALL report complete, partial, unavailable, and skipped counts.
-An individual unreadable or missing path SHALL not prevent other entities from
-being refreshed. A database write failure SHALL return a nonzero exit status
-without claiming that all results were saved.
+#### Scenario: Measure a Workspace and Its Repositories
 
-#### Scenario: Refresh the Current Workspace
-
-- **WHEN** refresh runs inside a registered workspace without a selector
-- **THEN** it measures that workspace, its worktrees, and their origins
-
-#### Scenario: Refresh an Origin
-
-- **WHEN** refresh receives `--origin-id` for a stored source repository
-- **THEN** it measures only that origin's current source path
-
-#### Scenario: Refresh All Entities Once
-
-- **WHEN** multiple workspaces reference the same origin and `--all` is used
-- **THEN** each workspace and worktree is measured once and the shared origin
-  is measured once
+- **WHEN** a lifecycle operation changes a workspace with two worktrees that
+  reference one origin
+- **THEN** Trees measures the workspace, both worktrees, and the shared origin
+  once each
 
 #### Scenario: Skip a Changed Path
 
-- **WHEN** an entity's path changes after selection but before persistence
-- **THEN** refresh does not store the observation under its new path and counts
+- **WHEN** an entity path changes after selection but before persistence
+- **THEN** Trees does not store the observation under the new path and records
   that entity as skipped
+
+#### Scenario: Continue After a Missing Path
+
+- **WHEN** one referenced source path is missing during measurement
+- **THEN** Trees stores its unavailable observation and continues measuring
+  the other selected paths
 
 ### Requirement: Refresh After Physical Lifecycle Changes
 
