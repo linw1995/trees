@@ -369,6 +369,65 @@ mod unix {
         }
     }
 
+    fn open_root(root: &Path) -> Result<(Directory, libc::stat), IssueCode> {
+        let path =
+            CString::new(root.as_os_str().as_bytes()).map_err(|_| IssueCode::RootUnreadable)?;
+        let fd = open_directory(&path).map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                IssueCode::RootMissing
+            } else {
+                IssueCode::RootUnreadable
+            }
+        })?;
+        let metadata = stat_fd(fd.as_raw_fd()).map_err(|_| IssueCode::RootUnreadable)?;
+        let stream = Directory::from_fd(fd).map_err(|_| IssueCode::RootUnreadable)?;
+        Ok((stream, metadata))
+    }
+
+    fn scan_entry(
+        parent: RawFd,
+        name: &CStr,
+        accumulator: &mut Accumulator,
+        before_child_open: &mut impl FnMut(&CStr),
+    ) -> Result<Option<Directory>, IssueCode> {
+        let metadata = match stat_child(parent, name) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                accumulator.issue(entry_issue(&error));
+                return Ok(None);
+            }
+        };
+        if !accumulator.add(&metadata)? || !is_directory(&metadata) {
+            return Ok(None);
+        }
+        before_child_open(name);
+        let child_fd = match open_child(parent, name) {
+            Ok(fd) => fd,
+            Err(error) => {
+                accumulator.issue(entry_issue(&error));
+                return Ok(None);
+            }
+        };
+        match stat_fd(child_fd.as_raw_fd()) {
+            Ok(opened) if identity(&opened) == identity(&metadata) => {}
+            Ok(_) => {
+                accumulator.issue(IssueCode::EntryChanged);
+                return Ok(None);
+            }
+            Err(_) => {
+                accumulator.issue(IssueCode::EntryUnreadable);
+                return Ok(None);
+            }
+        }
+        match Directory::from_fd(child_fd) {
+            Ok(stream) => Ok(Some(stream)),
+            Err(_) => {
+                accumulator.issue(IssueCode::EntryUnreadable);
+                Ok(None)
+            }
+        }
+    }
+
     pub(super) fn scan(root: &Path, observed_at: Timestamp) -> Observation {
         scan_with_hook(root, observed_at, |_| {})
     }
@@ -378,32 +437,14 @@ mod unix {
         observed_at: Timestamp,
         mut before_child_open: impl FnMut(&CStr),
     ) -> Observation {
-        let Ok(path) = CString::new(root.as_os_str().as_bytes()) else {
-            return Observation::unavailable(observed_at, IssueCode::RootUnreadable);
-        };
-        let root_fd = match open_directory(&path) {
-            Ok(fd) => fd,
-            Err(error) => {
-                let code = if error.kind() == io::ErrorKind::NotFound {
-                    IssueCode::RootMissing
-                } else {
-                    IssueCode::RootUnreadable
-                };
-                return Observation::unavailable(observed_at, code);
-            }
-        };
-        let root_metadata = match stat_fd(root_fd.as_raw_fd()) {
-            Ok(metadata) => metadata,
-            Err(_) => return Observation::unavailable(observed_at, IssueCode::RootUnreadable),
+        let (root_stream, root_metadata) = match open_root(root) {
+            Ok(root) => root,
+            Err(code) => return Observation::unavailable(observed_at, code),
         };
         let mut accumulator = Accumulator::default();
         if accumulator.add(&root_metadata).is_err() {
             return Observation::unavailable(observed_at, IssueCode::SizeOverflow);
         }
-        let root_stream = match Directory::from_fd(root_fd) {
-            Ok(stream) => stream,
-            Err(_) => return Observation::unavailable(observed_at, IssueCode::RootUnreadable),
-        };
         let mut stack = vec![root_stream];
         while !stack.is_empty() {
             let (parent, next) = {
@@ -425,43 +466,10 @@ mod unix {
             if name.as_bytes() == b"." || name.as_bytes() == b".." {
                 continue;
             }
-            let metadata = match stat_child(parent, &name) {
-                Ok(metadata) => metadata,
-                Err(error) => {
-                    accumulator.issue(entry_issue(&error));
-                    continue;
-                }
-            };
-            match accumulator.add(&metadata) {
-                Ok(false) => continue,
-                Ok(true) => {}
-                Err(_) => return Observation::unavailable(observed_at, IssueCode::SizeOverflow),
-            }
-            if !is_directory(&metadata) {
-                continue;
-            }
-            before_child_open(&name);
-            let child_fd = match open_child(parent, &name) {
-                Ok(fd) => fd,
-                Err(error) => {
-                    accumulator.issue(entry_issue(&error));
-                    continue;
-                }
-            };
-            match stat_fd(child_fd.as_raw_fd()) {
-                Ok(opened) if identity(&opened) == identity(&metadata) => {}
-                Ok(_) => {
-                    accumulator.issue(IssueCode::EntryChanged);
-                    continue;
-                }
-                Err(_) => {
-                    accumulator.issue(IssueCode::EntryUnreadable);
-                    continue;
-                }
-            }
-            match Directory::from_fd(child_fd) {
-                Ok(stream) => stack.push(stream),
-                Err(_) => accumulator.issue(IssueCode::EntryUnreadable),
+            match scan_entry(parent, &name, &mut accumulator, &mut before_child_open) {
+                Ok(Some(stream)) => stack.push(stream),
+                Ok(None) => {}
+                Err(code) => return Observation::unavailable(observed_at, code),
             }
         }
         accumulator.finish(observed_at)
@@ -528,6 +536,23 @@ mod unix {
             assert!(observation.allocated_bytes.unwrap() < 1024 * 1024);
             fs::remove_dir_all(root).unwrap();
             fs::remove_dir_all(outside).unwrap();
+        }
+
+        #[test]
+        fn replacement_directory_is_reported_as_changed() {
+            let root = fixture();
+            fs::create_dir(root.join("child")).unwrap();
+            let observation = scan_with_hook(&root, Timestamp::now(), |name| {
+                if name.to_bytes() == b"child" {
+                    fs::rename(root.join("child"), root.join("old-child")).unwrap();
+                    fs::create_dir(root.join("child")).unwrap();
+                    fs::write(root.join("child/new-file"), vec![1; 1024 * 1024]).unwrap();
+                }
+            });
+            assert_eq!(observation.status, Completeness::Partial);
+            assert_eq!(observation.issues[0].code, IssueCode::EntryChanged);
+            assert!(observation.allocated_bytes.unwrap() < 1024 * 1024);
+            fs::remove_dir_all(root).unwrap();
         }
 
         #[test]

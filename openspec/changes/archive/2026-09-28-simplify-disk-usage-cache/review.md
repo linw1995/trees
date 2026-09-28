@@ -47,3 +47,14 @@ experiment. The main worktree retained only the simplifications listed below.
 - Strict validation passed for this change and the existing disk usage and
   workspace status specifications. `git diff --check` reported no whitespace
   errors. The final code diff removes more lines than it adds.
+
+## CI Follow-Up
+
+The first pull request run found one CRAP threshold failure in the scanner's
+combined root setup and traversal function (score 37.8, complexity 28).
+Separating root initialization, one-entry inspection, and traversal made the
+error and race boundaries clearer. A new test covers replacement by a different
+real directory. The regular full suite passed after this change. Local CRAP
+analysis over available coverage profiles reported zero functions above the
+threshold; one unrelated terminal job-control test timed out under local
+macOS coverage instrumentation, so Linux CI remains the final check.
