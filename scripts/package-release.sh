@@ -19,10 +19,11 @@ esac
 package_name="trees-${release_tag}-${release_target}"
 package_dir="$(mktemp -d "${TMPDIR:-/tmp}/trees-release.XXXXXX")"
 trap 'rm -rf "$package_dir"' EXIT
-mkdir -p "$package_dir/$package_name" target/dist
+mkdir -p "$package_dir/$package_name/completions" target/dist
 binary="target/$release_target/release/trees"
 test "$("$binary" -V)" = "trees ${release_tag#v}"
 "$binary" --version > "$package_dir/$package_name/BUILD_INFO.txt"
 test -s target/THIRD_PARTY_NOTICES.html
 cp "$binary" LICENSE target/THIRD_PARTY_NOTICES.html "$package_dir/$package_name/"
+cp completions/trees.bash completions/trees.zsh "$package_dir/$package_name/completions/"
 tar -czf "target/dist/$package_name.tar.gz" -C "$package_dir" "$package_name"

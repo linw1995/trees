@@ -1,0 +1,7 @@
+#compdef trees
+
+if (( ! ${+functions[_clap_dynamic_completer_trees]} )); then
+    source <(TREES_COMPLETE=zsh trees)
+fi
+
+_clap_dynamic_completer_trees "$@"

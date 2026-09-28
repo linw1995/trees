@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+pub mod completion;
 pub mod workspace_locator;
 use crate::workspace_locator::WorkspaceSelector;
 use workspace_locator::{
@@ -46,7 +47,7 @@ pub enum Command {
 
 #[derive(Debug, Args)]
 pub struct CreateArgs {
-    #[arg(value_name = "WORKSPACE_PATH")]
+    #[arg(value_name = "WORKSPACE_PATH", value_hint = clap::ValueHint::DirPath)]
     pub workspace_path: Option<PathBuf>,
 
     #[arg(
@@ -92,7 +93,7 @@ pub struct CreateArgs {
 #[derive(Debug, Args)]
 #[command(group(workspace_locator::group(Self::SELECTION_DEFAULT)))]
 pub struct AddArgs {
-    #[arg(id = "add_workspace_dir", group = workspace_locator::GROUP, value_name = "WORKSPACE_DIR", help = "Select an exact workspace root")]
+    #[arg(id = "add_workspace_dir", group = workspace_locator::GROUP, value_name = "WORKSPACE_DIR", value_hint = clap::ValueHint::DirPath, help = "Select an exact workspace root")]
     pub workspace_dir: Option<PathBuf>,
 
     #[command(flatten)]
@@ -131,7 +132,7 @@ impl AddArgs {
 
 #[derive(Debug, Args)]
 pub struct ClaimArgs {
-    #[arg(value_name = "WORKSPACE_DIR", conflicts_with = "workspace_id")]
+    #[arg(value_name = "WORKSPACE_DIR", value_hint = clap::ValueHint::DirPath, conflicts_with = "workspace_id")]
     pub workspace_dir: Option<PathBuf>,
 
     #[arg(long, value_name = "WORKSPACE_ID", help = "Select a workspace by ID")]
@@ -159,7 +160,7 @@ impl ClaimArgs {
 #[derive(Debug, Args)]
 #[command(group(workspace_locator::group(Self::SELECTION_DEFAULT)))]
 pub struct ReleaseArgs {
-    #[arg(id = "legacy_workspace_dir", group = workspace_locator::GROUP, value_name = "WORKSPACE_DIR")]
+    #[arg(id = "legacy_workspace_dir", group = workspace_locator::GROUP, value_name = "WORKSPACE_DIR", value_hint = clap::ValueHint::DirPath)]
     pub workspace_dir: Option<PathBuf>,
 
     #[command(flatten)]
@@ -206,7 +207,7 @@ pub struct ConfigSetArgs {
     #[arg(value_enum, value_name = "SETTING")]
     pub setting: ConfigSetting,
 
-    #[arg(value_name = "VALUE")]
+    #[arg(value_name = "VALUE", value_hint = clap::ValueHint::DirPath)]
     pub value: PathBuf,
 }
 

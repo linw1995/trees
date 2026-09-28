@@ -16,9 +16,10 @@ and macOS archives for x86_64 and ARM64 to
 [GitHub Releases](https://github.com/linw1995/trees/releases).
 Tags containing a prerelease suffix produce prereleases.
 
-Each archive includes `trees`, `BUILD_INFO.txt`, `LICENSE`, and
-`THIRD_PARTY_NOTICES.html`. Verify downloads against the release's `SHA256SUMS`,
-extract the archive, and copy `trees` to a directory on your `PATH`.
+Each archive includes `trees`, `BUILD_INFO.txt`, `LICENSE`,
+`THIRD_PARTY_NOTICES.html`, and Bash and `zsh` completion loaders under
+`completions/`. See [Installation](installation.md) for checksum verification,
+binary placement, and shell completion setup.
 
 ## Build Metadata
 

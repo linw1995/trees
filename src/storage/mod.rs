@@ -1,3 +1,4 @@
+pub mod completion;
 pub mod models;
 pub mod origin;
 pub mod removal;

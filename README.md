@@ -12,27 +12,8 @@ Trees tracks workspace state and immutable events in a shared SQLite database.
 
 ## Install
 
-Install from the GitHub repository with Nix:
-
-```sh
-nix profile install github:linw1995/trees#trees
-```
-
-Install from a local checkout:
-
-```sh
-nix develop
-cargo install --path . --locked
-```
-
-Verify the installation:
-
-```sh
-trees --help
-trees --version
-```
-
-See [release installation](docs/builds.md#release-archives) for prebuilt binaries.
+See [Installation](docs/installation.md) for Nix, source builds, release archives,
+and Bash or `zsh` completion.
 
 ## Quick Start
 
@@ -87,6 +68,7 @@ source directories stay at their original paths.
 
 | Guide | Topics |
 | --- | --- |
+| [Installation](docs/installation.md) | Nix, source builds, release archives, and shell completion. |
 | [Workspace lifecycle](docs/workspaces.md) | Manual and automatic allocation, source selection, starting revisions, repository additions, explicit claims, and release. |
 | [Status and opening](docs/status.md) | Pool capacity, workspace health, source inventory, JSON output, and opening a workspace. |
 | [Storage configuration](docs/configuration.md) | Automatic workspace and source clone directories. |
@@ -97,18 +79,6 @@ available.
 
 ## Development
 
-Enter the reproducible development environment with Nix:
-
-```sh
-nix develop
-```
-
-Run the main local checks:
-
-```sh
-cargo test --all-targets --all-features
-prek -a
-nix flake check --no-build
-```
-
-See the [contributing guide](CONTRIBUTING.md) for the development workflow and the [security policy](SECURITY.md) for vulnerability reporting. Trees is licensed under the [Apache License 2.0](LICENSE).
+See the [contributing guide](CONTRIBUTING.md) for the development environment and
+checks, and the [security policy](SECURITY.md) for vulnerability reporting.
+Trees is licensed under the [Apache License 2.0](LICENSE).

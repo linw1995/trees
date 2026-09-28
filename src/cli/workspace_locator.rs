@@ -27,7 +27,7 @@ pub struct WorkspaceLocatorArgs {
     #[arg(long, group = GROUP, value_name = "WORKSPACE_ID", help = "Select a workspace by ID")]
     pub workspace_id: Option<WorkspaceId>,
 
-    #[arg(long, group = GROUP, value_name = "WORKSPACE_DIR", help = "Select an exact workspace root")]
+    #[arg(long, group = GROUP, value_name = "WORKSPACE_DIR", value_hint = clap::ValueHint::DirPath, help = "Select an exact workspace root")]
     pub workspace_dir: Option<PathBuf>,
 
     #[arg(long, group = GROUP, value_name = "CLAIM_ID", help = "Select a workspace by its active claim")]
