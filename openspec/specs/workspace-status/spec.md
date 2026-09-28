@@ -260,10 +260,9 @@ by the selected view and target through relational joins in one read-only SQLite
 transaction. It SHALL NOT expand all selected entity IDs into a single `IN`
 expression. Status SHALL NOT open lifecycle storage for writing or append an
 event. It SHALL NOT acquire or release a claim or start or recover an operation.
-Trees itself SHALL NOT invoke Git or inspect workspace file contents. It SHALL
-traverse only the selected target's and displayed workspace rows' directory
-trees for disk usage observation, after the lifecycle connection closes. A
-user-configured session query hook
+Trees itself SHALL NOT invoke Git, inspect workspace file contents, or traverse
+workspace directory trees. It SHALL read cached disk usage from the same
+persisted snapshot as workspace and repository metadata. A user-configured session query hook
 SHALL be permitted after the lifecycle connection closes, as specified by
 workspace-session-hook. The hook is user-controlled code, not a sandboxed or
 guaranteed side-effect-free operation; Trees SHALL NOT persist its results or
@@ -271,8 +270,8 @@ use them for lifecycle decisions. It SHALL permit read-only `OS` process metadat
 access and `cwd` path resolution solely for process attribution after the database
 transaction. Without an explicit ID, it SHALL resolve the invocation directory
 canonically solely for target selection. Target selection and persisted reporting
-SHALL NOT require the stored target path to exist; a missing target directory
-SHALL instead make disk usage unavailable.
+SHALL NOT require the stored target path to exist. A missing path SHALL NOT
+trigger a size scan or change an already stored observation during status.
 
 Persisted unhealthy states, claims, leases, and removed rows in the explicit
 workspace all-view or target summary SHALL be report data rather than command failures. Status
@@ -283,10 +282,9 @@ SHALL NOT change an otherwise successful exit status.
 Process observation failures SHALL produce partial or unavailable report data
 and SHALL NOT change an otherwise successful exit status. No process observer
 SHALL run before successful persisted status loading or without a target.
-Disk usage observation failures SHALL produce partial or unavailable report data
-and SHALL NOT change an otherwise successful exit status. No disk usage observer
-SHALL run before successful persisted status loading or for a workspace absent
-from both the target and the displayed workspace inventory.
+Unknown or failed cached disk usage SHALL be report data, not command failures.
+Malformed stored cache data SHALL be a persisted status loading error rather
+than a reason to scan the filesystem.
 Registered boundaries used for process attribution SHALL share the persisted snapshot.
 
 #### Scenario: Preserve State During Inspection
@@ -341,6 +339,9 @@ Registered boundaries used for process attribution SHALL share the persisted sna
   target, or database loading fails
 - **THEN** status does not traverse workspace directories
 
+- **AND** a successful status invocation also does not traverse workspace
+  directories when size cells are present
+
 #### Scenario: Observe Sessions After Closing Storage
 
 - **WHEN** an enabled workspace session hook is eligible to run
@@ -350,18 +351,19 @@ Registered boundaries used for process attribution SHALL share the persisted sna
 #### Scenario: Preserve Removed Target Details Without Its Directory
 
 - **WHEN** an explicit selector resolves a removed workspace whose directory is absent
-- **THEN** status retains its persisted target and inventory data and reports disk
-  usage as unavailable without failing the command
+- **THEN** status retains its persisted target and inventory data and reports
+  its cached disk usage or `unknown` without probing the missing directory
 
 ### Requirement: Render Existing Repository Metadata
 
-The repos human view SHALL render `REPO`, `PATH`, and `ID`, ordered by source
+The repos human view SHALL render `REPO`, `PATH`, `SIZE`, and `ID`, ordered by source
 path then ID. Labels SHALL use shortest unique path suffixes and existing
 terminal escaping. JSON SHALL retain the version-2 envelope with `view: repos`
 and a `repos` array containing `origin_repository_id`, `source_path`,
-`repository_identity`, and `label`. No mode, registration state, root, or remote
-URL SHALL be included. The view SHALL require no origin schema changes and
-SHALL NOT invoke Git, run migrations, or recover clone operations. `--all`
+`repository_identity`, `label`, and `disk_usage`. No mode,
+registration state, root, or remote URL SHALL be included. The view SHALL read
+the stored origin size observation and SHALL NOT invoke Git, run migrations,
+or recover clone operations. `--all`
 SHALL remain unsupported for repos. Missing storage SHALL yield an empty view.
 
 #### Scenario: Require the Current Lifecycle Schema
@@ -372,7 +374,14 @@ SHALL remain unsupported for repos. Missing storage SHALL yield an empty view.
 #### Scenario: Inspect a Missing Source
 
 - **WHEN** a stored source path is missing
-- **THEN** repos status still lists its stored identity and path without probing Git
+- **THEN** repos status still lists its stored identity, path, and cached size
+  without probing Git or the missing directory
+
+#### Scenario: Show Source Repository Size
+
+- **WHEN** a source repository has a stored complete size observation
+- **THEN** its repos human row shows that amount in `SIZE` and JSON includes
+  the complete observation
 
 ### Requirement: Resolve the Target Workspace Independently of View
 
@@ -685,86 +694,60 @@ values SHALL use lossy Unicode conversion only for text representation.
 
 ### Requirement: Observe Workspace Disk Usage
 
-Status SHALL attempt one live disk usage observation for every displayed
-workspace inventory row in the workspaces view and for the selected target in
-every view, after closing lifecycle storage and regardless of persisted state.
-If the target also appears in the workspace inventory, status SHALL reuse its
-observation and SHALL NOT traverse that directory twice. Pools and repos views
-without a target SHALL run no disk usage observation. On Linux and macOS,
-allocated bytes SHALL sum filesystem allocated blocks multiplied by 512.
-The sum SHALL include the root and every reachable
-entry beneath it, including hidden entries, directory metadata, worktree
-metadata, nested registered workspaces, and entries on mounted filesystems.
-Each hard-linked inode SHALL be counted only once per observation. Symbolic
-links SHALL contribute their own allocation but their targets SHALL NOT be
-traversed. Directory traversal SHALL NOT escape the selected tree through a
-symbolic link, including when entries change during observation.
-
-Each observation SHALL capture RFC 3339 `observed_at` at its start and report
-`complete`, `partial`, or `unavailable`. Complete SHALL mean every reachable
-entry was inspected without a detected error. Partial SHALL contain the sum of
-successfully inspected entries when a descendant cannot be inspected.
-Unavailable SHALL have no byte count when the root is missing, unreadable, or
-not a directory, the platform is unsupported, or the sum overflows. An
-observation SHALL NOT claim an atomic filesystem snapshot or imply reclaimable
-space. Disk usage SHALL NOT affect workspace lifecycle decisions.
-
-Issues SHALL use stable codes `root_missing`, `root_unreadable`,
-`entry_changed`, `entry_unreadable`, `unsupported_platform`, and
-`size_overflow`, sorted by code. Each issue SHALL carry a nullable
-`affected_count`: descendant issues SHALL count affected entries; root,
-platform, and overflow issues SHALL use null. A complete observation SHALL
-have no issues; partial and unavailable observations SHALL have at least one.
+Status SHALL report the latest stored disk usage observations for the selected
+workspace, displayed workspace rows, their repository worktrees, and displayed
+source repositories. It SHALL NOT measure filesystem usage or traverse a
+registered path. A null cache SHALL render as `unknown`; complete, partial,
+and unavailable cached observations SHALL retain their measured bytes, time,
+and issues. A target that also appears in workspace inventory SHALL use the
+same stored observation in both places. Cached sizes SHALL NOT determine
+workspace lifecycle eligibility or imply current or reclaimable space.
 
 #### Scenario: Count Allocated Space Without Following Links
 
-- **WHEN** a target contains sparse files, hard links, hidden entries, and a
-  symbolic link to a directory outside the target
-- **THEN** status uses allocated blocks rather than apparent file lengths,
-  counts each hard-linked inode once, includes hidden entries and the link itself,
-  and does not traverse the link target
+- **WHEN** a lifecycle refresh measures sparse files, hard links, hidden entries,
+  and a symbolic link outside a registered path
+- **THEN** status later displays the stored allocated-block observation without
+  running another filesystem scan
 
 #### Scenario: Count Nested Physical Content
 
-- **WHEN** a target contains a nested registered workspace or a mounted directory
-- **THEN** the reachable physical entries beneath the target contribute to its
-  observation without changing the global workspace inventory
+- **WHEN** a refreshed workspace contains a nested workspace or mounted directory
+- **THEN** its stored observation includes the reachable physical entries and
+  status reads that observation without modifying inventory membership
 
 #### Scenario: Keep a Partial Observation
 
-- **WHEN** an entry disappears or a descendant directory cannot be read during
-  traversal
-- **THEN** status reports partial with the sum of successfully inspected entries
-  and a corresponding issue, while keeping a successful exit status
+- **WHEN** a refresh stores a partial result after an unreadable descendant
+- **THEN** status displays the stored amount and partial marker with its original
+  observation time
 
 #### Scenario: Keep a Missing Root Unavailable
 
-- **WHEN** a selected target's stored root no longer exists
-- **THEN** status reports unavailable with a null byte count and `root_missing`
-  without discarding the persisted target
+- **WHEN** a refresh stores an unavailable result for a missing root
+- **THEN** status displays that stored result without probing the root again
 
 #### Scenario: Avoid Symlink Replacement Escape
 
-- **WHEN** a directory entry is replaced by a symbolic link during observation
-- **THEN** status does not traverse the replacement's target and reports an
-  incomplete observation if it cannot inspect the original entry
+- **WHEN** an entry changes into a symbolic link during refresh
+- **THEN** the refresh does not traverse the link target and status reads its
+  resulting cached observation
 
 #### Scenario: Scan Inventory Without a Target
 
-- **WHEN** current directory selects no workspace and `--view workspaces` has
-  displayed workspace rows
-- **THEN** status observes each displayed workspace once for its `SIZE` column
+- **WHEN** `--view workspaces` displays rows without a selected target
+- **THEN** status reads each row's stored size and performs no directory scan
 
 #### Scenario: Reuse the Target Observation
 
-- **WHEN** the selected target also appears in the workspace inventory
-- **THEN** status traverses its directory once and reuses that observation in
-  both the target summary and inventory row
+- **WHEN** the selected target also appears in workspace inventory
+- **THEN** its summary and row use the same stored size and observation time
 
 #### Scenario: Skip Unrelated Inventories
 
-- **WHEN** current directory selects no workspace in pools or repos view
-- **THEN** status does not traverse any workspace directory
+- **WHEN** status uses pools or repos view without a target
+- **THEN** it does not load unrelated workspace size observations or traverse
+  workspace paths
 
 ### Requirement: Render Workspace Disk Usage
 
@@ -774,9 +757,11 @@ with one decimal place. A partial observation SHALL append
 `(partial: REASONS)` to the successfully inspected amount. An unavailable
 observation SHALL show `unavailable (REASONS)`. Reasons SHALL be deterministic
 English descriptions of issue codes, deduplicated in code order and separated
-by semicolons. The workspace table's `SIZE` cell SHALL use the same unit
+by semicolons. An unmeasured target SHALL show `unknown`. The workspace and
+source repository tables' `SIZE` cells SHALL use the same unit
 format, append `(partial)` without reasons for a partial observation, and show
-`unavailable` for an unavailable observation. Neither presentation SHALL emit
+`unavailable` for an unavailable observation or `unknown` when unmeasured.
+Neither presentation SHALL emit
 raw filesystem error text, raw paths, or generated ANSI color. Each inventory
 workspace SHALL occupy one physical line.
 
@@ -802,47 +787,54 @@ workspace SHALL occupy one physical line.
 - **THEN** its `SIZE` cell shows `1.5 KiB (partial)` or `unavailable`,
   respectively, with issue details available in JSON
 
+#### Scenario: Show an Unmeasured Size
+
+- **WHEN** a workspace or source repository has no stored observation
+- **THEN** its human size shows `unknown` and status does not measure it
+
 ### Requirement: Serialize Workspace Disk Usage Independently
 
-Every version-2 JSON status view SHALL include top-level `target_disk_usage`,
-null exactly when `target_workspace` is null. It SHALL also include a top-level
-`workspace_disk_usage` array. In the workspaces view, the array SHALL have one
-entry per displayed workspace in the same order as `workspaces`; in pools and
-repos views, it SHALL be empty. Each array entry SHALL contain `workspace_id`
-and the observation fields `observed_at`, `status`, nullable integer
-`allocated_bytes`, and `issues`. A non-null `target_disk_usage` SHALL contain
-the same observation fields without `workspace_id`. Each issue SHALL contain
-`code` and nullable integer `affected_count`.
-Complete and partial observations SHALL have an integer byte count, including
-zero; unavailable observations SHALL have null. The observation time SHALL be
-independent of persisted `snapshot_at`. Existing workspace objects, inventory
-arrays, target process and session observations, and schema version SHALL keep
-their current shapes and meanings. If the target appears in the workspace
-inventory, its two JSON observations SHALL have identical fields and values.
+Every version-2 JSON status view SHALL retain top-level `target_disk_usage`,
+null exactly when `target_workspace` is null, and a `workspace_disk_usage`
+array ordered with displayed workspace rows. Pools and repos views SHALL have
+an empty workspace usage array. Each selected target and row SHALL include a
+cached observation with nullable `observed_at`, `status`, nullable integer
+`allocated_bytes`, and `issues`. A never-measured entity SHALL use status
+`unknown`, null time and bytes, and empty issues. Measured complete, partial,
+and unavailable observations SHALL preserve their original time, bytes, and
+issues. Each array entry SHALL also include `workspace_id`.
+
+Every repository worktree snapshot in a workspace JSON object SHALL include a
+`disk_usage` observation with the same shape. Every source repository in the
+repos JSON view SHALL also include `disk_usage`. Existing workspace and
+repository identities, paths, lifecycle fields, and inventory order SHALL
+remain unchanged. Process observations, session observations, and schema
+version SHALL also remain unchanged. Cached
+observation times SHALL remain independent of persisted `snapshot_at`.
 
 #### Scenario: Include Usage in Every View
 
-- **WHEN** a target is selected with `--json` in pools, workspaces, or repos view
-- **THEN** the report has one structured `target_disk_usage` observation and
-  unchanged persisted target and inventory objects
+- **WHEN** a target is selected with `--json` in any view
+- **THEN** `target_disk_usage` contains its stored observation or an unknown
+  observation without scanning its path
 
 #### Scenario: Include an Ordered Inventory Observation Array
 
 - **WHEN** `--view workspaces --json` displays workspace rows
-- **THEN** `workspace_disk_usage` has one matching workspace ID and observation
-  per row in inventory order, including removed rows selected by `--all`
+- **THEN** `workspace_disk_usage` has one matching ID and cached observation per
+  row in inventory order, including removed rows selected by `--all`
 
 #### Scenario: Reuse an Inventory Target in JSON
 
-- **WHEN** the selected target also appears in a workspace JSON inventory
-- **THEN** its `target_disk_usage` has the same observation time, status, byte
-  count, and issues as its `workspace_disk_usage` entry
+- **WHEN** the selected target also appears in workspace JSON inventory
+- **THEN** its target and inventory usage have identical status, time, bytes,
+  and issues
 
 #### Scenario: Emit Null Disk Usage Without a Target
 
 - **WHEN** no target is selected with `--json`
-- **THEN** `target_disk_usage` is null, while `workspace_disk_usage` still
-  contains observations for any displayed workspace rows
+- **THEN** `target_disk_usage` is null while workspace rows retain their cached
+  observations
 
 #### Scenario: Keep Unrelated View Arrays Empty
 
@@ -851,6 +843,33 @@ inventory, its two JSON observations SHALL have identical fields and values.
 
 #### Scenario: Serialize an Unavailable Disk Usage Result
 
-- **WHEN** a selected target directory is missing with `--json`
-- **THEN** `target_disk_usage.status` is `unavailable`, `allocated_bytes` is null,
-  and `issues` includes `root_missing`
+- **WHEN** a refresh has stored an unavailable result for a missing target path
+- **THEN** `target_disk_usage.status` is `unavailable`, bytes are null, and
+  issues include `root_missing` with the saved observation time
+
+#### Scenario: Serialize an Unknown Size
+
+- **WHEN** a workspace, worktree, or source repository has never been measured
+- **THEN** its JSON usage has status `unknown`, null observation time and bytes,
+  and an empty issue list
+
+### Requirement: Show Cached Repository Worktree Sizes
+
+When a selected workspace has repository worktrees, its human summary SHALL
+show an indented `REPO` and `SIZE` table immediately after the compact `Repos`
+line. Each row SHALL use the existing escaped label and state suffix for that
+worktree and render its cached size using the workspace size cell rules. An
+unmeasured worktree SHALL show `unknown`. A workspace with no worktrees SHALL
+omit the table. The workspace inventory table SHALL remain one physical line
+per workspace.
+
+#### Scenario: Show Different Worktree Sizes
+
+- **WHEN** a selected workspace has two worktrees with different cached sizes
+- **THEN** its repo detail table shows each label beside its own size while the
+  workspace's `Disk usage` remains the separate workspace-root measurement
+
+#### Scenario: Omit an Empty Worktree Table
+
+- **WHEN** a selected workspace has no repository worktrees
+- **THEN** its summary keeps the compact `Repos 0/0` line without a repo table
