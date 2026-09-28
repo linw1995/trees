@@ -95,6 +95,131 @@ fn insert_workspace(
 }
 
 #[test]
+fn status_reports_disk_usage_for_targets_and_workspace_rows() {
+    let root = test_root();
+    let database_path = database_path(&root);
+    fs::create_dir_all(database_path.parent().unwrap()).unwrap();
+    let workspace_dir = root.join("workspaces/live");
+    fs::create_dir_all(&workspace_dir).unwrap();
+    fs::write(workspace_dir.join("data"), vec![1; 8192]).unwrap();
+    let mut connection = database::connect(&database_path).unwrap();
+    let active = insert_workspace(
+        &mut connection,
+        path(&workspace_dir),
+        WorkspaceState::Ready,
+        WorkspaceManagementMode::Manual,
+        None,
+    );
+    let removed = insert_workspace(
+        &mut connection,
+        path(root.join("workspaces/removed")),
+        WorkspaceState::Removed,
+        WorkspaceManagementMode::Manual,
+        None,
+    );
+    drop(connection);
+    let before_database = fs::read(&database_path).unwrap();
+    let before_file = fs::read(workspace_dir.join("data")).unwrap();
+
+    for view in ["pools", "workspaces", "repos"] {
+        let output = command(&root)
+            .current_dir(&root)
+            .args(["status", &active.to_string(), "--view", view, "--json"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(json["schema_version"], 2);
+        assert_eq!(json["target_workspace"]["workspace_id"], active.to_string());
+        assert_eq!(json["target_disk_usage"]["status"], "complete");
+        assert!(
+            json["target_disk_usage"]["allocated_bytes"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        assert!(json["target_disk_usage"]["observed_at"].is_string());
+        if view == "workspaces" {
+            assert_eq!(json["workspace_disk_usage"].as_array().unwrap().len(), 1);
+            let mut entry = json["workspace_disk_usage"][0].clone();
+            assert_eq!(entry["workspace_id"], active.to_string());
+            entry.as_object_mut().unwrap().remove("workspace_id");
+            assert_eq!(entry, json["target_disk_usage"]);
+            assert_eq!(json["workspaces"][0], json["target_workspace"]);
+        } else {
+            assert_eq!(json["workspace_disk_usage"], serde_json::json!([]));
+        }
+    }
+
+    #[cfg(unix)]
+    if unsafe { libc::geteuid() } != 0 {
+        use std::os::unix::fs::PermissionsExt;
+
+        let blocked = workspace_dir.join("blocked");
+        fs::create_dir(&blocked).unwrap();
+        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000)).unwrap();
+        let output = command(&root)
+            .current_dir(&root)
+            .args([
+                "status",
+                &active.to_string(),
+                "--view",
+                "workspaces",
+                "--json",
+            ])
+            .output()
+            .unwrap();
+        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(output.status.success());
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(json["target_disk_usage"]["status"], "partial");
+        assert_eq!(
+            json["target_disk_usage"]["issues"][0]["code"],
+            "entry_unreadable"
+        );
+        assert_eq!(json["workspace_disk_usage"][0]["status"], "partial");
+        fs::remove_dir(blocked).unwrap();
+    }
+
+    let output = command(&root)
+        .current_dir(&root)
+        .args(["status", "--view", "workspaces", "--all", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(json["target_disk_usage"].is_null());
+    let workspaces = json["workspaces"].as_array().unwrap();
+    let usage = json["workspace_disk_usage"].as_array().unwrap();
+    assert_eq!(workspaces.len(), 2);
+    assert_eq!(usage.len(), 2);
+    for (workspace, observation) in workspaces.iter().zip(usage) {
+        assert_eq!(workspace["workspace_id"], observation["workspace_id"]);
+        if workspace["workspace_id"] == removed.to_string() {
+            assert_eq!(observation["status"], "unavailable");
+            assert!(observation["allocated_bytes"].is_null());
+            assert_eq!(observation["issues"][0]["code"], "root_missing");
+        }
+    }
+    let output = command(&root)
+        .current_dir(&root)
+        .args(["status", &removed.to_string(), "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["target_disk_usage"]["status"], "unavailable");
+    assert_eq!(json["workspace_disk_usage"], serde_json::json!([]));
+    assert_eq!(fs::read(&database_path).unwrap(), before_database);
+    assert_eq!(fs::read(workspace_dir.join("data")).unwrap(), before_file);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn missing_database_is_a_successful_empty_result_without_side_effects() {
     let root = test_root();
 

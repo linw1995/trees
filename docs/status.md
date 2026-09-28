@@ -19,10 +19,10 @@ trees status WORKSPACE_ID --view repos --json
 ```
 
 Status reads persisted state from one consistent SQLite snapshot, then collects
-optional session metadata and observes target processes after closing the database
-connection. It does
-not reconcile, recover an expired operation, run Git, inspect workspace file
-contents itself, or assert that an available workspace is currently reusable. Use
+optional session metadata, observes target processes, and measures workspace
+disk usage after closing the database connection. It does not reconcile,
+recover an expired operation, run Git, inspect workspace file contents, or
+assert that an available workspace is currently reusable. Use
 `trees gc --older-than 30d --dry-run` to check which workspaces currently qualify
 for removal at a chosen age threshold. User-configured hooks execute external
 code whose side effects are controlled by the provider.
@@ -83,6 +83,32 @@ one `snapshot_at`, including lease classification. JSON preserves original paths
 RFC 3339 timestamps, and structured claim and operation objects. Human headings,
 escaping, colors, and emoji do not change the JSON contract. Prefer JSON for
 scripts; terminal summaries add lines when a target is found.
+
+Every version-2 report also contains nullable `target_disk_usage` and an ordered
+`workspace_disk_usage` array. The target field is null when no workspace is
+selected. The array has one entry per displayed row in `--view workspaces`, in
+the same order as `workspaces`, and is empty in the other views. This includes
+removed rows displayed with `--all`. Each array entry adds `workspace_id` to
+the same observation fields used by `target_disk_usage`. When a target also
+appears in the table, both fields reuse the same observation.
+
+| Field | Meaning |
+| --- | --- |
+| `observed_at` | RFC 3339 time when the directory scan began, independent of `snapshot_at`. |
+| `status` | `complete`, `partial`, or `unavailable`. |
+| `allocated_bytes` | Exact observed byte count; null when unavailable. A partial count covers successfully inspected entries. |
+| `issues` | Stable `code` and nullable `affected_count` for each scan issue. |
+
+The scan sums allocated filesystem blocks for the workspace root and its
+descendants. It includes hidden files, worktree metadata, nested directories,
+and mount points. Hard-linked files count once within each observation;
+symbolic links contribute their own allocation without following their targets.
+The number is neither an atomic snapshot nor an estimate of space reclaimed by
+removing a workspace. Files can change during a scan, and snapshots, clones,
+compression, or links outside the tree can share storage. Missing roots and
+unreadable entries produce unavailable or partial observations without failing
+status. No content is read, but scanning many workspace rows takes time
+proportional to their total entry count.
 
 ## Processes
 

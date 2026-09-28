@@ -15,14 +15,14 @@
 
 ## 2. Status Report Integration
 
-- [ ] 2.1 Observe displayed workspace rows and the selected target after
+- [x] 2.1 Observe displayed workspace rows and the selected target after
   closing lifecycle storage, deduplicating by workspace ID. Verify fake-observer
   tests cover all views, shared and excluded targets, no target, and load errors.
-- [ ] 2.2 Add top-level `target_disk_usage` and ordered `workspace_disk_usage`
+- [x] 2.2 Add top-level `target_disk_usage` and ordered `workspace_disk_usage`
   JSON. Verify CLI tests cover all views, removed rows, shared observations,
   partial and unavailable results, unchanged workspace objects, and successful
   version-2 reports after scan failures.
-- [ ] 2.3 Document both JSON fields, independent observation timestamps,
+- [x] 2.3 Document both JSON fields, independent observation timestamps,
   non-atomic measurement, and allocated-versus-reclaimable semantics in
   `docs/status.md`; verify field names and array order against CLI fixtures.
 
