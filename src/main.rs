@@ -9,6 +9,9 @@ use clap::Parser;
 use snafu::{ResultExt, Snafu};
 
 fn main() -> ExitCode {
+    clap_complete::CompleteEnv::with_factory(trees::cli::completion::command)
+        .var("TREES_COMPLETE")
+        .complete();
     match run(trees::cli::Cli::parse()) {
         Ok(exit_code) => exit_code,
         Err(error) => {

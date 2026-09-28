@@ -32,6 +32,23 @@ trees --help
 trees --version
 ```
 
+## Shell Completion
+
+To enable Bash completion, add this line to `~/.bashrc`:
+
+```sh
+source <(TREES_COMPLETE=bash trees)
+```
+
+To enable `zsh` completion, add this line to `~/.zshrc` after initializing `compinit`:
+
+```sh
+source <(TREES_COMPLETE=zsh trees)
+```
+
+The shell loads a registration from the installed binary on startup. Restart the
+shell after changing its configuration.
+
 See [release installation](docs/builds.md#release-archives) for prebuilt binaries.
 
 ## Quick Start

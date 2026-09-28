@@ -24,6 +24,8 @@ in {
       (rustDevToolchainFor pkgs)
     ];
     packages = with pkgs; [
+      bashInteractive
+      zsh
       git
       diesel-cli
       cargo-nextest

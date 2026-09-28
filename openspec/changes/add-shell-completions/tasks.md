@@ -2,9 +2,9 @@
 
 ## 1. Shell Entry Point and Grammar
 
-- [ ] 1.1 Add the locked `clap_complete` dependency and the `TREES_COMPLETE` entry point using a shared completion command factory before ordinary CLI parsing; verify Bash and `zsh` registrations can be generated without opening or creating lifecycle storage.
-- [ ] 1.2 Add command, option, finite-value, and workspace-directory completion metadata through the shared factory; verify focused tests cover subcommands, `status --view`, `config set`, and path-valued selectors in both shells.
-- [ ] 1.3 Document Bash and `zsh` configuration commands in README; verify the documented commands register completion in clean shell sessions.
+- [x] 1.1 Add the locked `clap_complete` dependency and the `TREES_COMPLETE` entry point using a shared completion command factory before ordinary CLI parsing; verify Bash and `zsh` registrations can be generated without opening or creating lifecycle storage.
+- [x] 1.2 Add command, option, finite-value, and workspace-directory completion metadata through the shared factory; verify focused tests cover subcommands, `status --view`, `config set`, and path-valued selectors in both shells.
+- [x] 1.3 Document Bash and `zsh` configuration commands in README; verify the documented commands register completion in clean shell sessions.
 
 ## 2. Persisted Identifier Candidates
 
