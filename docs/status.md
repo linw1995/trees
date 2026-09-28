@@ -111,6 +111,12 @@ unreadable entries produce unavailable or partial observations without failing
 status. No content is read, but scanning many workspace rows takes time
 proportional to their total entry count.
 
+The lifecycle database has nullable disk usage observation columns for
+workspaces, repository worktrees, and source repositories. The migration does
+not scan paths; existing records begin without a stored observation. As with
+other schema changes, a writable command applies the migration before
+read-only status can use the updated database.
+
 ## Processes
 
 Every selected target includes a live process observation on Linux and macOS.

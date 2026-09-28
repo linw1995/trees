@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::domain::Timestamp;
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Completeness {
     Complete,
@@ -13,7 +13,7 @@ pub enum Completeness {
     Unavailable,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Serialize)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IssueCode {
     EntryChanged,
@@ -37,13 +37,13 @@ impl IssueCode {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
 pub struct Issue {
     pub code: IssueCode,
     pub affected_count: Option<usize>,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
 pub struct Observation {
     pub observed_at: Timestamp,
     pub status: Completeness,

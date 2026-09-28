@@ -44,6 +44,7 @@ diesel::table! {
         id -> Text,
         repository_identity -> Text,
         source_path -> Text,
+        disk_usage_json -> Nullable<Text>,
     }
 }
 
@@ -75,6 +76,7 @@ diesel::table! {
         state -> Text,
         last_head -> Nullable<Text>,
         last_observed_at -> Text,
+        disk_usage_json -> Nullable<Text>,
     }
 }
 
@@ -90,6 +92,7 @@ diesel::table! {
         pool_id -> Nullable<Text>,
         last_released_at -> Nullable<Text>,
         removed_at -> Nullable<Text>,
+        disk_usage_json -> Nullable<Text>,
     }
 }
 

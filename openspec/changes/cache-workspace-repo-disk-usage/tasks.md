@@ -2,13 +2,13 @@
 
 ## 1. Persistent Cache
 
-- [ ] 1.1 Add nullable disk usage observation columns to workspace, worktree,
+- [x] 1.1 Add nullable disk usage observation columns to workspace, worktree,
   and origin tables with reversible migrations. Verify migration tests keep
   existing rows and initialize every cache to unknown without scanning.
-- [ ] 1.2 Add typed cache serialization, reads, and path-checked writes. Verify
+- [x] 1.2 Add typed cache serialization, reads, and path-checked writes. Verify
   round trips for complete, partial, unavailable, and unknown observations,
   malformed stored data, and a path changed before persistence.
-- [ ] 1.3 Document the migration and unknown initial state in `docs/status.md`.
+- [x] 1.3 Document the migration and unknown initial state in `docs/status.md`.
   Verify the documented upgrade path matches the read-only database behavior.
 
 ## 2. Explicit Refresh
