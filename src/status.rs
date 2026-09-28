@@ -1,4 +1,5 @@
 pub mod combined;
+pub mod disk_usage;
 pub mod processes;
 pub mod report;
 pub mod repos;
@@ -6,6 +7,7 @@ pub mod session_hook;
 pub mod summary;
 pub mod target;
 
+use self::report::WorkspaceDiskUsage;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -78,6 +80,7 @@ pub struct PoolRepositoryStatus {
 pub struct WorkspaceStatus {
     pub workspace_id: WorkspaceId,
     pub path: CanonicalPath,
+    pub disk_usage: disk_usage::CachedObservation,
     pub management_mode: WorkspaceManagementMode,
     pub state: WorkspaceState,
     pub created_at: Timestamp,
@@ -121,6 +124,7 @@ pub struct RepoWorktreeStatus {
     pub origin_repository_id: OriginRepositoryId,
     pub source_path: CanonicalPath,
     pub worktree_path: CanonicalPath,
+    pub disk_usage: disk_usage::CachedObservation,
     pub state: RepoWorktreeState,
     pub last_head: Option<String>,
     pub last_observed_at: Timestamp,
@@ -240,19 +244,24 @@ fn load_workspaces_in_transaction(
 }
 
 pub fn render_workspaces_human(snapshot: &StatusSnapshot, color: bool) -> String {
-    render_workspaces_with_sessions(snapshot, color, None)
+    render_workspaces_with_sessions(snapshot, color, None, &[])
 }
 
 pub fn render_workspaces_with_sessions(
     snapshot: &StatusSnapshot,
     color: bool,
     sessions: Option<&session_hook::Observation>,
+    usage: &[WorkspaceDiskUsage],
 ) -> String {
     if snapshot.workspaces.is_empty() {
         return "No workspaces.".to_owned();
     }
 
-    let headers = ["STATUS", "MODE", "REPOS", "RECONCILED", "ID"];
+    let headers = ["STATUS", "MODE", "REPOS", "SIZE", "RECONCILED", "ID"];
+    let usage = usage
+        .iter()
+        .map(|entry| (entry.workspace_id, &entry.observation))
+        .collect::<HashMap<_, _>>();
     let rows = snapshot
         .workspaces
         .iter()
@@ -261,6 +270,10 @@ pub fn render_workspaces_with_sessions(
                 workspace_status_summary(workspace),
                 mode_symbol(workspace.management_mode).to_owned(),
                 repository_summary(&workspace.repo_worktrees, color),
+                usage.get(&workspace.workspace_id).map_or_else(
+                    || "unknown".to_owned(),
+                    |usage| disk_usage::inventory_cell(usage),
+                ),
                 workspace.last_reconciled_at.as_ref().map_or_else(
                     || "never".to_owned(),
                     |timestamp| compact_timestamp(timestamp, &snapshot.snapshot_at),
@@ -276,11 +289,12 @@ pub fn render_workspaces_with_sessions(
                 .into_iter()
                 .zip(&snapshot.workspaces)
                 .map(|(row, workspace)| {
-                    let [status, mode, repos, reconciled, id] = row;
+                    let [status, mode, repos, size, reconciled, id] = row;
                     [
                         status,
                         mode,
                         repos,
+                        size,
                         reconciled,
                         id,
                         session_hook::cell(sessions, &workspace.workspace_id.to_string()),
@@ -292,6 +306,7 @@ pub fn render_workspaces_with_sessions(
                     "STATUS",
                     "MODE",
                     "REPOS",
+                    "SIZE",
                     "RECONCILED",
                     "ID",
                     "LATEST SESSION",
@@ -681,6 +696,7 @@ fn assemble_snapshot(
             WorkspaceStatus {
                 workspace_id,
                 path: workspace.canonical_path,
+                disk_usage: disk_usage::CachedObservation::default(),
                 management_mode: workspace.management_mode,
                 state: workspace.state,
                 created_at: workspace.created_at,
@@ -770,6 +786,7 @@ impl From<RepoWorktreeRow> for RepoWorktreeStatus {
             origin_repository_id: value.origin_repository_id,
             source_path: value.source_path,
             worktree_path: value.worktree_path,
+            disk_usage: disk_usage::CachedObservation::default(),
             state: value.state,
             last_head: value.last_head,
             last_observed_at: value.last_observed_at,
@@ -1098,7 +1115,7 @@ mod tests {
             "No workspaces."
         );
 
-        let workspace_id = WorkspaceId::new();
+        let workspace_id = "01990000-0000-7000-8000-000000000002".parse().unwrap();
         let snapshot = StatusSnapshot {
             schema_version: STATUS_SCHEMA_VERSION,
             view: StatusView::Workspaces,
@@ -1107,6 +1124,7 @@ mod tests {
             workspaces: vec![WorkspaceStatus {
                 workspace_id,
                 path: path("/status/example"),
+                disk_usage: disk_usage::CachedObservation::default(),
                 management_mode: WorkspaceManagementMode::Automatic,
                 state: WorkspaceState::Degraded,
                 created_at: Timestamp::parse("2026-09-01T00:00:00Z").unwrap(),
@@ -1125,6 +1143,7 @@ mod tests {
                     origin_repository_id: OriginRepositoryId::new(),
                     source_path: path("/origins/example"),
                     worktree_path: path("/status/example/repo"),
+                    disk_usage: disk_usage::CachedObservation::default(),
                     state: RepoWorktreeState::Dirty,
                     last_head: None,
                     last_observed_at: Timestamp::parse("2026-09-08T10:00:00Z").unwrap(),
@@ -1137,10 +1156,36 @@ mod tests {
         assert_eq!(
             output,
             format!(
-                "STATUS       MODE  REPOS               RECONCILED  ID\n\
-                 degraded 🔒  🤖    0/1 example(dirty)  10:00       {workspace_id}"
+                "STATUS       MODE  REPOS               SIZE     RECONCILED  ID\n\
+                 degraded 🔒  🤖    0/1 example(dirty)  unknown  10:00       {workspace_id}"
             )
         );
+
+        let usage = vec![WorkspaceDiskUsage {
+            workspace_id,
+            observation: disk_usage::CachedObservation {
+                observed_at: Some(Timestamp::now()),
+                status: disk_usage::CacheStatus::Complete,
+                allocated_bytes: Some(1536),
+                issues: Vec::new(),
+            },
+        }];
+        let with_usage = render_workspaces_with_sessions(&snapshot, false, None, &usage);
+        assert!(with_usage.contains("1.5 KiB"));
+        assert!(
+            include_str!("../docs/status.md").contains(&with_usage),
+            "{with_usage}"
+        );
+
+        let mut partial = usage;
+        partial[0].observation.status = disk_usage::CacheStatus::Partial;
+        partial[0].observation.issues = vec![disk_usage::Issue {
+            code: disk_usage::IssueCode::EntryUnreadable,
+            affected_count: Some(1),
+        }];
+        let output = render_workspaces_with_sessions(&snapshot, false, None, &partial);
+        assert_eq!(output.lines().count(), 2);
+        assert!(output.contains("1.5 KiB (partial)"));
     }
 
     #[test]
@@ -1249,6 +1294,7 @@ mod tests {
                 RepoWorktreeId::new()
             ))
             .expect("test worktree path should be absolute"),
+            disk_usage: disk_usage::CachedObservation::default(),
             state,
             last_head: None,
             last_observed_at: Timestamp::now(),

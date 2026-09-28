@@ -111,6 +111,7 @@ fn claim_cli_selectors_output_and_release_round_trip() {
     let child = PathBuf::from(&fixture.workspace).join("child");
     fs::create_dir(&child).unwrap();
     for mode in ["id", "relative", "cwd"] {
+        let measured_at = fixture.status()["target_disk_usage"]["observed_at"].clone();
         let mut command = fixture.command();
         command.args(["claim", "--json"]);
         match mode {
@@ -140,6 +141,7 @@ fn claim_cli_selectors_output_and_release_round_trip() {
             .parse::<trees::domain::PoolId>()
             .is_ok());
         let status = fixture.status();
+        assert_eq!(status["target_disk_usage"]["observed_at"], measured_at);
         assert_eq!(
             status["target_workspace"]["claim"]["claim_id"],
             result["claim_id"]

@@ -17,6 +17,7 @@ pub struct RepoStatus {
     pub source_path: CanonicalPath,
     pub label: String,
     pub repository_identity: CanonicalPath,
+    pub disk_usage: super::disk_usage::CachedObservation,
 }
 
 impl RepoSnapshot {
@@ -55,6 +56,7 @@ pub(super) fn load_in_transaction(
             source_path: row.source_path,
             label,
             repository_identity: row.repository_identity,
+            disk_usage: super::disk_usage::CachedObservation::default(),
         })
         .collect();
     Ok(snapshot)
@@ -71,11 +73,12 @@ pub fn render(snapshot: &RepoSnapshot) -> String {
             [
                 super::escape_human_label(&row.label),
                 super::escape_human_label(&row.source_path.to_string()),
+                super::disk_usage::inventory_cell(&row.disk_usage),
                 row.origin_repository_id.to_string(),
             ]
         })
         .collect::<Vec<_>>();
-    super::render_table(&["REPO", "PATH", "ID"], &rows)
+    super::render_table(&["REPO", "PATH", "SIZE", "ID"], &rows)
 }
 
 #[cfg(test)]

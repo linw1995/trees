@@ -1,7 +1,9 @@
 use time::{OffsetDateTime, UtcOffset};
 
 use super::combined::Snapshot;
+use super::disk_usage;
 use super::processes::{Completeness, Observation};
+use super::report::{Report, WorkspaceDiskUsage};
 use super::{repos, LeaseStatus, WorkspaceStatus};
 use crate::domain::Timestamp;
 use crate::workspace_locator::WorkspaceSelector;
@@ -22,18 +24,42 @@ pub fn render_with_sessions(
     processes: Option<&Observation>,
     sessions: Option<&super::session_hook::Observation>,
 ) -> String {
+    render_with_usage(snapshot, selector, color, processes, sessions, None, &[])
+}
+
+pub fn render_report(report: &Report, selector: &WorkspaceSelector, color: bool) -> String {
+    render_with_usage(
+        &report.snapshot,
+        selector,
+        color,
+        report.target_processes.as_ref(),
+        report.workspace_sessions.as_ref(),
+        report.target_disk_usage.as_ref(),
+        &report.workspace_disk_usage,
+    )
+}
+
+fn render_with_usage(
+    snapshot: &Snapshot,
+    selector: &WorkspaceSelector,
+    color: bool,
+    processes: Option<&Observation>,
+    sessions: Option<&super::session_hook::Observation>,
+    target_usage: Option<&disk_usage::CachedObservation>,
+    workspace_usage: &[WorkspaceDiskUsage],
+) -> String {
     let (heading, inventory) = match snapshot {
         Snapshot::Pools(snapshot) => ("Pools", super::render_pools_human(snapshot, color)),
         Snapshot::Workspaces(snapshot) => (
             "Workspaces",
-            super::render_workspaces_with_sessions(snapshot, color, sessions),
+            super::render_workspaces_with_sessions(snapshot, color, sessions, workspace_usage),
         ),
         Snapshot::Repos(snapshot) => ("Repositories", repos::render(snapshot)),
     };
     match snapshot.target() {
         Some(target) => format!(
             "{}\n\n{heading}\n{inventory}",
-            render_target(target, selector, color, processes)
+            render_target(target, selector, color, processes, target_usage)
         ),
         None => inventory,
     }
@@ -44,8 +70,9 @@ fn render_target(
     selector: &WorkspaceSelector,
     color: bool,
     processes: Option<&Observation>,
+    disk_usage: Option<&disk_usage::CachedObservation>,
 ) -> String {
-    render_target_with_offset(target, selector, color, processes, |instant| {
+    render_target_with_offset(target, selector, color, processes, disk_usage, |instant| {
         UtcOffset::local_offset_at(instant).ok()
     })
 }
@@ -55,6 +82,7 @@ fn render_target_with_offset(
     selector: &WorkspaceSelector,
     color: bool,
     processes: Option<&Observation>,
+    disk_usage: Option<&disk_usage::CachedObservation>,
     offset_at: impl FnOnce(OffsetDateTime) -> Option<UtcOffset>,
 ) -> String {
     let heading = match selector {
@@ -95,6 +123,9 @@ fn render_target_with_offset(
         "Repos",
         super::repository_summary(&target.repo_worktrees, color),
     ));
+    if let Some(disk_usage) = disk_usage {
+        rows.push(("Disk usage", disk_usage::summary_cell(disk_usage)));
+    }
     if let Some(processes) = processes {
         rows.push(("Processes", process_count(processes)));
     }
@@ -113,6 +144,9 @@ fn render_target_with_offset(
             "\n  {label}{}{value}",
             " ".repeat(width - super::display_width(label) + 2)
         ));
+        if label == "Repos" {
+            output.push_str(&repo_size_table(target, color));
+        }
         if label == "Processes" {
             if let Some(processes) = processes {
                 output.push_str(&process_table(processes, target));
@@ -120,6 +154,33 @@ fn render_target_with_offset(
         }
     }
     output
+}
+
+fn repo_size_table(target: &WorkspaceStatus, color: bool) -> String {
+    if target.repo_worktrees.is_empty() {
+        return String::new();
+    }
+    let paths = target
+        .repo_worktrees
+        .iter()
+        .map(|repository| repository.source_path.clone())
+        .collect::<Vec<_>>();
+    let labels = super::shortest_unique_path_labels(&paths);
+    let rows = target
+        .repo_worktrees
+        .iter()
+        .zip(labels)
+        .map(|(repository, label)| {
+            [
+                super::repository_label(&label, repository.state, color),
+                disk_usage::inventory_cell(&repository.disk_usage),
+            ]
+        })
+        .collect::<Vec<_>>();
+    super::render_table(&["REPO", "SIZE"], &rows)
+        .lines()
+        .map(|line| format!("\n    {line}"))
+        .collect()
 }
 
 fn process_count(observation: &Observation) -> String {
@@ -203,10 +264,20 @@ mod tests {
         }
     }
 
+    fn disk_observation(bytes: u64) -> disk_usage::CachedObservation {
+        disk_usage::CachedObservation {
+            observed_at: Some(Timestamp::now()),
+            status: disk_usage::CacheStatus::Complete,
+            allocated_bytes: Some(bytes),
+            issues: Vec::new(),
+        }
+    }
+
     fn target() -> WorkspaceStatus {
         WorkspaceStatus {
             workspace_id: WorkspaceId::new(),
             path: CanonicalPath::from_absolute("/work/api").unwrap(),
+            disk_usage: disk_usage::CachedObservation::default(),
             management_mode: WorkspaceManagementMode::Automatic,
             state: WorkspaceState::Ready,
             created_at: Timestamp::now(),
@@ -229,7 +300,7 @@ mod tests {
         let mut target = target();
         let selector = WorkspaceSelector::Id(target.workspace_id);
         let render = |target: &WorkspaceStatus| {
-            render_target_with_offset(target, &selector, false, None, |_| {
+            render_target_with_offset(target, &selector, false, None, None, |_| {
                 UtcOffset::from_hms(8, 0, 0).ok()
             })
         };
@@ -271,10 +342,33 @@ mod tests {
             &selector,
             false,
             Some(&empty_observation()),
+            Some(&disk_observation(1536)),
             |_| UtcOffset::from_hms(8, 0, 0).ok(),
         );
         let example = format!("{summary}\n\nPools\nNo workspace pools.");
         assert!(include_str!("../../docs/status.md").contains(&example));
+    }
+
+    #[test]
+    fn shows_cached_worktree_sizes_separately_from_workspace_size() {
+        let mut target = target();
+        target.disk_usage = disk_observation(8192);
+        let mut first =
+            super::super::tests::repository("/origins/api", RepoWorktreeState::Attached);
+        first.disk_usage = disk_observation(1536);
+        let second = super::super::tests::repository("/origins/web", RepoWorktreeState::Dirty);
+        target.repo_worktrees = vec![first, second];
+        let output = render_target(
+            &target,
+            &WorkspaceSelector::Id(target.workspace_id),
+            false,
+            None,
+            Some(&target.disk_usage),
+        );
+        assert!(output.contains("  Disk usage  8.0 KiB"));
+        assert!(output.contains("REPO        SIZE"));
+        assert!(output.contains("api         1.5 KiB"));
+        assert!(output.contains("web(dirty)  unknown"));
     }
 
     #[test]
@@ -301,7 +395,7 @@ mod tests {
             },
         ];
         observation.count = Some(3);
-        let output = render_target(&target, &selector, false, Some(&observation));
+        let output = render_target(&target, &selector, false, Some(&observation), None);
         assert!(output.contains("  Processes   3\n    PID   NAME   CWD\n    1201  zsh    .\n    1248  cargo  api\n    1302  node   web\n  Reconciled"));
         observation.status = Completeness::Partial;
         observation.issues = vec![Issue {
@@ -314,7 +408,7 @@ mod tests {
         );
         observation.processes.clear();
         observation.count = Some(0);
-        let output = render_target(&target, &selector, false, Some(&observation));
+        let output = render_target(&target, &selector, false, Some(&observation), None);
         assert!(output.contains("Processes   0 (partial:"));
         assert!(!output.contains("PID"));
         let unavailable = Observation::unavailable(Timestamp::now(), IssueCode::EnumerationFailed);
@@ -398,13 +492,14 @@ mod tests {
             RepoWorktreeState::Dirty,
         ));
         let selector = WorkspaceSelector::Id(target.workspace_id);
-        let plain = render_target(&target, &selector, false, None);
-        assert_eq!(plain.lines().count(), 8);
+        let plain = render_target(&target, &selector, false, None, None);
+        assert_eq!(plain.lines().count(), 10);
         assert!(!plain.contains('\u{1b}'));
         assert!(plain.contains("/work/line\\n\\u{1b}[31m"));
         assert!(plain.contains("release\\n\\u{1b} / running"));
         assert!(plain.contains("0/1 api(dirty)"));
-        let colored = render_target(&target, &selector, true, None);
+        assert!(plain.contains("REPO        SIZE\n    api(dirty)  unknown"));
+        let colored = render_target(&target, &selector, true, None, None);
         assert!(colored.contains("\u{1b}[31mapi(dirty)\u{1b}[0m"));
         for (plain, colored) in plain.lines().zip(colored.lines()) {
             assert_eq!(

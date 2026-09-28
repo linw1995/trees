@@ -1,4 +1,5 @@
 pub mod completion;
+pub mod disk_usage_cache;
 pub mod models;
 pub mod origin;
 pub mod removal;

@@ -18,11 +18,11 @@ trees status --claim-id CLAIM_ID
 trees status WORKSPACE_ID --view repos --json
 ```
 
-Status reads persisted state from one consistent SQLite snapshot, then collects
-optional session metadata and observes target processes after closing the database
-connection. It does
-not reconcile, recover an expired operation, run Git, inspect workspace file
-contents itself, or assert that an available workspace is currently reusable. Use
+Status reads persisted state and cached disk usage from one consistent SQLite
+snapshot, then collects optional session metadata and observes target processes
+after closing the database connection. It does not scan workspace or repository
+directories, run Git, or inspect file contents. It does not reconcile, recover
+an expired operation, or assert that an available workspace is currently reusable. Use
 `trees gc --older-than 30d --dry-run` to check which workspaces currently qualify
 for removal at a chosen age threshold. User-configured hooks execute external
 code whose side effects are controlled by the provider.
@@ -45,6 +45,7 @@ Workspace (current directory)
   Status      ready 🔒
   Mode        automatic 🤖
   Repos       0/0
+  Disk usage  1.5 KiB
   Processes   0
   Reconciled  2026-09-11 14:32:05
 
@@ -83,6 +84,70 @@ one `snapshot_at`, including lease classification. JSON preserves original paths
 RFC 3339 timestamps, and structured claim and operation objects. Human headings,
 escaping, colors, and emoji do not change the JSON contract. Prefer JSON for
 scripts; terminal summaries add lines when a target is found.
+
+Every version-2 report also contains nullable `target_disk_usage` and an ordered
+`workspace_disk_usage` array. The target field is null when no workspace is
+selected. The array has one entry per displayed row in `--view workspaces`, in
+the same order as `workspaces`, and is empty in the other views. This includes
+removed rows displayed with `--all`. Each array entry adds `workspace_id` to
+the same observation fields used by `target_disk_usage`. When a target also
+appears in the table, both fields reuse the same observation.
+
+| Field | Meaning |
+| --- | --- |
+| `observed_at` | RFC 3339 time when the last refresh began; null when never measured. |
+| `status` | `unknown`, `complete`, `partial`, or `unavailable`. |
+| `allocated_bytes` | Stored byte count; null when unknown or unavailable. A partial count covers successfully inspected entries. |
+| `issues` | Stable `code` and nullable `affected_count` for each scan issue. |
+
+Each refresh scan sums allocated filesystem blocks for the selected root and its
+descendants. It includes hidden files, worktree metadata, nested directories,
+and mount points. Hard-linked files count once within each observation;
+symbolic links contribute their own allocation without following their targets.
+The number is neither an atomic snapshot nor an estimate of space reclaimed by
+removing a workspace. Files can change during a scan, and snapshots, clones,
+compression, or links outside the tree can share storage. Missing roots and
+unreadable entries produce unavailable or partial observations without failing
+refresh. No content is read. Refreshing many entities takes time proportional
+to their total entry count; status reads their stored values without scanning.
+
+Every workspace and repository worktree JSON object includes its cached
+`disk_usage` observation. Source repository objects in the repos view include
+the same field. An unmeasured entity has status `unknown`, null time and bytes,
+and no issues. A selected workspace's summary and inventory row use the same
+stored observation. A measurement may become stale after ordinary file edits;
+`observed_at` shows when it was last refreshed, not when files last changed.
+
+The lifecycle database has nullable disk usage observation columns for
+workspaces, repository worktrees, and source repositories. The migration does
+not scan paths; existing records begin without a stored observation. As with
+other schema changes, a writable command applies the migration before
+read-only status can use the updated database.
+
+## Measurement Timing
+
+Trees measures disk usage after successful `create`, `add`, and `release`
+commands complete their physical work. It measures the affected workspace,
+its repository worktrees, and their registered source repositories. Workspace
+and worktree records with the same stored path share one measurement within
+that operation. Removal, including GC, invalidates the removed workspace and
+worktree values. Source repositories retain their own measurements while registered. `claim`,
+`open`, and `status` do not scan directories for size.
+
+Repeated lifecycle commands within five seconds reuse the last measurement
+for the same stored path. The original `observed_at` is retained, so the window
+does not extend on reuse. This reduces duplicate scans but can leave a size
+temporarily stale when another command changes files inside the window. Trees
+prints scan start, result, elapsed time, and cache reuse details to standard
+error; JSON standard output remains a single document.
+
+A measurement runs outside long database write transactions and is saved only
+if the registered path still matches the measured path. Missing or unreadable
+paths produce unavailable or partial observations. A refresh problem after a
+completed lifecycle command emits a warning without undoing that command.
+Files changed by other programs do not automatically update the cached amount;
+its `observed_at` value shows when Trees last measured it. Existing records
+remain `unknown` until an affected lifecycle command measures them.
 
 ## Processes
 
@@ -187,12 +252,30 @@ also retain explicit suffixes such as `(dirty)`, `(missing)`, `(mismatch)`, and
 Path-derived labels escape control characters and table delimiters before color
 is applied, preventing repository names from injecting terminal output.
 
+The workspace table adds `SIZE` between `REPOS` and `RECONCILED`. It shows the
+same cached amount as the target summary when that workspace is selected. A
+partial result uses `1.5 KiB (partial)`; a failed measurement uses
+`unavailable`, and an unmeasured workspace uses `unknown`. JSON contains the
+detailed issue codes. Removed rows displayed with `--all` also have a size
+cell, which becomes unknown after removal invalidates the old measurement.
+
+For a selected workspace, an indented `REPO` and `SIZE` table follows the
+compact `Repos` line when worktrees exist. Each size measures the corresponding
+worktree path separately. The workspace root can contain a worktree and other files, so
+the worktree sizes are not added to calculate workspace `Disk usage`.
+
+```text
+STATUS       MODE  REPOS               SIZE     RECONCILED  ID
+degraded 🔒  🤖    0/1 example(dirty)  1.5 KiB  10:00       01990000-0000-7000-8000-000000000002
+```
+
 ## Source Repositories
 
-Use `--view repos` for source repositories, with `REPO`, `PATH`, and `ID`
+Use `--view repos` for source repositories, with `REPO`, `PATH`, `SIZE`, and `ID`
 columns. Conflicting labels expand to unique path suffixes. JSON uses the
 version-2 envelope with `view: "repos"` and a `repos` array containing
-`origin_repository_id`, `source_path`, `repository_identity`, and `label`.
+`origin_repository_id`, `source_path`, `repository_identity`, `label`, and
+`disk_usage`.
 This view reads stored metadata without probing Git, migrating storage, or
 recovering clone operations. A missing source remains visible. `--all` applies
 only to the workspace view; repos has no hidden registration state.
@@ -252,8 +335,8 @@ JSON retains full titles and every session. Target summaries remain unchanged.
 Trees runs one batch after closing lifecycle storage and before observing target
 processes. It does not persist session results or use them for release, reuse, or
 removal decisions. No hook runs for other views, empty inventories, or failed
-persisted loading. Without configuration or with `--no-hooks`, human output keeps
-its existing columns.
+persisted loading. Without configuration or with `--no-hooks`, human output
+omits `LATEST SESSION`.
 
 All version-2 JSON views add nullable top-level `workspace_sessions`. It is null
 when unconfigured or skipped. Otherwise, it contains:

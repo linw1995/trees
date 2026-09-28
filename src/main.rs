@@ -46,6 +46,7 @@ fn run_add(arguments: trees::cli::AddArgs) -> Result<ExitCode, CliError> {
             offline: arguments.offline,
         },
     )?;
+    warn_refresh_workspace(&mut connection, result.workspace_id);
     if arguments.json {
         return print_json(&result);
     }
@@ -110,6 +111,7 @@ fn run_create(arguments: trees::cli::CreateArgs) -> Result<ExitCode, CliError> {
                 },
                 &expected,
             )?;
+            warn_refresh_path(&result.workspace_path);
             if let Some(program) = open.as_deref() {
                 return open_workspace(program, &open_args, result.workspace_path.as_path());
             }
@@ -172,6 +174,10 @@ fn run_automatic_create(
     )?;
     let mut connection = trees::database::open_default()?;
     let result = trees::workspace::allocate_automatic_workspace(&mut connection, &plan)?;
+    report_refresh(trees::size_refresh::refresh_path(
+        &mut connection,
+        &result.workspace_path,
+    ));
     drop(connection);
     if let Some(program) = open {
         if release_on_exit {
@@ -197,6 +203,7 @@ fn run_automatic_create(
                     identity.workspace_path, identity.claim_id, identity.claim_id
                 );
             } else {
+                warn_refresh_path(&identity.workspace_path);
                 eprintln!("[trees] Claim released: {}", identity.claim_id);
             }
             return Ok(ExitCode::from(report.exit_code()));
@@ -311,10 +318,37 @@ fn release_automatic(
 ) -> Result<trees::workspace::ReleaseResult, CliError> {
     let target = arguments.selector()?;
     let mut connection = trees::database::open_default()?;
-    Ok(trees::workspace::release_automatic_workspace_by_target(
-        &mut connection,
-        target,
-    )?)
+    let result = trees::workspace::release_automatic_workspace_by_target(&mut connection, target)?;
+    warn_refresh_workspace(&mut connection, result.workspace_id);
+    Ok(result)
+}
+
+fn warn_refresh_workspace(
+    connection: &mut diesel::SqliteConnection,
+    id: trees::domain::WorkspaceId,
+) {
+    report_refresh(trees::size_refresh::refresh_workspace(connection, id));
+}
+
+fn warn_refresh_path(path: &trees::domain::CanonicalPath) {
+    match trees::database::open_existing() {
+        Ok(mut connection) => {
+            report_refresh(trees::size_refresh::refresh_path(&mut connection, path))
+        }
+        Err(error) => eprintln!("[trees] Warning: disk usage refresh failed: {error}"),
+    }
+}
+
+fn report_refresh(
+    result: Result<trees::size_refresh::RefreshOutcome, trees::size_refresh::RefreshError>,
+) {
+    match result {
+        Ok(trees::size_refresh::RefreshOutcome::Incomplete) => {
+            eprintln!("[trees] Warning: disk usage refresh incomplete; see measurement logs");
+        }
+        Ok(trees::size_refresh::RefreshOutcome::Complete) => {}
+        Err(error) => eprintln!("[trees] Warning: disk usage refresh failed: {error}"),
+    }
 }
 
 fn run_config(arguments: trees::cli::ConfigArgs) -> Result<ExitCode, CliError> {
@@ -651,13 +685,7 @@ fn run_status(arguments: trees::cli::StatusArgs) -> Result<ExitCode, CliError> {
     } else {
         println!(
             "{}",
-            trees::status::summary::render_with_sessions(
-                &report.snapshot,
-                &selector,
-                status_color_enabled(),
-                report.target_processes.as_ref(),
-                report.workspace_sessions.as_ref()
-            )
+            trees::status::summary::render_report(&report, &selector, status_color_enabled())
         );
         Ok(ExitCode::SUCCESS)
     }
@@ -793,6 +821,47 @@ mod tests {
     use super::*;
 
     static SHELL_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn failed_size_measurement_does_not_change_workspace_lifecycle_state() {
+        let mut connection = trees::database::connect(Path::new(":memory:")).unwrap();
+        let id = trees::domain::WorkspaceId::new();
+        let path = trees::domain::CanonicalPath::from_absolute(
+            std::env::temp_dir().join(format!("trees-missing-cache-{id}")),
+        )
+        .unwrap();
+        let now = trees::domain::Timestamp::now();
+        trees::storage::insert_managed_workspace(
+            &mut connection,
+            &trees::storage::NewManagedWorkspace {
+                id,
+                canonical_path: path,
+                state: trees::domain::WorkspaceState::Ready,
+                created_at: now.clone(),
+                updated_at: now,
+                last_reconciled_at: None,
+                management_mode: trees::domain::WorkspaceManagementMode::Manual,
+                pool_id: None,
+                last_released_at: None,
+                removed_at: None,
+            },
+        )
+        .unwrap();
+        warn_refresh_workspace(&mut connection, id);
+        assert_eq!(
+            trees::storage::find_workspace(&mut connection, &id)
+                .unwrap()
+                .state,
+            trees::domain::WorkspaceState::Ready
+        );
+        assert_eq!(
+            trees::storage::disk_usage_cache::workspaces(&mut connection).unwrap()[&id]
+                .as_ref()
+                .unwrap()
+                .status,
+            trees::status::disk_usage::Completeness::Unavailable
+        );
+    }
 
     #[test]
     fn reports_create_validation_errors() {

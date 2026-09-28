@@ -48,6 +48,14 @@ impl Drop for Fixture {
     }
 }
 
+fn without_disk_usage(repositories: &serde_json::Value) -> serde_json::Value {
+    let mut repositories = repositories.clone();
+    for repository in repositories.as_array_mut().unwrap() {
+        repository.as_object_mut().unwrap().remove("disk_usage");
+    }
+    repositories
+}
+
 #[test]
 fn clones_and_reuses_origins_across_configuration_changes() {
     let fixture = Fixture::new();
@@ -492,14 +500,15 @@ fn rejects_origin_removal_with_live_and_historical_references() {
             .unwrap()
             .status
             .success());
+        let after = success(
+            trees(&fixture)
+                .args(["status", "--view", "repos", "--json"])
+                .output()
+                .unwrap(),
+        );
         assert_eq!(
-            success(
-                trees(&fixture)
-                    .args(["status", "--view", "repos", "--json"])
-                    .output()
-                    .unwrap()
-            )["repos"],
-            status["repos"]
+            without_disk_usage(&after["repos"]),
+            without_disk_usage(&status["repos"])
         );
     }
 }
@@ -845,14 +854,15 @@ fn url_lookup_uses_current_git_configuration_and_rejects_multiple_matches() {
         .unwrap()
         .status
         .success());
+    let after = success(
+        trees(&fixture)
+            .args(["status", "--view", "repos", "--json"])
+            .output()
+            .unwrap(),
+    );
     assert_eq!(
-        success(
-            trees(&fixture)
-                .args(["status", "--view", "repos", "--json"])
-                .output()
-                .unwrap()
-        )["repos"],
-        first["repos"]
+        without_disk_usage(&after["repos"]),
+        without_disk_usage(&first["repos"])
     );
     let other = fixture.0.join("other");
     fs::create_dir(&other).unwrap();

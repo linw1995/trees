@@ -380,6 +380,10 @@ fn manual_create_opens_an_explicit_program_in_the_workspace() {
         "trees create failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[trees] Measuring disk usage:"));
+    assert!(stderr.contains("[trees] Measured disk usage:"));
+    assert!(stderr.contains("Reusing disk usage (current operation)"));
     assert_eq!(
         String::from_utf8(output.stdout)
             .expect("program output should be UTF-8")
@@ -387,6 +391,20 @@ fn manual_create_opens_an_explicit_program_in_the_workspace() {
         CanonicalPath::resolve(&workspace_path)
             .expect("workspace should resolve")
             .to_string()
+    );
+
+    let status = trees_command(&root)
+        .args(["status", "--workspace-dir"])
+        .arg(&workspace_path)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["target_disk_usage"]["status"], "complete");
+    assert_eq!(
+        status["target_workspace"]["repo_worktrees"][0]["disk_usage"]["status"],
+        "complete"
     );
 
     git::remove_worktree(&CanonicalPath::resolve(&source).unwrap(), &workspace_path)
