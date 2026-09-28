@@ -32,13 +32,7 @@ fn workspace(id: WorkspaceId, path: CanonicalPath) -> NewWorkspace {
 }
 
 fn revert_to_foundation(connection: &mut diesel::sqlite::SqliteConnection) {
-    for migration in [
-        "removal cache",
-        "disk usage cache",
-        "terminology",
-        "origin",
-        "feature",
-    ] {
+    for migration in ["disk usage cache", "terminology", "origin", "feature"] {
         connection
             .revert_last_migration(database::MIGRATIONS)
             .unwrap_or_else(|error| panic!("{migration} migration should revert: {error}"));
@@ -250,7 +244,7 @@ fn migration_preserves_operation_and_event_rows_without_rebuilding_them() {
     )
     .expect("event should be inserted");
 
-    for _ in 0..3 {
+    for _ in 0..2 {
         connection
             .revert_last_migration(database::MIGRATIONS)
             .expect("migration should downgrade");
@@ -319,7 +313,7 @@ fn embedded_migrations_are_consolidated() {
     let mut connection = database::connect(&path).expect("database should open");
     let migrations = MigrationSource::<diesel::sqlite::Sqlite>::migrations(&database::MIGRATIONS)
         .expect("embedded migrations should load");
-    assert_eq!(migrations.len(), 6);
+    assert_eq!(migrations.len(), 5);
     assert!(trees::storage::find_workspace_claim_by_id(
         &mut connection,
         &trees::domain::ClaimId::new(),

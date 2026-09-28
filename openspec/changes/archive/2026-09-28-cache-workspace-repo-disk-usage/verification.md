@@ -14,7 +14,7 @@
 
 - Repository-wide `prek -a` checks passed. The hook cache required access
   outside the workspace sandbox.
-- Migration tests cover both new migrations, rollback, legacy records, and
+- Migration tests cover the merged disk usage migration, rollback, legacy records, and
   automatic invalidation when workspaces or worktrees become removed.
 - CLI tests confirm cached workspace, worktree, and origin sizes after create,
   add, and release. They confirm that removal clears old values while claim
