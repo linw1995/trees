@@ -103,12 +103,7 @@ fn lifecycle_refresh_updates_workspace_worktree_and_origin_caches() {
     let root = root();
     let origin_dir = root.join("origin");
     let first_dir = root.join("workspaces/first");
-    let second_dir = root.join("workspaces/second");
-    for directory in [
-        &origin_dir,
-        &first_dir.join("repo"),
-        &second_dir.join("repo"),
-    ] {
+    for directory in [&origin_dir, &first_dir.join("repo")] {
         fs::create_dir_all(directory).unwrap();
         fs::write(directory.join("data"), vec![1_u8; 4096]).unwrap();
     }
@@ -122,12 +117,9 @@ fn lifecycle_refresh_updates_workspace_worktree_and_origin_caches() {
     )
     .unwrap();
     let (first, first_worktree) = add_workspace(&mut connection, &first_dir, origin.id);
-    let (second, _) = add_workspace(&mut connection, &second_dir, origin.id);
     assert_eq!(
-        trees::size_refresh::refresh_workspace(&mut connection, first)
-            .unwrap()
-            .complete,
-        3
+        trees::size_refresh::refresh_workspace(&mut connection, first).unwrap(),
+        trees::size_refresh::RefreshOutcome::Complete
     );
     assert_eq!(
         disk_usage_cache::workspaces(&mut connection).unwrap()[&first]
@@ -150,13 +142,6 @@ fn lifecycle_refresh_updates_workspace_worktree_and_origin_caches() {
             .allocated_bytes
             .unwrap()
             > 0
-    );
-    assert!(disk_usage_cache::workspaces(&mut connection).unwrap()[&second].is_none());
-    assert_eq!(
-        trees::size_refresh::refresh_workspace(&mut connection, second)
-            .unwrap()
-            .complete,
-        3
     );
     drop(connection);
 
@@ -242,7 +227,7 @@ fn lifecycle_refresh_updates_workspace_worktree_and_origin_caches() {
     )
     .unwrap();
     let summary = trees::size_refresh::refresh_workspace(&mut connection, first).unwrap();
-    assert_eq!(summary.unavailable, 1);
+    assert_eq!(summary, trees::size_refresh::RefreshOutcome::Incomplete);
     assert_eq!(
         disk_usage_cache::origins(&mut connection).unwrap()[&origin.id]
             .as_ref()

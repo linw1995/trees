@@ -340,16 +340,13 @@ fn warn_refresh_path(path: &trees::domain::CanonicalPath) {
 }
 
 fn report_refresh(
-    result: Result<trees::size_refresh::RefreshSummary, trees::size_refresh::RefreshError>,
+    result: Result<trees::size_refresh::RefreshOutcome, trees::size_refresh::RefreshError>,
 ) {
     match result {
-        Ok(summary) if summary.partial + summary.unavailable + summary.skipped > 0 => {
-            eprintln!(
-                "[trees] Warning: disk usage refresh incomplete: partial={} unavailable={} skipped={}",
-                summary.partial, summary.unavailable, summary.skipped
-            );
+        Ok(trees::size_refresh::RefreshOutcome::Incomplete) => {
+            eprintln!("[trees] Warning: disk usage refresh incomplete; see measurement logs");
         }
-        Ok(_) => {}
+        Ok(trees::size_refresh::RefreshOutcome::Complete) => {}
         Err(error) => eprintln!("[trees] Warning: disk usage refresh failed: {error}"),
     }
 }

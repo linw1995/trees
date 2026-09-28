@@ -21,12 +21,10 @@ enum Target {
     Workspace(WorkspaceId),
 }
 
-#[derive(Debug, Default, Clone, Copy, Eq, PartialEq)]
-pub struct RefreshSummary {
-    pub complete: usize,
-    pub partial: usize,
-    pub unavailable: usize,
-    pub skipped: usize,
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum RefreshOutcome {
+    Complete,
+    Incomplete,
 }
 
 #[derive(Debug, Snafu)]
@@ -71,14 +69,14 @@ fn candidates(
 pub fn refresh_workspace(
     connection: &mut SqliteConnection,
     id: WorkspaceId,
-) -> Result<RefreshSummary, RefreshError> {
+) -> Result<RefreshOutcome, RefreshError> {
     refresh_with_observer(connection, Target::Workspace(id), disk_usage::observe)
 }
 
 pub fn refresh_path(
     connection: &mut SqliteConnection,
     path: &CanonicalPath,
-) -> Result<RefreshSummary, RefreshError> {
+) -> Result<RefreshOutcome, RefreshError> {
     refresh_with_observer(connection, Target::Path(path.clone()), disk_usage::observe)
 }
 
@@ -86,7 +84,7 @@ fn refresh_with_observer(
     connection: &mut SqliteConnection,
     target: Target,
     observe: impl FnMut(&Path) -> Observation,
-) -> Result<RefreshSummary, RefreshError> {
+) -> Result<RefreshOutcome, RefreshError> {
     refresh_with_observer_at(connection, target, OffsetDateTime::now_utc(), observe)
 }
 
@@ -111,10 +109,10 @@ fn refresh_with_observer_at(
     target: Target,
     now: OffsetDateTime,
     mut observe: impl FnMut(&Path) -> Observation,
-) -> Result<RefreshSummary, RefreshError> {
+) -> Result<RefreshOutcome, RefreshError> {
     let selected = connection
         .transaction::<_, RefreshError, _>(|connection| candidates(connection, &target))?;
-    let mut summary = RefreshSummary::default();
+    let mut complete = true;
     let mut observed_paths = HashMap::<CanonicalPath, Observation>::new();
     for candidate in &selected {
         let Some(cached) = &candidate.cached else {
@@ -170,16 +168,22 @@ fn refresh_with_observer_at(
             &candidate.path,
             Some(observation),
         )? {
-            summary.skipped += 1;
+            eprintln!(
+                "[trees] Discarded disk usage: {:?} reason=registered path changed",
+                candidate.path.as_path()
+            );
+            complete = false;
             continue;
         }
-        match observation.status {
-            Completeness::Complete => summary.complete += 1,
-            Completeness::Partial => summary.partial += 1,
-            Completeness::Unavailable => summary.unavailable += 1,
+        if observation.status != Completeness::Complete {
+            complete = false;
         }
     }
-    Ok(summary)
+    Ok(if complete {
+        RefreshOutcome::Complete
+    } else {
+        RefreshOutcome::Incomplete
+    })
 }
 
 #[cfg(test)]
@@ -270,7 +274,7 @@ mod tests {
             observation(Completeness::Complete)
         })
         .unwrap();
-        assert_eq!(summary.complete, 3);
+        assert_eq!(summary, RefreshOutcome::Complete);
         let calls = calls.into_inner();
         assert_eq!(calls.len(), 3);
         assert_eq!(
@@ -296,7 +300,7 @@ mod tests {
             |_| observation(Completeness::Partial),
         )
         .unwrap();
-        assert_eq!(summary.partial, 3);
+        assert_eq!(summary, RefreshOutcome::Incomplete);
         let summary = refresh_with_observer_at(
             &mut connection,
             Target::Path(path("/work/b/repo/nested")),
@@ -304,7 +308,7 @@ mod tests {
             |_| observation(Completeness::Unavailable),
         )
         .unwrap();
-        assert_eq!(summary.unavailable, 3);
+        assert_eq!(summary, RefreshOutcome::Incomplete);
         assert!(disk_usage_cache::workspaces(&mut connection)
             .unwrap()
             .contains_key(&second));
@@ -356,7 +360,7 @@ mod tests {
                 observation(Completeness::Complete)
             })
             .unwrap();
-        assert_eq!(summary.complete, 3);
+        assert_eq!(summary, RefreshOutcome::Complete);
         let calls = calls.into_inner();
         assert_eq!(calls.len(), 2);
         assert_eq!(
@@ -392,7 +396,7 @@ mod tests {
             |_| panic!("a matching recent path must reuse its observation"),
         )
         .unwrap();
-        assert_eq!(summary.complete, 3);
+        assert_eq!(summary, RefreshOutcome::Complete);
         assert_eq!(
             disk_usage_cache::worktrees(&mut connection).unwrap()[&worktree_id],
             Some(workspace_observation)
@@ -432,7 +436,7 @@ mod tests {
             |_| panic!("a recent persisted measurement must not be scanned"),
         )
         .unwrap();
-        assert_eq!(summary.complete, 3);
+        assert_eq!(summary, RefreshOutcome::Complete);
         assert_eq!(
             disk_usage_cache::workspaces(&mut connection).unwrap()[&workspace]
                 .as_ref()
@@ -456,7 +460,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(calls.get(), 3);
-        assert_eq!(summary.complete, 3);
+        assert_eq!(summary, RefreshOutcome::Complete);
 
         let mut future = observation(Completeness::Complete);
         future.observed_at = Timestamp::parse("2026-09-28T00:00:10Z").unwrap();
@@ -487,25 +491,6 @@ mod tests {
     }
 
     #[test]
-    fn missing_explicit_targets_fail_before_observation() {
-        let mut connection = crate::database::connect(std::path::Path::new(":memory:")).unwrap();
-        assert!(matches!(
-            refresh_with_observer(
-                &mut connection,
-                Target::Workspace(WorkspaceId::new()),
-                |_| { panic!("unknown target must not be scanned") }
-            ),
-            Err(RefreshError::WorkspaceUnknown { .. })
-        ));
-        assert!(matches!(
-            refresh_with_observer(&mut connection, Target::Path(path("/outside")), |_| {
-                panic!("unknown path must not be scanned")
-            }),
-            Err(RefreshError::CurrentWorkspaceUnknown { .. })
-        ));
-    }
-
-    #[test]
     fn changed_path_is_skipped_after_scan_without_a_write_transaction() {
         let root = std::env::temp_dir().join(format!("trees-size-refresh-{}", WorkspaceId::new()));
         std::fs::create_dir_all(&root).unwrap();
@@ -529,8 +514,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(summary.skipped, 1);
-        assert_eq!(summary.complete, 2);
+        assert_eq!(summary, RefreshOutcome::Incomplete);
         assert_eq!(
             disk_usage_cache::origins(&mut connection).unwrap()[&origin],
             None

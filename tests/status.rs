@@ -134,10 +134,8 @@ fn status_reports_disk_usage_for_targets_and_workspace_rows() {
 
     let mut connection = database::connect(&database_path).unwrap();
     assert_eq!(
-        trees::size_refresh::refresh_workspace(&mut connection, active)
-            .unwrap()
-            .complete,
-        1
+        trees::size_refresh::refresh_workspace(&mut connection, active).unwrap(),
+        trees::size_refresh::RefreshOutcome::Complete
     );
     drop(connection);
 
@@ -222,10 +220,8 @@ fn status_reports_disk_usage_for_targets_and_workspace_rows() {
         )
         .unwrap();
         assert_eq!(
-            trees::size_refresh::refresh_workspace(&mut connection, active)
-                .unwrap()
-                .partial,
-            1
+            trees::size_refresh::refresh_workspace(&mut connection, active).unwrap(),
+            trees::size_refresh::RefreshOutcome::Incomplete
         );
         drop(connection);
         let output = command(&root)
@@ -262,10 +258,8 @@ fn status_reports_disk_usage_for_targets_and_workspace_rows() {
 
     let mut connection = database::connect(&database_path).unwrap();
     assert_eq!(
-        trees::size_refresh::refresh_workspace(&mut connection, removed)
-            .unwrap()
-            .unavailable,
-        1
+        trees::size_refresh::refresh_workspace(&mut connection, removed).unwrap(),
+        trees::size_refresh::RefreshOutcome::Incomplete
     );
     drop(connection);
     let before_database = fs::read(&database_path).unwrap();
