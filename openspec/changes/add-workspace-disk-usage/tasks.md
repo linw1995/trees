@@ -2,14 +2,14 @@
 
 ## 1. Disk Usage Observer
 
-- [ ] 1.1 Add a typed disk usage observation model with stable issues and
+- [x] 1.1 Add a typed disk usage observation model with stable issues and
   serialization; verify unit tests for complete, partial, unavailable, issue
   ordering, and nullable byte counts.
-- [ ] 1.2 Implement Linux and macOS allocated-block traversal with checked
+- [x] 1.2 Implement Linux and macOS allocated-block traversal with checked
   arithmetic, inode deduplication, and directory-relative no-follow access;
   verify fixtures with sparse files, hard links, hidden entries, symlinks, and
   a concurrent symlink replacement cannot escape the target tree.
-- [ ] 1.3 Classify missing or unreadable roots, descendant failures, races,
+- [x] 1.3 Classify missing or unreadable roots, descendant failures, races,
   overflow, and unsupported platforms; verify injected error tests keep partial
   sums or null unavailable results as specified.
 

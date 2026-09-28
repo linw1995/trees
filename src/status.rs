@@ -1,4 +1,5 @@
 pub mod combined;
+pub mod disk_usage;
 pub mod processes;
 pub mod report;
 pub mod repos;
