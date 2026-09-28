@@ -47,7 +47,10 @@ source <(TREES_COMPLETE=zsh trees)
 ```
 
 The shell loads a registration from the installed binary on startup. Restart the
-shell after changing its configuration.
+shell after changing its configuration. Completion suggests command options and
+IDs accepted by each command. Positional `open` and `remove` accept workspace
+and source repository IDs. For `create --repo` and `add --repo`, completion also
+suggests unique registered source names and local directories.
 
 See [release installation](docs/builds.md#release-archives) for prebuilt binaries.
 

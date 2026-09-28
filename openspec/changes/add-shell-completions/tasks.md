@@ -15,8 +15,8 @@
 
 ## 3. Repository Input Candidates
 
-- [ ] 3.1 Complete unique registered source base names and local paths for `create --repo` and `add --repo`; verify tests cover ambiguous names, local path precedence, typed prefixes, and URL-shaped input without remote access.
-- [ ] 3.2 Verify Bash and `zsh` completion with repository paths and names containing spaces, quotes, and control characters; confirm suggested values are escaped correctly and shell source contains no interpolated persisted text.
+- [x] 3.1 Complete unique registered source base names and local paths for `create --repo` and `add --repo`; verify tests cover ambiguous names, local path precedence, typed prefixes, and URL-shaped input without remote access.
+- [x] 3.2 Verify Bash and `zsh` completion with repository paths and names containing spaces, quotes, and control characters; confirm safe values are preserved, unsafe control values are omitted, and shell source contains no interpolated persisted text.
 
 ## 4. Package and Release Integration
 

@@ -1,8 +1,11 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
+use std::path::Path;
 
 use clap::{Command, CommandFactory};
-use clap_complete::engine::{ArgValueCompleter, CompletionCandidate};
+use clap_complete::engine::{
+    ArgValueCompleter, CompletionCandidate, PathCompleter, ValueCompleter,
+};
 use diesel::result::QueryResult;
 use diesel::sqlite::SqliteConnection;
 use diesel::Connection;
@@ -24,7 +27,56 @@ pub fn command() -> Command {
             })
         });
     }
+    for name in ["create", "add"] {
+        command = command.mut_subcommand(name, |subcommand| {
+            subcommand.mut_arg("repositories", |argument| {
+                argument.add(ArgValueCompleter::new(complete_repositories))
+            })
+        });
+    }
     command
+}
+
+fn complete_repositories(current: &OsStr) -> Vec<CompletionCandidate> {
+    let mut candidates: BTreeMap<_, _> = PathCompleter::dir()
+        .complete(current)
+        .into_iter()
+        .filter(|candidate| {
+            !candidate
+                .get_value()
+                .to_string_lossy()
+                .chars()
+                .any(char::is_control)
+        })
+        .map(|candidate| (candidate.get_value().to_os_string(), candidate))
+        .collect();
+    let Some(prefix) = current.to_str() else {
+        return candidates.into_values().collect();
+    };
+    if prefix.contains('/') {
+        return candidates.into_values().collect();
+    }
+    if let Ok(mut connection) = database::open_read_only() {
+        if let Ok(paths) = storage::completion::origin_paths(&mut connection) {
+            let mut counts = BTreeMap::<String, usize>::new();
+            for path in paths {
+                if let Some(name) = path.as_path().file_name().and_then(OsStr::to_str) {
+                    *counts.entry(name.to_owned()).or_default() += 1;
+                }
+            }
+            for (name, count) in counts {
+                if count == 1
+                    && name.starts_with(prefix)
+                    && !name.chars().any(char::is_control)
+                    && !Path::new(&name).exists()
+                {
+                    let candidate = CompletionCandidate::new(name);
+                    candidates.insert(candidate.get_value().to_os_string(), candidate);
+                }
+            }
+        }
+    }
+    candidates.into_values().collect()
 }
 
 #[derive(Clone, Copy, Debug)]

@@ -35,14 +35,15 @@ fn configuration_path(home: &Path) -> PathBuf {
 }
 
 fn completion_values(home: &Path, shell: &str, words: &[&str]) -> Vec<String> {
-    completion_values_with_path(home, shell, words, None)
+    completion_values_with_options(home, shell, words, None, None)
 }
 
-fn completion_values_with_path(
+fn completion_values_with_options(
     home: &Path,
     shell: &str,
     words: &[&str],
     path: Option<&Path>,
+    current_dir: Option<&Path>,
 ) -> Vec<String> {
     let mut command = Command::new(binary());
     command
@@ -54,6 +55,9 @@ fn completion_values_with_path(
         .env("XDG_STATE_HOME", home);
     if let Some(path) = path {
         command.env("PATH", path);
+    }
+    if let Some(current_dir) = current_dir {
+        command.current_dir(current_dir);
     }
     let output = command.output().expect("completion should run");
     assert!(output.status.success(), "{shell}: {output:?}");
@@ -148,6 +152,21 @@ impl Drop for IdFixture {
     fn drop(&mut self) {
         fs::remove_dir_all(&self.home).unwrap();
     }
+}
+
+fn register_origin(home: &Path, path: &Path) {
+    fs::create_dir_all(path).unwrap();
+    let source_path = CanonicalPath::resolve(path).unwrap();
+    let mut connection = trees::database::connect(&database_path(home)).unwrap();
+    trees::storage::insert_origin_repository(
+        &mut connection,
+        &NewOriginRepository {
+            id: OriginRepositoryId::new(),
+            repository_identity: source_path.clone(),
+            source_path,
+        },
+    )
+    .unwrap();
 }
 
 #[test]
@@ -333,13 +352,123 @@ fn completion_does_not_run_configured_status_hooks() {
     .unwrap();
 
     let active = fixture.active.to_string();
-    assert!(completion_values_with_path(
+    assert!(completion_values_with_options(
         &fixture.home,
         "bash",
         &["trees", "status", "--workspace-id", &active],
         Some(&fake_bin),
+        None,
     )
     .contains(&active));
     assert!(!marker.exists());
     assert!(!git_marker.exists());
+}
+
+#[test]
+fn completes_unique_registered_names_and_local_directories() {
+    let fixture = IdFixture::new();
+    let cwd = fixture.home.join("elsewhere");
+    fs::create_dir(&cwd).unwrap();
+    register_origin(&fixture.home, &fixture.home.join("one/duplicate"));
+    register_origin(&fixture.home, &fixture.home.join("two/duplicate"));
+
+    for command in ["create", "add"] {
+        let names = completion_values_with_options(
+            &fixture.home,
+            "bash",
+            &["trees", command, "--repo", "ori"],
+            None,
+            Some(&cwd),
+        );
+        assert!(names.contains(&"origin".to_owned()));
+
+        let ambiguous = completion_values_with_options(
+            &fixture.home,
+            "bash",
+            &["trees", command, "--repo", "duplicate"],
+            None,
+            Some(&cwd),
+        );
+        assert!(!ambiguous.contains(&"duplicate".to_owned()));
+
+        let local = completion_values_with_options(
+            &fixture.home,
+            "bash",
+            &["trees", command, "--repo", "ori"],
+            None,
+            Some(&fixture.home),
+        );
+        assert!(local.contains(&"origin/".to_owned()));
+        assert!(!local.contains(&"origin".to_owned()));
+
+        let url = completion_values_with_options(
+            &fixture.home,
+            "bash",
+            &["trees", command, "--repo", "https://example.invalid/api"],
+            None,
+            Some(&cwd),
+        );
+        assert!(url.is_empty());
+    }
+}
+
+#[test]
+fn repository_completion_handles_special_names_without_embedding_them_in_shell_source() {
+    let fixture = IdFixture::new();
+    let cwd = fixture.home.join("elsewhere");
+    fs::create_dir(&cwd).unwrap();
+    register_origin(&fixture.home, &fixture.home.join("sources/space name"));
+    register_origin(&fixture.home, &fixture.home.join("sources/quote'name"));
+    register_origin(&fixture.home, &fixture.home.join("sources/line\nbreak"));
+    fs::create_dir(cwd.join("local space")).unwrap();
+    fs::create_dir(cwd.join("local'quote")).unwrap();
+    fs::create_dir(cwd.join("local\nunsafe")).unwrap();
+
+    for shell in ["bash", "zsh"] {
+        let name = completion_values_with_options(
+            &fixture.home,
+            shell,
+            &["trees", "create", "--repo", "spa"],
+            None,
+            Some(&cwd),
+        );
+        assert!(name.contains(&"space name".to_owned()));
+        let quoted = completion_values_with_options(
+            &fixture.home,
+            shell,
+            &["trees", "add", "--repo", "quo"],
+            None,
+            Some(&cwd),
+        );
+        assert!(quoted.contains(&"quote'name".to_owned()));
+        let path = completion_values_with_options(
+            &fixture.home,
+            shell,
+            &["trees", "add", "--repo", "local"],
+            None,
+            Some(&cwd),
+        );
+        assert!(path.contains(&"local space/".to_owned()));
+        assert!(path.contains(&"local'quote/".to_owned()));
+        assert!(!path.iter().any(|value| value.contains("unsafe")));
+        assert!(completion_values_with_options(
+            &fixture.home,
+            shell,
+            &["trees", "create", "--repo", "line"],
+            None,
+            Some(&cwd),
+        )
+        .is_empty());
+
+        let registration = Command::new(binary())
+            .env("TREES_COMPLETE", shell)
+            .env("HOME", &fixture.home)
+            .env("XDG_STATE_HOME", &fixture.home)
+            .output()
+            .unwrap();
+        let script = String::from_utf8(registration.stdout).unwrap();
+        assert!(!script.contains("space name"));
+        assert!(!script.contains("quote'name"));
+        assert!(!script.contains("line\nbreak"));
+    }
 }

@@ -69,7 +69,7 @@ Future CLI arguments that accept persisted Trees IDs SHALL receive completion as
 
 ### Requirement: Complete Repository Names and Paths
 
-For `create --repo` and `add --repo`, completion SHALL suggest registered source directory base names that uniquely identify one origin and SHALL retain local path completion. It SHALL NOT offer an ambiguous registered name as an origin-name suggestion. Completion SHALL leave URL entry available without fetching or looking up remotes.
+For `create --repo` and `add --repo`, completion SHALL suggest registered source directory base names that uniquely identify one origin and SHALL retain local path completion. It SHALL NOT offer an ambiguous registered name as an origin-name suggestion. Candidates containing control characters SHALL be omitted when the shell completion protocol cannot represent them safely. Completion SHALL leave URL entry available without fetching or looking up remotes.
 
 #### Scenario: Complete a Registered Name
 
@@ -81,6 +81,11 @@ For `create --repo` and `add --repo`, completion SHALL suggest registered source
 - **WHEN** multiple registered sources have the same base name
 - **THEN** that base name is not suggested as a registered-name candidate
 - **AND** local path suggestions remain available
+
+#### Scenario: Omit Unsafe Control Characters
+
+- **WHEN** a source directory base name contains a control character used by the shell completion protocol
+- **THEN** it is not suggested as a registered-name candidate
 
 ### Requirement: Keep Completion Read-Only and Quiet
 

@@ -34,7 +34,7 @@ For `open` and `remove`, exclude an ID found in both workspace and origin tables
 
 ### 3. Combine Registered Repository Names with Paths
 
-For `--repo`, combine local path candidates with names derived from persisted origin source-path base names. Keep only names that identify one origin, and deduplicate overlapping path and name suggestions. Local paths retain their existing runtime precedence over names. Do not read Git configuration or resolve remote URLs while completing. Directory-valued selectors use path completion without database access.
+For `--repo`, combine local path candidates with names derived from persisted origin source-path base names. Keep only names that identify one origin, and deduplicate overlapping path and name suggestions. Local paths retain their existing runtime precedence over names. Omit candidates with control characters that the shell protocol cannot represent safely. Do not read Git configuration or resolve remote URLs while completing. Directory-valued selectors use path completion without database access.
 
 ### 4. Load Version-Matched Shell Registrations
 
