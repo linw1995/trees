@@ -36,7 +36,13 @@ filesystem facts.
 When a successful lifecycle command requests a size update, Trees SHALL
 measure the affected workspace root, its active repository worktrees, and
 referenced origin repositories. Shared origins SHALL be measured once per
-operation. Trees SHALL read entity IDs and paths, end the selection transaction,
+operation. Identical stored paths SHALL be scanned once per operation and the
+observation SHALL be reused for each matching entity. A stored observation
+less than five seconds old SHALL be reused for the same path across lifecycle
+commands, even if the command changes files. Reuse SHALL retain its original
+`observed_at` and SHALL NOT extend the window. A future or expired observation
+SHALL NOT suppress a scan. Trees SHALL read entity
+IDs and paths, end the selection transaction,
 measure without holding a database write transaction, and persist each result
 only if that entity still has the same stored path. A changed path SHALL be
 skipped. An unreadable or missing entity SHALL produce a partial or unavailable
@@ -49,6 +55,26 @@ Trees SHALL NOT expose a separate size refresh command.
   reference one origin
 - **THEN** Trees measures the workspace, both worktrees, and the shared origin
   once each
+
+#### Scenario: Reuse a Single Repository Root Measurement
+
+- **WHEN** a workspace root and its single repository worktree have the same
+  stored path
+- **THEN** Trees scans that path once and stores the same observation for both
+  entities
+
+#### Scenario: Debounce Consecutive Lifecycle Commands
+
+- **WHEN** a second lifecycle command requests the same stored path less than
+  five seconds after its last measurement
+- **THEN** Trees reuses the saved observation without another tree scan and
+  keeps its original measurement time
+
+#### Scenario: Scan After the Debounce Window
+
+- **WHEN** a stored measurement is at least five seconds old or has a future
+  timestamp
+- **THEN** the next affected lifecycle command scans the path again
 
 #### Scenario: Skip a Changed Path
 
@@ -89,3 +115,21 @@ operation or expose the previous measurement as newly measured.
 - **WHEN** workspace removal succeeds
 - **THEN** its stored workspace and worktree sizes become unknown or a newly
   measured unavailable result rather than retaining pre-removal values
+
+### Requirement: Report Disk Usage Scan Progress
+
+Trees SHALL write disk usage scan start and completion details to standard
+error, including a safely escaped path, outcome, and elapsed time. Cache reuse
+SHALL also be logged with its reason and original measurement time. These logs
+SHALL NOT alter structured JSON standard output or lifecycle exit status.
+
+#### Scenario: Show a Slow Scan in Progress
+
+- **WHEN** a lifecycle command begins scanning a registered directory
+- **THEN** standard error identifies the path before traversal and reports
+  duration and outcome after traversal
+
+#### Scenario: Explain a Reused Measurement
+
+- **WHEN** a path is reused within an operation or across the five-second window
+- **THEN** standard error identifies that reuse without claiming a new scan

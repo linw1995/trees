@@ -380,6 +380,10 @@ fn manual_create_opens_an_explicit_program_in_the_workspace() {
         "trees create failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[trees] Measuring disk usage:"));
+    assert!(stderr.contains("[trees] Measured disk usage:"));
+    assert!(stderr.contains("Reusing disk usage (current operation)"));
     assert_eq!(
         String::from_utf8(output.stdout)
             .expect("program output should be UTF-8")

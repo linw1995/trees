@@ -203,8 +203,8 @@ fn run_automatic_create(
                     identity.workspace_path, identity.claim_id, identity.claim_id
                 );
             } else {
-                eprintln!("[trees] Claim released: {}", identity.claim_id);
                 warn_refresh_path(&identity.workspace_path);
+                eprintln!("[trees] Claim released: {}", identity.claim_id);
             }
             return Ok(ExitCode::from(report.exit_code()));
         }

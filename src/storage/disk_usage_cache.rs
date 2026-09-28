@@ -23,6 +23,7 @@ pub enum EntityId {
 pub struct Candidate {
     pub entity: EntityId,
     pub path: CanonicalPath,
+    pub cached: Option<Observation>,
 }
 
 impl Display for EntityId {
@@ -53,39 +54,38 @@ pub enum CacheError {
     Invalid { entity: String },
 }
 
+fn decode_one<I: Display>(id: I, json: Option<String>) -> Result<Option<Observation>, CacheError> {
+    json.map(|json| {
+        let observation: Observation = serde_json::from_str(&json).context(DecodeSnafu {
+            entity: id.to_string(),
+        })?;
+        let valid = match observation.status {
+            Completeness::Complete => {
+                observation.allocated_bytes.is_some() && observation.issues.is_empty()
+            }
+            Completeness::Partial => {
+                observation.allocated_bytes.is_some() && !observation.issues.is_empty()
+            }
+            Completeness::Unavailable => {
+                observation.allocated_bytes.is_none() && !observation.issues.is_empty()
+            }
+        } && crate::domain::Timestamp::parse(observation.observed_at.as_str()).is_ok();
+        ensure!(
+            valid,
+            InvalidSnafu {
+                entity: id.to_string()
+            }
+        );
+        Ok(observation)
+    })
+    .transpose()
+}
+
 fn decode<I: Copy + Eq + Hash + Display>(
     rows: Vec<(I, Option<String>)>,
 ) -> Result<HashMap<I, Option<Observation>>, CacheError> {
     rows.into_iter()
-        .map(|(id, json)| {
-            let observation = json
-                .map(|json| {
-                    let observation: Observation =
-                        serde_json::from_str(&json).context(DecodeSnafu {
-                            entity: id.to_string(),
-                        })?;
-                    let valid = match observation.status {
-                        Completeness::Complete => {
-                            observation.allocated_bytes.is_some() && observation.issues.is_empty()
-                        }
-                        Completeness::Partial => {
-                            observation.allocated_bytes.is_some() && !observation.issues.is_empty()
-                        }
-                        Completeness::Unavailable => {
-                            observation.allocated_bytes.is_none() && !observation.issues.is_empty()
-                        }
-                    };
-                    ensure!(
-                        valid,
-                        InvalidSnafu {
-                            entity: id.to_string()
-                        }
-                    );
-                    Ok(observation)
-                })
-                .transpose()?;
-            Ok((id, observation))
-        })
+        .map(|(id, json)| Ok((id, decode_one(id, json)?)))
         .collect()
 }
 
@@ -158,11 +158,15 @@ pub fn workspace_candidates(
 ) -> Result<Option<Vec<Candidate>>, CacheError> {
     let workspace = workspaces::table
         .find(id)
-        .select((workspaces::id, workspaces::canonical_path))
-        .first::<(WorkspaceId, CanonicalPath)>(connection)
+        .select((
+            workspaces::id,
+            workspaces::canonical_path,
+            workspaces::disk_usage_json,
+        ))
+        .first::<(WorkspaceId, CanonicalPath, Option<String>)>(connection)
         .optional()
         .context(QuerySnafu { kind: "workspace" })?;
-    let Some((workspace_id, workspace_path)) = workspace else {
+    let Some((workspace_id, workspace_path, workspace_json)) = workspace else {
         return Ok(None);
     };
     let worktrees = repo_worktrees::table
@@ -173,35 +177,49 @@ pub fn workspace_candidates(
             repo_worktrees::id,
             repo_worktrees::origin_repository_id,
             repo_worktrees::worktree_path,
+            repo_worktrees::disk_usage_json,
         ))
-        .load::<(RepoWorktreeId, OriginRepositoryId, CanonicalPath)>(connection)
+        .load::<(
+            RepoWorktreeId,
+            OriginRepositoryId,
+            CanonicalPath,
+            Option<String>,
+        )>(connection)
         .context(QuerySnafu { kind: "worktree" })?;
     let origin_ids = worktrees
         .iter()
-        .map(|(_, id, _)| *id)
+        .map(|(_, id, _, _)| *id)
         .collect::<std::collections::HashSet<_>>();
     let origins = origin_repositories::table
         .order(origin_repositories::source_path.asc())
-        .select((origin_repositories::id, origin_repositories::source_path))
-        .load::<(OriginRepositoryId, CanonicalPath)>(connection)
+        .select((
+            origin_repositories::id,
+            origin_repositories::source_path,
+            origin_repositories::disk_usage_json,
+        ))
+        .load::<(OriginRepositoryId, CanonicalPath, Option<String>)>(connection)
         .context(QuerySnafu { kind: "origin" })?;
     let mut candidates = vec![Candidate {
         entity: EntityId::Workspace(workspace_id),
         path: workspace_path,
+        cached: decode_one(EntityId::Workspace(workspace_id), workspace_json)?,
     }];
-    candidates.extend(worktrees.into_iter().map(|(id, _, path)| Candidate {
-        entity: EntityId::Worktree(id),
-        path,
-    }));
-    candidates.extend(
-        origins
-            .into_iter()
-            .filter(|(id, _)| origin_ids.contains(id))
-            .map(|(id, path)| Candidate {
+    for (id, _, path, json) in worktrees {
+        candidates.push(Candidate {
+            entity: EntityId::Worktree(id),
+            path,
+            cached: decode_one(EntityId::Worktree(id), json)?,
+        });
+    }
+    for (id, path, json) in origins {
+        if origin_ids.contains(&id) {
+            candidates.push(Candidate {
                 entity: EntityId::Origin(id),
                 path,
-            }),
-    );
+                cached: decode_one(EntityId::Origin(id), json)?,
+            });
+        }
+    }
     Ok(Some(candidates))
 }
 

@@ -209,6 +209,18 @@ fn status_reports_disk_usage_for_targets_and_workspace_rows() {
         fs::create_dir(&blocked).unwrap();
         fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000)).unwrap();
         let mut connection = database::connect(&database_path).unwrap();
+        let mut expired = trees::storage::disk_usage_cache::workspaces(&mut connection).unwrap()
+            [&active]
+            .clone()
+            .unwrap();
+        expired.observed_at = Timestamp::before_seconds(10);
+        trees::storage::disk_usage_cache::save_if_path_unchanged(
+            &mut connection,
+            trees::storage::disk_usage_cache::EntityId::Workspace(active),
+            &path(&workspace_dir),
+            Some(&expired),
+        )
+        .unwrap();
         assert_eq!(
             trees::size_refresh::refresh_workspace(&mut connection, active)
                 .unwrap()

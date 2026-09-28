@@ -129,9 +129,17 @@ read-only status can use the updated database.
 Trees measures disk usage after successful `create`, `add`, and `release`
 commands complete their physical work. It measures the affected workspace,
 its repository worktrees, and their registered source repositories. Workspace
-removal, including GC, invalidates the removed workspace and worktree values;
-source repositories retain their own measurements while registered. `claim`,
+and worktree records with the same stored path share one measurement within
+that operation. Removal, including GC, invalidates the removed workspace and
+worktree values. Source repositories retain their own measurements while registered. `claim`,
 `open`, and `status` do not scan directories for size.
+
+Repeated lifecycle commands within five seconds reuse the last measurement
+for the same stored path. The original `observed_at` is retained, so the window
+does not extend on reuse. This reduces duplicate scans but can leave a size
+temporarily stale when another command changes files inside the window. Trees
+prints scan start, result, elapsed time, and cache reuse details to standard
+error; JSON standard output remains a single document.
 
 A measurement runs outside long database write transactions and is saved only
 if the registered path still matches the measured path. Missing or unreadable

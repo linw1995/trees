@@ -230,6 +230,17 @@ fn lifecycle_refresh_updates_workspace_worktree_and_origin_caches() {
     let stale_status: serde_json::Value = serde_json::from_slice(&stale_status.stdout).unwrap();
     assert_eq!(stale_status["repos"][0]["disk_usage"]["status"], "complete");
     let mut connection = database::connect(&database_path).unwrap();
+    let mut expired_origin = disk_usage_cache::origins(&mut connection).unwrap()[&origin.id]
+        .clone()
+        .unwrap();
+    expired_origin.observed_at = Timestamp::before_seconds(10);
+    disk_usage_cache::save_if_path_unchanged(
+        &mut connection,
+        disk_usage_cache::EntityId::Origin(origin.id),
+        &path(&origin_dir),
+        Some(&expired_origin),
+    )
+    .unwrap();
     let summary = trees::size_refresh::refresh_workspace(&mut connection, first).unwrap();
     assert_eq!(summary.unavailable, 1);
     assert_eq!(
