@@ -117,6 +117,27 @@ not scan paths; existing records begin without a stored observation. As with
 other schema changes, a writable command applies the migration before
 read-only status can use the updated database.
 
+## Refresh Stored Disk Usage
+
+Use `trees size refresh` from a workspace to measure its root, repository
+worktrees, and referenced source repositories. Explicit selectors and an all
+inventory option are also available:
+
+```sh
+trees size refresh
+trees size refresh --workspace-id WORKSPACE_ID
+trees size refresh --origin-id ORIGIN_ID
+trees size refresh --all
+trees size refresh --all --json
+```
+
+The command stores each measurement and its `observed_at` time. It scans
+outside database write transactions and writes each result only if the
+registered path still matches the path it measured. Missing or unreadable
+paths become unavailable or partial observations; a changed path is skipped.
+Human output reports `complete`, `partial`, `unavailable`, and `skipped`
+counts. These values describe the last refresh, not changes made afterward.
+
 ## Processes
 
 Every selected target includes a live process observation on Linux and macOS.

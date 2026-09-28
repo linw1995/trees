@@ -13,13 +13,13 @@
 
 ## 2. Explicit Refresh
 
-- [ ] 2.1 Add `trees size refresh` selectors for current workspace, workspace
+- [x] 2.1 Add `trees size refresh` selectors for current workspace, workspace
   ID, origin ID, and all entities. Verify parser conflicts and missing targets.
-- [ ] 2.2 Scan selected workspace, worktree, and origin paths once per entity
+- [x] 2.2 Scan selected workspace, worktree, and origin paths once per entity
   outside write transactions, then persist conditional results. Verify shared
   origins, missing directories, partial scans, changed paths, and summary
   counts with controlled fixtures.
-- [ ] 2.3 Document refresh commands and measurement age in `docs/status.md`.
+- [x] 2.3 Document refresh commands and measurement age in `docs/status.md`.
   Verify command examples against CLI tests.
 
 ## 3. Cached Status Output
