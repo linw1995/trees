@@ -26,5 +26,5 @@
 
 ## 5. Cross-Cutting Validation
 
-- [ ] 5.1 Run the relevant completion and CLI test suites plus repository checks; resolve failures and record the commands and results in `verification.md`.
-- [ ] 5.2 Run `openspec validate add-shell-completions --strict` and review each shell-completion scenario against the implementation before marking this plan complete.
+- [x] 5.1 Run the relevant completion and CLI test suites plus repository checks; resolve failures and record the commands and results in `verification.md`.
+- [x] 5.2 Run `openspec validate add-shell-completions --strict` and review each shell-completion scenario against the implementation before marking this plan complete.
