@@ -51,6 +51,52 @@ pub struct Observation {
     pub issues: Vec<Issue>,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheStatus {
+    Unknown,
+    Complete,
+    Partial,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+pub struct CachedObservation {
+    pub observed_at: Option<Timestamp>,
+    pub status: CacheStatus,
+    pub allocated_bytes: Option<u64>,
+    pub issues: Vec<Issue>,
+}
+
+impl Default for CachedObservation {
+    fn default() -> Self {
+        Self {
+            observed_at: None,
+            status: CacheStatus::Unknown,
+            allocated_bytes: None,
+            issues: Vec::new(),
+        }
+    }
+}
+
+impl From<Option<Observation>> for CachedObservation {
+    fn from(value: Option<Observation>) -> Self {
+        let Some(value) = value else {
+            return Self::default();
+        };
+        Self {
+            observed_at: Some(value.observed_at),
+            status: match value.status {
+                Completeness::Complete => CacheStatus::Complete,
+                Completeness::Partial => CacheStatus::Partial,
+                Completeness::Unavailable => CacheStatus::Unavailable,
+            },
+            allocated_bytes: value.allocated_bytes,
+            issues: value.issues,
+        }
+    }
+}
+
 impl Observation {
     fn unavailable(observed_at: Timestamp, code: IssueCode) -> Self {
         Self {
@@ -80,7 +126,7 @@ pub fn format_bytes(bytes: u64) -> String {
     format!("{}.{} {}", tenths / 10, tenths % 10, UNITS[unit])
 }
 
-pub fn summary_cell(observation: &Observation) -> String {
+pub fn summary_cell(observation: &CachedObservation) -> String {
     let reasons = observation
         .issues
         .iter()
@@ -91,23 +137,25 @@ pub fn summary_cell(observation: &Observation) -> String {
         .collect::<Vec<_>>()
         .join("; ");
     match observation.status {
-        Completeness::Complete => format_bytes(observation.allocated_bytes.unwrap_or_default()),
-        Completeness::Partial => format!(
+        CacheStatus::Unknown => "unknown".to_owned(),
+        CacheStatus::Complete => format_bytes(observation.allocated_bytes.unwrap_or_default()),
+        CacheStatus::Partial => format!(
             "{} (partial: {reasons})",
             format_bytes(observation.allocated_bytes.unwrap_or_default())
         ),
-        Completeness::Unavailable => format!("unavailable ({reasons})"),
+        CacheStatus::Unavailable => format!("unavailable ({reasons})"),
     }
 }
 
-pub fn inventory_cell(observation: &Observation) -> String {
+pub fn inventory_cell(observation: &CachedObservation) -> String {
     match observation.status {
-        Completeness::Complete => format_bytes(observation.allocated_bytes.unwrap_or_default()),
-        Completeness::Partial => format!(
+        CacheStatus::Unknown => "unknown".to_owned(),
+        CacheStatus::Complete => format_bytes(observation.allocated_bytes.unwrap_or_default()),
+        CacheStatus::Partial => format!(
             "{} (partial)",
             format_bytes(observation.allocated_bytes.unwrap_or_default())
         ),
-        Completeness::Unavailable => "unavailable".to_owned(),
+        CacheStatus::Unavailable => "unavailable".to_owned(),
     }
 }
 
@@ -564,17 +612,24 @@ mod tests {
                 },
             ],
         };
+        let partial = CachedObservation::from(Some(partial));
         assert_eq!(inventory_cell(&partial), "1.5 KiB (partial)");
         assert_eq!(
             summary_cell(&partial),
             "1.5 KiB (partial: some workspace entries changed during observation; some workspace entries could not be read)"
         );
-        let unavailable = Observation::unavailable(observed_at, IssueCode::RootMissing);
+        let unavailable = CachedObservation::from(Some(Observation::unavailable(
+            observed_at,
+            IssueCode::RootMissing,
+        )));
         assert_eq!(inventory_cell(&unavailable), "unavailable");
         assert_eq!(
             summary_cell(&unavailable),
             "unavailable (workspace directory missing)"
         );
+        let unknown = CachedObservation::default();
+        assert_eq!(summary_cell(&unknown), "unknown");
+        assert_eq!(inventory_cell(&unknown), "unknown");
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]

@@ -18,11 +18,11 @@ trees status --claim-id CLAIM_ID
 trees status WORKSPACE_ID --view repos --json
 ```
 
-Status reads persisted state from one consistent SQLite snapshot, then collects
-optional session metadata, observes target processes, and measures workspace
-disk usage after closing the database connection. It does not reconcile,
-recover an expired operation, run Git, inspect workspace file contents, or
-assert that an available workspace is currently reusable. Use
+Status reads persisted state and cached disk usage from one consistent SQLite
+snapshot, then collects optional session metadata and observes target processes
+after closing the database connection. It does not scan workspace or repository
+directories, run Git, or inspect file contents. It does not reconcile, recover
+an expired operation, or assert that an available workspace is currently reusable. Use
 `trees gc --older-than 30d --dry-run` to check which workspaces currently qualify
 for removal at a chosen age threshold. User-configured hooks execute external
 code whose side effects are controlled by the provider.
@@ -95,12 +95,12 @@ appears in the table, both fields reuse the same observation.
 
 | Field | Meaning |
 | --- | --- |
-| `observed_at` | RFC 3339 time when the directory scan began, independent of `snapshot_at`. |
-| `status` | `complete`, `partial`, or `unavailable`. |
-| `allocated_bytes` | Exact observed byte count; null when unavailable. A partial count covers successfully inspected entries. |
+| `observed_at` | RFC 3339 time when the last refresh began; null when never measured. |
+| `status` | `unknown`, `complete`, `partial`, or `unavailable`. |
+| `allocated_bytes` | Stored byte count; null when unknown or unavailable. A partial count covers successfully inspected entries. |
 | `issues` | Stable `code` and nullable `affected_count` for each scan issue. |
 
-The scan sums allocated filesystem blocks for the workspace root and its
+Each refresh scan sums allocated filesystem blocks for the selected root and its
 descendants. It includes hidden files, worktree metadata, nested directories,
 and mount points. Hard-linked files count once within each observation;
 symbolic links contribute their own allocation without following their targets.
@@ -108,8 +108,15 @@ The number is neither an atomic snapshot nor an estimate of space reclaimed by
 removing a workspace. Files can change during a scan, and snapshots, clones,
 compression, or links outside the tree can share storage. Missing roots and
 unreadable entries produce unavailable or partial observations without failing
-status. No content is read, but scanning many workspace rows takes time
-proportional to their total entry count.
+refresh. No content is read. Refreshing many entities takes time proportional
+to their total entry count; status reads their stored values without scanning.
+
+Every workspace and repository worktree JSON object includes its cached
+`disk_usage` observation. Source repository objects in the repos view include
+the same field. An unmeasured entity has status `unknown`, null time and bytes,
+and no issues. A selected workspace's summary and inventory row use the same
+stored observation. A measurement may become stale after ordinary file edits;
+`observed_at` shows when it was last refreshed, not when files last changed.
 
 The lifecycle database has nullable disk usage observation columns for
 workspaces, repository worktrees, and source repositories. The migration does
@@ -242,11 +249,16 @@ Path-derived labels escape control characters and table delimiters before color
 is applied, preventing repository names from injecting terminal output.
 
 The workspace table adds `SIZE` between `REPOS` and `RECONCILED`. It shows the
-same allocated disk amount as the target summary when that workspace is
-selected. A partial scan uses a compact value such as `1.5 KiB (partial)`; an
-unavailable scan uses `unavailable`. JSON contains the detailed issue codes.
-Removed rows displayed with `--all` also have a size result, which is normally
-unavailable when the directory has already been removed.
+same cached amount as the target summary when that workspace is selected. A
+partial result uses `1.5 KiB (partial)`; a failed measurement uses
+`unavailable`, and an unmeasured workspace uses `unknown`. JSON contains the
+detailed issue codes. Removed rows displayed with `--all` also have a size
+cell, which becomes unknown after removal invalidates the old measurement.
+
+For a selected workspace, an indented `REPO` and `SIZE` table follows the
+compact `Repos` line when worktrees exist. Each size measures the corresponding
+worktree path separately. The workspace root can contain a worktree and other files, so
+the worktree sizes are not added to calculate workspace `Disk usage`.
 
 ```text
 STATUS       MODE  REPOS               SIZE     RECONCILED  ID
@@ -255,10 +267,11 @@ degraded 🔒  🤖    0/1 example(dirty)  1.5 KiB  10:00       01990000-0000-70
 
 ## Source Repositories
 
-Use `--view repos` for source repositories, with `REPO`, `PATH`, and `ID`
+Use `--view repos` for source repositories, with `REPO`, `PATH`, `SIZE`, and `ID`
 columns. Conflicting labels expand to unique path suffixes. JSON uses the
 version-2 envelope with `view: "repos"` and a `repos` array containing
-`origin_repository_id`, `source_path`, `repository_identity`, and `label`.
+`origin_repository_id`, `source_path`, `repository_identity`, `label`, and
+`disk_usage`.
 This view reads stored metadata without probing Git, migrating storage, or
 recovering clone operations. A missing source remains visible. `--all` applies
 only to the workspace view; repos has no hidden registration state.

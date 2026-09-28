@@ -15,7 +15,7 @@ pub struct Report {
     #[serde(flatten)]
     pub snapshot: Snapshot,
     pub target_processes: Option<Observation>,
-    pub target_disk_usage: Option<disk_usage::Observation>,
+    pub target_disk_usage: Option<disk_usage::CachedObservation>,
     pub workspace_disk_usage: Vec<WorkspaceDiskUsage>,
     pub workspace_sessions: Option<session_hook::Observation>,
 }
@@ -24,7 +24,7 @@ pub struct Report {
 pub struct WorkspaceDiskUsage {
     pub workspace_id: WorkspaceId,
     #[serde(flatten)]
-    pub observation: disk_usage::Observation,
+    pub observation: disk_usage::CachedObservation,
 }
 
 pub fn load(
@@ -34,18 +34,16 @@ pub fn load(
     include_removed: bool,
     no_hooks: bool,
 ) -> Result<Report, SnapshotError> {
-    load_with_all_observers(
+    load_with_observers(
         connection,
         selector,
         view,
         include_removed,
         |target, boundaries| processes::observe(target.workspace_id, boundaries),
         |workspaces| session_hook::observe(workspaces, !no_hooks),
-        |workspace| disk_usage::observe(workspace.path.as_path()),
     )
 }
 
-#[cfg(test)]
 fn load_with_observers(
     connection: Option<SqliteConnection>,
     selector: &WorkspaceSelector,
@@ -54,26 +52,7 @@ fn load_with_observers(
     observer: impl FnOnce(&WorkspaceStatus, &[Boundary]) -> Observation,
     sessions: impl FnOnce(&[WorkspaceStatus]) -> Option<session_hook::Observation>,
 ) -> Result<Report, SnapshotError> {
-    load_with_all_observers(
-        connection,
-        selector,
-        view,
-        include_removed,
-        observer,
-        sessions,
-        |workspace| disk_usage::observe(workspace.path.as_path()),
-    )
-}
-
-fn load_with_all_observers(
-    mut connection: Option<SqliteConnection>,
-    selector: &WorkspaceSelector,
-    view: StatusView,
-    include_removed: bool,
-    observer: impl FnOnce(&WorkspaceStatus, &[Boundary]) -> Observation,
-    sessions: impl FnOnce(&[WorkspaceStatus]) -> Option<session_hook::Observation>,
-    mut disk_observer: impl FnMut(&WorkspaceStatus) -> disk_usage::Observation,
-) -> Result<Report, SnapshotError> {
+    let mut connection = connection;
     let (snapshot, boundaries) =
         load_persisted(connection.as_mut(), selector, view, include_removed, || {})?;
     drop(connection);
@@ -86,25 +65,14 @@ fn load_with_all_observers(
     let target_processes = snapshot
         .target()
         .map(|target| observer(target, &boundaries));
-    let target_disk_usage = snapshot.target().map(&mut disk_observer);
+    let target_disk_usage = snapshot.target().map(|target| target.disk_usage.clone());
     let workspace_disk_usage = match &snapshot {
         Snapshot::Workspaces(snapshot) => snapshot
             .workspaces
             .iter()
             .map(|workspace| WorkspaceDiskUsage {
                 workspace_id: workspace.workspace_id,
-                observation: if snapshot
-                    .target_workspace
-                    .as_ref()
-                    .is_some_and(|target| target.workspace_id == workspace.workspace_id)
-                {
-                    target_disk_usage
-                        .as_ref()
-                        .expect("target observation exists")
-                        .clone()
-                } else {
-                    disk_observer(workspace)
-                },
+                observation: workspace.disk_usage.clone(),
             })
             .collect(),
         _ => Vec::new(),
@@ -171,7 +139,7 @@ fn load_persisted(
 
 #[cfg(test)]
 mod tests {
-    use std::cell::{Cell, RefCell};
+    use std::cell::Cell;
 
     use super::*;
     use crate::database;
@@ -189,33 +157,35 @@ mod tests {
     }
 
     #[test]
-    fn disk_usage_covers_rows_and_reuses_the_target_observation() {
+    fn cached_usage_covers_rows_and_reuses_the_target_value() {
         for view in [StatusView::Pools, StatusView::Workspaces, StatusView::Repos] {
             let mut connection = database::connect(std::path::Path::new(":memory:")).unwrap();
             let target = insert_workspace(&mut connection, "/work/api", WorkspaceState::Ready);
             let other = insert_workspace(&mut connection, "/work/web", WorkspaceState::Ready);
-            let calls = RefCell::new(Vec::new());
-            let report = load_with_all_observers(
+            for (id, path, bytes) in [(target, "/work/api", 4096), (other, "/work/web", 8192)] {
+                crate::storage::disk_usage_cache::save_if_path_unchanged(
+                    &mut connection,
+                    crate::storage::disk_usage_cache::EntityId::Workspace(id),
+                    &CanonicalPath::from_absolute(path).unwrap(),
+                    Some(&disk_observation(bytes)),
+                )
+                .unwrap();
+            }
+            let report = load_with_observer(
                 Some(connection),
                 &WorkspaceSelector::Id(target),
                 view,
                 false,
                 |_, _| Observation::unavailable(Timestamp::now(), IssueCode::EnumerationFailed),
-                |_| None,
-                |workspace| {
-                    calls.borrow_mut().push(workspace.workspace_id);
-                    disk_observation(4096)
-                },
             )
             .unwrap();
-            let calls = calls.into_inner();
-            assert_eq!(calls.iter().filter(|&&id| id == target).count(), 1);
             let json = serde_json::to_value(report).unwrap();
             assert_eq!(json["target_disk_usage"]["allocated_bytes"], 4096);
-            assert_eq!(json["target_workspace"]["workspace_id"], target.to_string());
+            assert_eq!(
+                json["target_workspace"]["disk_usage"]["allocated_bytes"],
+                4096
+            );
             if view == StatusView::Workspaces {
-                assert_eq!(calls.len(), 2);
-                assert!(calls.contains(&other));
                 assert_eq!(json["workspace_disk_usage"].as_array().unwrap().len(), 2);
                 for (workspace, usage) in json["workspaces"]
                     .as_array()
@@ -224,127 +194,121 @@ mod tests {
                     .zip(json["workspace_disk_usage"].as_array().unwrap())
                 {
                     assert_eq!(usage["workspace_id"], workspace["workspace_id"]);
-                    if workspace["workspace_id"] == target.to_string() {
-                        assert_eq!(
-                            usage["observed_at"],
-                            json["target_disk_usage"]["observed_at"]
-                        );
-                    }
+                    assert_eq!(
+                        usage["allocated_bytes"],
+                        workspace["disk_usage"]["allocated_bytes"]
+                    );
                 }
             } else {
-                assert_eq!(calls, vec![target]);
                 assert_eq!(json["workspace_disk_usage"], serde_json::json!([]));
             }
         }
     }
 
     #[test]
-    fn disk_usage_scans_workspace_rows_without_a_target() {
+    fn cached_usage_is_unknown_without_measurements_or_a_target() {
         let mut connection = database::connect(std::path::Path::new(":memory:")).unwrap();
-        let first = insert_workspace(&mut connection, "/work/api", WorkspaceState::Ready);
-        let second = insert_workspace(&mut connection, "/work/web", WorkspaceState::Ready);
-        let calls = RefCell::new(Vec::new());
+        insert_workspace(&mut connection, "/work/api", WorkspaceState::Ready);
+        insert_workspace(&mut connection, "/work/web", WorkspaceState::Ready);
         let selector = WorkspaceSelector::ContainingDirectory(
             CanonicalPath::from_absolute("/outside").unwrap(),
         );
-        let report = load_with_all_observers(
+        let report = load_with_observer(
             Some(connection),
             &selector,
             StatusView::Workspaces,
             false,
             |_, _| panic!("no target must not trigger process observation"),
-            |_| None,
-            |workspace| {
-                calls.borrow_mut().push(workspace.workspace_id);
-                disk_observation(1024)
-            },
         )
         .unwrap();
         let json = serde_json::to_value(report).unwrap();
         assert!(json["target_disk_usage"].is_null());
-        assert_eq!(json["workspace_disk_usage"].as_array().unwrap().len(), 2);
-        let calls = calls.into_inner();
-        assert_eq!(calls.len(), 2);
-        assert!(calls.contains(&first));
-        assert!(calls.contains(&second));
+        for usage in json["workspace_disk_usage"].as_array().unwrap() {
+            assert_eq!(usage["status"], "unknown");
+            assert!(usage["observed_at"].is_null());
+            assert!(usage["allocated_bytes"].is_null());
+        }
     }
 
     #[test]
-    fn disk_usage_observes_removed_target_outside_the_inventory() {
+    fn cached_usage_keeps_a_removed_target_outside_inventory() {
         let mut connection = database::connect(std::path::Path::new(":memory:")).unwrap();
         let active = insert_workspace(&mut connection, "/work/api", WorkspaceState::Ready);
         let removed = insert_workspace(&mut connection, "/work/old", WorkspaceState::Removed);
-        let calls = RefCell::new(Vec::new());
-        let report = load_with_all_observers(
+        let unavailable = disk_usage::Observation {
+            observed_at: Timestamp::now(),
+            status: disk_usage::Completeness::Unavailable,
+            allocated_bytes: None,
+            issues: vec![disk_usage::Issue {
+                code: disk_usage::IssueCode::RootMissing,
+                affected_count: None,
+            }],
+        };
+        crate::storage::disk_usage_cache::save_if_path_unchanged(
+            &mut connection,
+            crate::storage::disk_usage_cache::EntityId::Workspace(removed),
+            &CanonicalPath::from_absolute("/work/old").unwrap(),
+            Some(&unavailable),
+        )
+        .unwrap();
+        let report = load_with_observer(
             Some(connection),
             &WorkspaceSelector::Id(removed),
             StatusView::Workspaces,
             false,
             |_, _| Observation::unavailable(Timestamp::now(), IssueCode::EnumerationFailed),
-            |_| None,
-            |workspace| {
-                calls.borrow_mut().push(workspace.workspace_id);
-                disk_usage::Observation {
-                    observed_at: Timestamp::now(),
-                    status: disk_usage::Completeness::Unavailable,
-                    allocated_bytes: None,
-                    issues: vec![disk_usage::Issue {
-                        code: disk_usage::IssueCode::RootMissing,
-                        affected_count: None,
-                    }],
-                }
-            },
         )
         .unwrap();
-        let calls = calls.into_inner();
-        assert_eq!(calls.len(), 2);
-        assert!(calls.contains(&active));
-        assert!(calls.contains(&removed));
         let json = serde_json::to_value(report).unwrap();
         assert_eq!(json["target_disk_usage"]["status"], "unavailable");
         assert_eq!(
             json["workspace_disk_usage"][0]["workspace_id"],
             active.to_string()
         );
+        assert_eq!(json["workspace_disk_usage"][0]["status"], "unknown");
     }
 
     #[test]
-    fn disk_usage_runs_after_storage_closes_and_skips_failed_loads() {
-        let root = std::env::temp_dir().join(format!("trees-disk-report-{}", WorkspaceId::new()));
-        std::fs::create_dir_all(&root).unwrap();
-        let path = root.join("state.sqlite");
-        let mut writer = database::connect(&path).unwrap();
-        let target = insert_workspace(&mut writer, "/work/api", WorkspaceState::Ready);
-        drop(writer);
-        let report = load_with_all_observers(
-            Some(database::connect_read_only(&path).unwrap()),
+    fn malformed_cached_usage_fails_before_process_observation() {
+        let mut connection = database::connect(std::path::Path::new(":memory:")).unwrap();
+        let target = insert_workspace(&mut connection, "/work/api", WorkspaceState::Ready);
+        diesel::update(crate::schema::workspaces::table.find(target))
+            .set(crate::schema::workspaces::disk_usage_json.eq(Some("{}")))
+            .execute(&mut connection)
+            .unwrap();
+        assert!(matches!(
+            load_with_observer(
+                Some(connection),
+                &WorkspaceSelector::Id(target),
+                StatusView::Workspaces,
+                false,
+                |_, _| panic!("failed cache load must not observe processes"),
+            ),
+            Err(SnapshotError::Cache { .. })
+        ));
+    }
+
+    #[test]
+    fn unrelated_corrupt_cache_does_not_break_target_pool_status() {
+        let mut connection = database::connect(std::path::Path::new(":memory:")).unwrap();
+        let target = insert_workspace(&mut connection, "/work/api", WorkspaceState::Ready);
+        let other = insert_workspace(&mut connection, "/work/web", WorkspaceState::Ready);
+        diesel::update(crate::schema::workspaces::table.find(other))
+            .set(crate::schema::workspaces::disk_usage_json.eq(Some("{}")))
+            .execute(&mut connection)
+            .unwrap();
+        let report = load_with_observer(
+            Some(connection),
             &WorkspaceSelector::Id(target),
-            StatusView::Workspaces,
+            StatusView::Pools,
             false,
             |_, _| Observation::unavailable(Timestamp::now(), IssueCode::EnumerationFailed),
-            |_| None,
-            |_| {
-                let mut writer = database::connect(&path).unwrap();
-                writer
-                    .exclusive_transaction::<_, diesel::result::Error, _>(|_| Ok(()))
-                    .unwrap();
-                disk_observation(512)
-            },
         )
         .unwrap();
-        assert_eq!(report.workspace_disk_usage.len(), 1);
-        assert_eq!(report.target_disk_usage.unwrap().allocated_bytes, Some(512));
-        assert!(load_with_all_observers(
-            None,
-            &WorkspaceSelector::Id(WorkspaceId::new()),
-            StatusView::Workspaces,
-            false,
-            |_, _| panic!("failed load must not observe processes"),
-            |_| panic!("failed load must not observe sessions"),
-            |_| panic!("failed load must not observe disk usage"),
-        )
-        .is_err());
-        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(
+            report.target_disk_usage.unwrap().status,
+            disk_usage::CacheStatus::Unknown
+        );
     }
 
     #[test]

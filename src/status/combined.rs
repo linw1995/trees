@@ -3,15 +3,19 @@ use serde::Serialize;
 use snafu::{ResultExt, Snafu};
 
 use super::target::{self, TargetError};
-use super::{repos, PoolStatusSnapshot, StatusSnapshot, StatusView, WorkspaceStatus};
+use super::{disk_usage, repos, PoolStatusSnapshot, StatusSnapshot, StatusView, WorkspaceStatus};
 use crate::domain::Timestamp;
-use crate::storage::{repository, WorkspaceRow};
+use crate::storage::{disk_usage_cache, repository, WorkspaceRow};
 use crate::workspace_locator::WorkspaceSelector;
 
 #[derive(Debug, Snafu)]
 pub enum SnapshotError {
     #[snafu(transparent)]
     Target { source: TargetError },
+    #[snafu(transparent)]
+    Cache {
+        source: disk_usage_cache::CacheError,
+    },
     #[snafu(context(false), display("failed to load status snapshot: {source}"))]
     Transaction { source: diesel::result::Error },
     #[snafu(
@@ -70,7 +74,7 @@ fn load_with_observer(
         let snapshot_at = Timestamp::now();
         let target = target::select(selector, Some(connection))?;
         after_selection();
-        match view {
+        let mut snapshot = match view {
             StatusView::Pools => {
                 let mut snapshot =
                     super::load_pools_in_transaction(connection, snapshot_at.clone()).context(
@@ -79,7 +83,7 @@ fn load_with_observer(
                         },
                     )?;
                 snapshot.target_workspace = load_target(connection, target, snapshot_at)?;
-                Ok(Snapshot::Pools(snapshot))
+                Snapshot::Pools(snapshot)
             }
             StatusView::Workspaces => {
                 let mut snapshot = super::load_workspaces_in_transaction(
@@ -99,16 +103,99 @@ fn load_with_observer(
                     },
                     None => None,
                 };
-                Ok(Snapshot::Workspaces(snapshot))
+                Snapshot::Workspaces(snapshot)
             }
             StatusView::Repos => {
                 let mut snapshot = repos::load_in_transaction(connection, snapshot_at.clone())
                     .context(InventorySnafu { view: "repository" })?;
                 snapshot.target_workspace = load_target(connection, target, snapshot_at)?;
-                Ok(Snapshot::Repos(snapshot))
+                Snapshot::Repos(snapshot)
+            }
+        };
+        attach_cached_usage(connection, &mut snapshot)?;
+        Ok(snapshot)
+    })
+}
+
+fn attach_cached_usage(
+    connection: &mut SqliteConnection,
+    snapshot: &mut Snapshot,
+) -> Result<(), SnapshotError> {
+    let mut workspace_ids = std::collections::HashSet::new();
+    let mut worktree_ids = std::collections::HashSet::new();
+    let mut collect_ids = |workspace: &WorkspaceStatus| {
+        workspace_ids.insert(workspace.workspace_id);
+        worktree_ids.extend(
+            workspace
+                .repo_worktrees
+                .iter()
+                .map(|worktree| worktree.repo_worktree_id),
+        );
+    };
+    if let Some(target) = snapshot.target() {
+        collect_ids(target);
+    }
+    if let Snapshot::Workspaces(inventory) = &*snapshot {
+        for workspace in &inventory.workspaces {
+            collect_ids(workspace);
+        }
+    }
+    let workspace_usage = if workspace_ids.is_empty() {
+        Default::default()
+    } else {
+        disk_usage_cache::workspaces_for_ids(connection, &workspace_ids)?
+    };
+    let worktree_usage = if worktree_ids.is_empty() {
+        Default::default()
+    } else {
+        disk_usage_cache::worktrees_for_ids(connection, &worktree_ids)?
+    };
+    let attach_workspace = |workspace: &mut WorkspaceStatus| {
+        workspace.disk_usage = disk_usage::CachedObservation::from(
+            workspace_usage
+                .get(&workspace.workspace_id)
+                .cloned()
+                .flatten(),
+        );
+        for worktree in &mut workspace.repo_worktrees {
+            worktree.disk_usage = disk_usage::CachedObservation::from(
+                worktree_usage
+                    .get(&worktree.repo_worktree_id)
+                    .cloned()
+                    .flatten(),
+            );
+        }
+    };
+    match snapshot {
+        Snapshot::Pools(snapshot) => {
+            if let Some(target) = &mut snapshot.target_workspace {
+                attach_workspace(target);
             }
         }
-    })
+        Snapshot::Workspaces(snapshot) => {
+            if let Some(target) = &mut snapshot.target_workspace {
+                attach_workspace(target);
+            }
+            for workspace in &mut snapshot.workspaces {
+                attach_workspace(workspace);
+            }
+        }
+        Snapshot::Repos(snapshot) => {
+            if let Some(target) = &mut snapshot.target_workspace {
+                attach_workspace(target);
+            }
+            let origin_usage = disk_usage_cache::origins(connection)?;
+            for origin in &mut snapshot.repos {
+                origin.disk_usage = disk_usage::CachedObservation::from(
+                    origin_usage
+                        .get(&origin.origin_repository_id)
+                        .cloned()
+                        .flatten(),
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn load_target(

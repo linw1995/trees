@@ -119,9 +119,25 @@ fn status_reports_disk_usage_for_targets_and_workspace_rows() {
         None,
     );
     drop(connection);
-    let before_database = fs::read(&database_path).unwrap();
     let before_file = fs::read(workspace_dir.join("data")).unwrap();
     let before_git_marker = fs::read(workspace_dir.join(".git")).unwrap();
+
+    let unknown = command(&root)
+        .current_dir(&root)
+        .args(["status", &active.to_string(), "--json"])
+        .output()
+        .unwrap();
+    assert!(unknown.status.success());
+    let unknown: serde_json::Value = serde_json::from_slice(&unknown.stdout).unwrap();
+    assert_eq!(unknown["target_disk_usage"]["status"], "unknown");
+    assert!(unknown["target_disk_usage"]["observed_at"].is_null());
+
+    let refresh = command(&root)
+        .current_dir(&root)
+        .args(["size", "refresh", "--workspace-id", &active.to_string()])
+        .output()
+        .unwrap();
+    assert!(refresh.status.success());
 
     for view in ["pools", "workspaces", "repos"] {
         let output = command(&root)
@@ -190,6 +206,12 @@ fn status_reports_disk_usage_for_targets_and_workspace_rows() {
         let blocked = workspace_dir.join("blocked");
         fs::create_dir(&blocked).unwrap();
         fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000)).unwrap();
+        let refresh = command(&root)
+            .current_dir(&root)
+            .args(["size", "refresh", "--workspace-id", &active.to_string()])
+            .output()
+            .unwrap();
+        assert!(refresh.status.success());
         let output = command(&root)
             .current_dir(&root)
             .args([
@@ -221,6 +243,14 @@ fn status_reports_disk_usage_for_targets_and_workspace_rows() {
         assert!(human.contains("(partial)"));
         fs::remove_dir(blocked).unwrap();
     }
+
+    let refresh = command(&root)
+        .current_dir(&root)
+        .args(["size", "refresh", "--workspace-id", &removed.to_string()])
+        .output()
+        .unwrap();
+    assert!(refresh.status.success());
+    let before_database = fs::read(&database_path).unwrap();
 
     let output = command(&root)
         .current_dir(&root)

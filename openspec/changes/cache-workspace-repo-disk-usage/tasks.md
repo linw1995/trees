@@ -24,16 +24,16 @@
 
 ## 3. Cached Status Output
 
-- [ ] 3.1 Load only stored size observations in the read-only status snapshot
+- [x] 3.1 Load only stored size observations in the read-only status snapshot
   and remove status directory scans. Verify observer hooks cannot run from
   status, including no target, `--all`, and every JSON view.
-- [ ] 3.2 Show cached or unknown workspace sizes in summary and inventory,
+- [x] 3.2 Show cached or unknown workspace sizes in summary and inventory,
   show source repository `SIZE`, and show target worktree size details. Verify
   complete, partial, unavailable, unknown, and no-color human output.
-- [ ] 3.3 Extend JSON with cached worktree and origin observations while
+- [x] 3.3 Extend JSON with cached worktree and origin observations while
   retaining target and inventory usage fields. Verify array order, matching
   target values, nullable times for unknown values, and version-2 output.
-- [ ] 3.4 Update `docs/status.md` examples and cache semantics. Verify
+- [x] 3.4 Update `docs/status.md` examples and cache semantics. Verify
   documentation fixtures and Markdown lint.
 
 ## 4. Lifecycle Refresh

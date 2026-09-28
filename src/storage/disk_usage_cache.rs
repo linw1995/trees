@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt::Display;
 use std::hash::Hash;
 
@@ -98,6 +99,21 @@ pub fn workspaces(
     decode(rows)
 }
 
+pub fn workspaces_for_ids(
+    connection: &mut SqliteConnection,
+    ids: &HashSet<WorkspaceId>,
+) -> Result<HashMap<WorkspaceId, Option<Observation>>, CacheError> {
+    let rows = workspaces::table
+        .select((workspaces::id, workspaces::disk_usage_json))
+        .load::<(WorkspaceId, Option<String>)>(connection)
+        .context(QuerySnafu { kind: "workspace" })?;
+    decode(
+        rows.into_iter()
+            .filter(|(id, _)| ids.contains(id))
+            .collect(),
+    )
+}
+
 pub fn worktrees(
     connection: &mut SqliteConnection,
 ) -> Result<HashMap<RepoWorktreeId, Option<Observation>>, CacheError> {
@@ -106,6 +122,21 @@ pub fn worktrees(
         .load(connection)
         .context(QuerySnafu { kind: "worktree" })?;
     decode(rows)
+}
+
+pub fn worktrees_for_ids(
+    connection: &mut SqliteConnection,
+    ids: &HashSet<RepoWorktreeId>,
+) -> Result<HashMap<RepoWorktreeId, Option<Observation>>, CacheError> {
+    let rows = repo_worktrees::table
+        .select((repo_worktrees::id, repo_worktrees::disk_usage_json))
+        .load::<(RepoWorktreeId, Option<String>)>(connection)
+        .context(QuerySnafu { kind: "worktree" })?;
+    decode(
+        rows.into_iter()
+            .filter(|(id, _)| ids.contains(id))
+            .collect(),
+    )
 }
 
 pub fn origins(

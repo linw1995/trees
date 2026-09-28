@@ -175,7 +175,51 @@ fn refreshes_current_workspace_and_all_entities_without_duplicate_origins() {
     assert_eq!(json["complete"], 5);
     assert_eq!(json["skipped"], 0);
 
+    let repo_status = command(&root)
+        .current_dir(&root)
+        .args(["status", "--view", "repos", "--json"])
+        .output()
+        .unwrap();
+    assert!(repo_status.status.success());
+    let repo_status: serde_json::Value = serde_json::from_slice(&repo_status.stdout).unwrap();
+    assert_eq!(repo_status["repos"][0]["disk_usage"]["status"], "complete");
+    let repo_human = command(&root)
+        .current_dir(&root)
+        .args(["status", "--view", "repos"])
+        .output()
+        .unwrap();
+    assert!(repo_human.status.success());
+    let repo_human = String::from_utf8(repo_human.stdout).unwrap();
+    assert!(repo_human.lines().next().unwrap().contains("SIZE"));
+
+    let workspace_status = command(&root)
+        .current_dir(&root)
+        .args([
+            "status",
+            &first.to_string(),
+            "--view",
+            "workspaces",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(workspace_status.status.success());
+    let workspace_status: serde_json::Value =
+        serde_json::from_slice(&workspace_status.stdout).unwrap();
+    assert_eq!(
+        workspace_status["target_workspace"]["repo_worktrees"][0]["disk_usage"]["status"],
+        "complete"
+    );
+
     fs::remove_dir_all(&origin_dir).unwrap();
+    let stale_status = command(&root)
+        .current_dir(&root)
+        .args(["status", "--view", "repos", "--json"])
+        .output()
+        .unwrap();
+    assert!(stale_status.status.success());
+    let stale_status: serde_json::Value = serde_json::from_slice(&stale_status.stdout).unwrap();
+    assert_eq!(stale_status["repos"][0]["disk_usage"]["status"], "complete");
     let output = command(&root)
         .current_dir(&root)
         .args([
