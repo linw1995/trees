@@ -326,23 +326,24 @@ pub enum RecoveryOutcome {
     Failed,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum RecoveryPolicy {
-    Full,
-    PreserveWorktrees,
-}
-
 pub fn recover_expired_operation(
     connection: &mut SqliteConnection,
     workspace_id: &WorkspaceId,
 ) -> Result<RecoveryOutcome, ReconciliationError> {
-    recover_expired_operation_with_policy(connection, workspace_id, RecoveryPolicy::Full)
+    recover_expired_operation_inner(connection, workspace_id, false)
 }
 
-pub fn recover_expired_operation_with_policy(
+pub fn recover_expired_operation_for_access(
     connection: &mut SqliteConnection,
     workspace_id: &WorkspaceId,
-    policy: RecoveryPolicy,
+) -> Result<RecoveryOutcome, ReconciliationError> {
+    recover_expired_operation_inner(connection, workspace_id, true)
+}
+
+fn recover_expired_operation_inner(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+    preserve_worktrees: bool,
 ) -> Result<RecoveryOutcome, ReconciliationError> {
     let running_operation =
         match find_running_operation(connection, workspace_id).context(DatabaseSnafu)? {
@@ -357,7 +358,7 @@ pub fn recover_expired_operation_with_policy(
     // New operation kinds must opt into access recovery before opening can
     // take over their leases without moving or removing user worktrees.
     snafu::ensure!(
-        policy == RecoveryPolicy::Full
+        !preserve_worktrees
             || matches!(
                 operation.kind.as_str(),
                 "acquire" | "claim" | "release" | "gc" | "remove"

@@ -4,7 +4,7 @@ use diesel::Connection;
 use snafu::{OptionExt, Snafu};
 
 use crate::domain::{CanonicalPath, ClaimId, WorkspaceId, WorkspaceState};
-use crate::reconciliation::{recover_expired_operation_with_policy, RecoveryPolicy};
+use crate::reconciliation::recover_expired_operation_for_access;
 use crate::storage::{find_workspace_open_snapshot, WorkspaceOpenSnapshot};
 use crate::workspace_locator::{locate, LocateError, WorkspaceSelector};
 
@@ -73,11 +73,7 @@ pub fn resolve_selector(
     let workspace_id = snapshot.workspace.id;
     // Recovery runs Git observations and renews its lease in short writes.
     // Neither ID resolution nor final admission may hold an outer transaction.
-    recover_expired_operation_with_policy(
-        connection,
-        &workspace_id,
-        RecoveryPolicy::PreserveWorktrees,
-    )?;
+    recover_expired_operation_for_access(connection, &workspace_id)?;
     connection.transaction(|connection| {
         let snapshot = find_workspace_open_snapshot(connection, &workspace_id)?
             .context(NotFoundSnafu { workspace_id })?;

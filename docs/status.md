@@ -309,7 +309,8 @@ The human workspace view identifies each record by stable workspace ID rather
 than path. `trees open` resolves the selected workspace and starts `$SHELL` in the persisted
 canonical workspace directory; `--program=<PROGRAM>` selects another executable
 without shell parsing. Both manual and automatic workspaces can be opened
-without an active claim; opening does not acquire a claim. Open rejects removed workspaces and unexpired operation leases. Before opening,
+without an active claim; opening does not acquire a claim. Open rejects removed
+workspaces and unexpired operation leases. Before opening,
 it recovers expired `acquire`, `claim`, `release`, `gc`, and `remove` operations
 through the shared lifecycle recovery workflow. Recovery observes the current
 worktrees, records the interrupted operation as failed, and releases its lease;

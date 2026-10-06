@@ -23,8 +23,13 @@ claims, or change status into a mutating command.
 - Use the existing storage without creating or migrating it. Resolve IDs and
   selectors in short transactions, recover outside them, then recheck the
   selected workspace ID before closing storage and launching the program.
-- Preserve existing public recovery APIs. Review the new policy surface and
-  test scaffolding through isolated ablations before finalizing the design.
+- Preserve the existing public lifecycle recovery API and expose a named
+  access recovery function. Both delegate to one private implementation; callers
+  do not need a public policy type. Keep mode selection inside these entry points.
+- Reuse one real automatic workspace for all eligible operation kinds. Use
+  metadata fixtures for admission and persistence tests, where Git state does
+  not affect the behavior being tested. Existing selector integration tests cover
+  the named selectors; this regression exercises the positional ID path.
 
 ## Risks / Trade-Offs
 

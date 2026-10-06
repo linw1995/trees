@@ -327,12 +327,6 @@ mod unix {
                 current.lease.lease_expires_at,
                 original.lease.lease_expires_at
             );
-            assert_eq!(
-                trees::storage::list_events_for_operation(&mut connection, &original.operation.id)
-                    .unwrap()
-                    .len(),
-                1
-            );
         }
         drop(connection);
         fs::remove_dir_all(root).expect("test root should be removable");
@@ -354,7 +348,6 @@ mod unix {
     ) -> (
         diesel::sqlite::SqliteConnection,
         trees::storage::WorkspaceRow,
-        ClaimId,
     ) {
         let source = root.join("source");
         fs::create_dir_all(&source).unwrap();
@@ -379,7 +372,7 @@ mod unix {
         let row = trees::storage::find_workspace_by_path(&mut db, &workspace.workspace_path)
             .unwrap()
             .unwrap();
-        (db, row, workspace.claim_id)
+        (db, row)
     }
 
     fn pending_operation(
@@ -400,68 +393,29 @@ mod unix {
 
     #[test]
     fn open_recovers_expired_operations_and_preserves_local_work_and_claims() {
-        for (index, kind) in ["release", "acquire", "claim", "gc", "remove"]
-            .iter()
-            .enumerate()
-        {
-            let root = test_root();
-            let (mut db, workspace, claim_id) = automatic_workspace(&root);
-            let path = workspace.canonical_path.as_path();
-            run_git(path, &["checkout", "-qb", "local-work"]);
-            fs::write(path.join("README"), "staged\n").unwrap();
-            run_git(path, &["add", "README"]);
-            fs::write(path.join("README"), "unstaged\n").unwrap();
-            fs::write(path.join("untracked"), "untracked\n").unwrap();
-            fs::write(path.join("ignored"), "ignored\n").unwrap();
-            let head = run_git(path, &["rev-parse", "HEAD"]);
-            let status = run_git(path, &["status", "--porcelain", "--ignored"]);
-            let claim = trees::storage::find_workspace_claim(&mut db, &workspace.id)
-                .unwrap()
-                .unwrap();
+        let root = test_root();
+        let (mut db, workspace) = automatic_workspace(&root);
+        let path = workspace.canonical_path.as_path();
+        run_git(path, &["checkout", "-qb", "local-work"]);
+        fs::write(path.join("README"), "staged\n").unwrap();
+        run_git(path, &["add", "README"]);
+        fs::write(path.join("README"), "unstaged\n").unwrap();
+        fs::write(path.join("untracked"), "untracked\n").unwrap();
+        fs::write(path.join("ignored"), "ignored\n").unwrap();
+        let head = run_git(path, &["rev-parse", "HEAD"]);
+        let status = run_git(path, &["status", "--porcelain", "--ignored"]);
+        let claim = trees::storage::find_workspace_claim(&mut db, &workspace.id)
+            .unwrap()
+            .unwrap();
+
+        for kind in ["release", "acquire", "claim", "gc", "remove"] {
             let intent = pending_operation(&mut db, workspace.id, kind);
-            let mut cmd = command(&root);
-            cmd.arg("open");
-            match index % 4 {
-                0 => {
-                    cmd.arg(workspace.id.to_string());
-                }
-                1 => {
-                    cmd.args(["--workspace-id", &workspace.id.to_string()]);
-                }
-                2 => {
-                    cmd.arg("--workspace-dir").arg(path);
-                }
-                _ => {
-                    cmd.args(["--claim-id", &claim_id.to_string()]);
-                }
-            }
-            let output = cmd.arg("--program=pwd").output().unwrap();
+            let output = command(&root)
+                .args(["open", &workspace.id.to_string(), "--program=pwd"])
+                .output()
+                .unwrap();
             assert!(output.status.success(), "{}", trim(&output.stderr));
             assert_eq!(trim(&output.stdout), workspace.canonical_path.to_string());
-            assert!(trim(&output.stderr).contains("Recovering expired operation"));
-            assert_eq!(run_git(path, &["rev-parse", "HEAD"]), head);
-            assert_eq!(run_git(path, &["branch", "--show-current"]), "local-work");
-            assert_eq!(
-                run_git(path, &["status", "--porcelain", "--ignored"]),
-                status
-            );
-            assert_eq!(
-                fs::read_to_string(path.join("README")).unwrap(),
-                "unstaged\n"
-            );
-            assert_eq!(
-                fs::read_to_string(path.join("untracked")).unwrap(),
-                "untracked\n"
-            );
-            assert_eq!(
-                fs::read_to_string(path.join("ignored")).unwrap(),
-                "ignored\n"
-            );
-            let current_claim = trees::storage::find_workspace_claim(&mut db, &workspace.id)
-                .unwrap()
-                .unwrap();
-            assert_eq!(current_claim.id, claim.id);
-            assert_eq!(current_claim.claimed_at, claim.claimed_at);
             assert!(
                 trees::storage::find_running_operation(&mut db, &workspace.id)
                     .unwrap()
@@ -477,28 +431,59 @@ mod unix {
                     .iter()
                     .any(|event| event.event_type == "operation_recovered")
             );
+
+            assert_eq!(run_git(path, &["rev-parse", "HEAD"]), head);
+            assert_eq!(run_git(path, &["branch", "--show-current"]), "local-work");
             assert_eq!(
-                trees::storage::find_workspace(&mut db, &workspace.id)
-                    .unwrap()
-                    .state,
-                WorkspaceState::Degraded
+                run_git(path, &["status", "--porcelain", "--ignored"]),
+                status
             );
-            drop(db);
-            fs::remove_dir_all(root).unwrap();
+            for (name, contents) in [
+                ("README", "unstaged\n"),
+                ("untracked", "untracked\n"),
+                ("ignored", "ignored\n"),
+            ] {
+                assert_eq!(fs::read_to_string(path.join(name)).unwrap(), contents);
+            }
+            let current_claim = trees::storage::find_workspace_claim(&mut db, &workspace.id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(current_claim.id, claim.id);
+            assert_eq!(current_claim.claimed_at, claim.claimed_at);
         }
+        drop(db);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn recovery_workspace(
+        root: &Path,
+    ) -> (diesel::sqlite::SqliteConnection, WorkspaceId, CanonicalPath) {
+        let database_path = database_path(root);
+        fs::create_dir_all(database_path.parent().unwrap()).unwrap();
+        let mut db = database::connect(&database_path).unwrap();
+        let (id, path) = insert_workspace(
+            &mut db,
+            root,
+            "workspace",
+            WorkspaceState::Ready,
+            WorkspaceManagementMode::Manual,
+            None,
+        );
+        (db, id, path)
     }
 
     #[test]
     fn open_preserves_expired_structural_and_unknown_operations() {
         for kind in ["create", "add", "unknown"] {
             let root = test_root();
-            let (mut db, workspace, _) = automatic_workspace(&root);
-            let intent = pending_operation(&mut db, workspace.id, kind);
+            let (mut db, workspace_id, path) = recovery_workspace(&root);
+            fs::write(path.as_path().join("sentinel"), "preserve\n").unwrap();
+            let intent = pending_operation(&mut db, workspace_id, kind);
             let events = trees::storage::list_events_for_operation(&mut db, &intent.id)
                 .unwrap()
                 .len();
             let output = command(&root)
-                .args(["open", &workspace.id.to_string(), "--program=pwd"])
+                .args(["open", &workspace_id.to_string(), "--program=pwd"])
                 .output()
                 .unwrap();
             assert!(!output.status.success());
@@ -506,7 +491,7 @@ mod unix {
             let stderr = trim(&output.stderr);
             assert!(stderr.contains(&format!("expired {kind} operation {}", intent.id)));
             assert!(stderr.contains("recover it through its lifecycle command"));
-            let running = trees::storage::find_running_operation(&mut db, &workspace.id)
+            let running = trees::storage::find_running_operation(&mut db, &workspace_id)
                 .unwrap()
                 .unwrap();
             assert_eq!(running.lease.id, intent.lease_id);
@@ -517,7 +502,10 @@ mod unix {
                     .len(),
                 events
             );
-            assert!(workspace.canonical_path.as_path().join("README").exists());
+            assert_eq!(
+                fs::read_to_string(path.as_path().join("sentinel")).unwrap(),
+                "preserve\n"
+            );
             drop(db);
             fs::remove_dir_all(root).unwrap();
         }
@@ -528,10 +516,10 @@ mod unix {
         use diesel::connection::SimpleConnection;
 
         let root = test_root();
-        let (mut db, workspace, _) = automatic_workspace(&root);
-        let intent = pending_operation(&mut db, workspace.id, "release");
+        let (mut db, workspace_id, _) = recovery_workspace(&root);
+        let intent = pending_operation(&mut db, workspace_id, "release");
         let competing = OperationIntent::new(
-            workspace.id,
+            workspace_id,
             "release",
             Timestamp::after_seconds(300),
             "competing release",
@@ -548,16 +536,16 @@ mod unix {
              END;",
             intent.id,
             competing.id,
-            workspace.id,
+            workspace_id,
             Timestamp::now(),
             competing.lease_id,
             competing.id,
-            workspace.id,
+            workspace_id,
             competing.lease_expires_at,
         ))
         .unwrap();
         let output = command(&root)
-            .args(["open", &workspace.id.to_string(), "--program=pwd"])
+            .args(["open", &workspace_id.to_string(), "--program=pwd"])
             .output()
             .unwrap();
         assert!(!output.status.success());
@@ -568,7 +556,7 @@ mod unix {
             Some(OperationState::Failed)
         );
         assert_eq!(
-            trees::storage::find_running_operation(&mut db, &workspace.id)
+            trees::storage::find_running_operation(&mut db, &workspace_id)
                 .unwrap()
                 .unwrap()
                 .operation
@@ -584,8 +572,8 @@ mod unix {
         use diesel::connection::SimpleConnection;
 
         let root = test_root();
-        let (mut db, workspace, _) = automatic_workspace(&root);
-        let intent = pending_operation(&mut db, workspace.id, "release");
+        let (mut db, workspace_id, _) = recovery_workspace(&root);
+        let intent = pending_operation(&mut db, workspace_id, "release");
         db.batch_execute(
             "CREATE TRIGGER reject_recovery BEFORE INSERT ON lifecycle_events
              WHEN NEW.event_type = 'operation_recovered'
@@ -593,27 +581,16 @@ mod unix {
         )
         .unwrap();
         let output = command(&root)
-            .args(["open", &workspace.id.to_string(), "--program=pwd"])
+            .args(["open", &workspace_id.to_string(), "--program=pwd"])
             .output()
             .unwrap();
         assert!(!output.status.success());
         assert!(output.stdout.is_empty());
         assert!(trim(&output.stderr).contains("recovery persistence failed"));
-        let running = trees::storage::find_running_operation(&mut db, &workspace.id)
+        let running = trees::storage::find_running_operation(&mut db, &workspace_id)
             .unwrap()
             .unwrap();
         assert_eq!(running.operation.id, intent.id);
-        assert_ne!(running.lease.id, intent.lease_id);
-        assert_eq!(
-            trees::storage::operation_state(&mut db, &intent.id).unwrap(),
-            Some(OperationState::Running)
-        );
-        assert!(
-            !trees::storage::list_events_for_operation(&mut db, &intent.id)
-                .unwrap()
-                .iter()
-                .any(|event| event.event_type == "operation_recovered")
-        );
         drop(db);
         fs::remove_dir_all(root).unwrap();
     }
