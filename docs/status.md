@@ -309,9 +309,20 @@ The human workspace view identifies each record by stable workspace ID rather
 than path. `trees open` resolves the selected workspace and starts `$SHELL` in the persisted
 canonical workspace directory; `--program=<PROGRAM>` selects another executable
 without shell parsing. Both manual and automatic workspaces can be opened
-without an active claim; opening does not acquire a claim. Open rejects removed workspaces
-and retained operation leases, closes its read-only database connection before
-handoff, and does not reconcile or mutate lifecycle state.
+without an active claim; opening does not acquire a claim. Open rejects removed workspaces and unexpired operation leases. Before opening,
+it recovers expired `acquire`, `claim`, `release`, `gc`, and `remove` operations
+through the shared lifecycle recovery workflow. Recovery observes the current
+worktrees, records the interrupted operation as failed, and releases its lease;
+it preserves branches, files, and claims without resuming the original command.
+Expired `create`, `add`, and unknown operation kinds require recovery through
+their lifecycle command before opening because recovery may change directory
+structure. The error identifies the operation and its kind.
+
+Open uses the existing database without creating or migrating it. Recovery runs
+outside database transactions; open rechecks removal and operation admission
+after recovery and closes its database connection before handoff. Workspaces
+without a retained lease and origin repository targets do not trigger recovery.
+Status remains read-only and never recovers operations.
 
 See [Workspace lifecycle](workspaces.md) for allocation and release, and
 [Cleanup](cleanup.md) for cleanup and explicit removal.
