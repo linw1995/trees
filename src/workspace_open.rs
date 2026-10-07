@@ -4,7 +4,8 @@ use diesel::Connection;
 use snafu::{OptionExt, Snafu};
 
 use crate::domain::{CanonicalPath, ClaimId, WorkspaceId, WorkspaceState};
-use crate::storage::find_workspace_open_snapshot;
+use crate::reconciliation::recover_expired_operation_for_access;
+use crate::storage::{find_workspace_open_snapshot, WorkspaceOpenSnapshot};
 use crate::workspace_locator::{locate, LocateError, WorkspaceSelector};
 
 /// Resolves a positional ID across workspace and origin repository records.
@@ -12,7 +13,7 @@ pub fn resolve_id(
     connection: &mut SqliteConnection,
     id: WorkspaceId,
 ) -> Result<CanonicalPath, WorkspaceOpenError> {
-    connection.transaction(|connection| {
+    let origin_path = connection.transaction(|connection| {
         let workspace = crate::storage::find_workspace(connection, &id).optional()?;
         let origin = crate::schema::origin_repositories::table
             .filter(crate::schema::origin_repositories::id.eq(id.to_string()))
@@ -21,10 +22,14 @@ pub fn resolve_id(
             .optional()?;
         match (workspace, origin) {
             (Some(_), Some(_)) => AmbiguousIdSnafu { id }.fail(),
-            (None, Some(origin)) => Ok(origin.source_path),
-            _ => resolve_target(connection, &id),
+            (None, Some(origin)) => Ok(Some(origin.source_path)),
+            _ => Ok(None),
         }
-    })
+    })?;
+    match origin_path {
+        Some(path) => Ok(path),
+        None => resolve_target(connection, &id),
+    }
 }
 
 pub fn resolve_target(
@@ -38,7 +43,7 @@ pub fn resolve_selector(
     connection: &mut SqliteConnection,
     selector: &WorkspaceSelector,
 ) -> Result<CanonicalPath, WorkspaceOpenError> {
-    connection.transaction(|connection| {
+    let snapshot = connection.transaction(|connection| {
         let located = locate(connection, selector).map_err(|error| match error {
             LocateError::Database { source } => WorkspaceOpenError::Database { source },
             error => WorkspaceOpenError::from(error),
@@ -58,22 +63,45 @@ pub fn resolve_selector(
             find_workspace_open_snapshot(connection, workspace_id)?.context(NotFoundSnafu {
                 workspace_id: *workspace_id,
             })?;
-        if snapshot.workspace.state == WorkspaceState::Removed {
-            return Err(WorkspaceOpenError::Removed {
-                workspace_id: *workspace_id,
-            });
-        }
-        if snapshot.operation_lease.is_some() {
-            return Err(WorkspaceOpenError::OperationActive {
-                workspace_id: *workspace_id,
-            });
-        }
+        ensure_not_removed(&snapshot)?;
+        Ok(snapshot)
+    })?;
+    if snapshot.operation_lease.is_none() {
+        return Ok(snapshot.workspace.canonical_path);
+    }
+
+    let workspace_id = snapshot.workspace.id;
+    // Recovery runs Git observations and renews its lease in short writes.
+    // Neither ID resolution nor final admission may hold an outer transaction.
+    recover_expired_operation_for_access(connection, &workspace_id)?;
+    connection.transaction(|connection| {
+        let snapshot = find_workspace_open_snapshot(connection, &workspace_id)?
+            .context(NotFoundSnafu { workspace_id })?;
+        ensure_not_removed(&snapshot)?;
+        snafu::ensure!(
+            snapshot.operation_lease.is_none(),
+            OperationActiveSnafu { workspace_id }
+        );
         Ok(snapshot.workspace.canonical_path)
     })
 }
 
+fn ensure_not_removed(snapshot: &WorkspaceOpenSnapshot) -> Result<(), WorkspaceOpenError> {
+    snafu::ensure!(
+        snapshot.workspace.state != WorkspaceState::Removed,
+        RemovedSnafu {
+            workspace_id: snapshot.workspace.id,
+        }
+    );
+    Ok(())
+}
+
 #[derive(Debug, Snafu)]
 pub enum WorkspaceOpenError {
+    #[snafu(transparent)]
+    Recovery {
+        source: crate::reconciliation::ReconciliationError,
+    },
     #[snafu(display("ID matches both a workspace and an origin repository: {id}; use --workspace-id for the workspace"))]
     AmbiguousId { id: WorkspaceId },
     #[snafu(transparent)]

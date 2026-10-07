@@ -1,12 +1,4 @@
-# Workspace Open Specification
-
-## Purpose
-
-This capability defines how callers safely launch a program in an existing
-managed workspace selected by stable ID without bypassing workspace ownership
-or operation boundaries.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Open a Managed Workspace Using an Identifier
 
@@ -82,6 +74,8 @@ lease, open SHALL NOT trigger recovery, reconciliation, or lifecycle events.
 
 - **WHEN** the workspace has an unexpired lease or an expired structural operation
 - **THEN** open fails without recovering or taking over the operation
+
+## ADDED Requirements
 
 ### Requirement: Recover Expired Operations Before Opening
 

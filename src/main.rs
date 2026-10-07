@@ -249,7 +249,7 @@ fn open_workspace(
 fn run_open(arguments: trees::cli::OpenArgs) -> Result<ExitCode, CliError> {
     let selector = arguments.selector()?;
     let program = resolve_required_program(arguments.program, "--program")?;
-    let mut connection = trees::database::open_read_only()?;
+    let mut connection = trees::database::open_existing()?;
     let workspace_path = match arguments.workspace_id {
         Some(id) => trees::workspace_open::resolve_id(&mut connection, id)?,
         None => trees::workspace_open::resolve_selector(&mut connection, &selector)?,

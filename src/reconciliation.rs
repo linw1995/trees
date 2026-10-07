@@ -330,6 +330,21 @@ pub fn recover_expired_operation(
     connection: &mut SqliteConnection,
     workspace_id: &WorkspaceId,
 ) -> Result<RecoveryOutcome, ReconciliationError> {
+    recover_expired_operation_inner(connection, workspace_id, false)
+}
+
+pub fn recover_expired_operation_for_access(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+) -> Result<RecoveryOutcome, ReconciliationError> {
+    recover_expired_operation_inner(connection, workspace_id, true)
+}
+
+fn recover_expired_operation_inner(
+    connection: &mut SqliteConnection,
+    workspace_id: &WorkspaceId,
+    preserve_worktrees: bool,
+) -> Result<RecoveryOutcome, ReconciliationError> {
     let running_operation =
         match find_running_operation(connection, workspace_id).context(DatabaseSnafu)? {
             Some(operation) => operation,
@@ -340,6 +355,20 @@ pub fn recover_expired_operation(
     if !lease.lease_expires_at.has_expired() {
         return Ok(RecoveryOutcome::LeaseActive);
     }
+    // New operation kinds must opt into access recovery before opening can
+    // take over their leases without moving or removing user worktrees.
+    snafu::ensure!(
+        !preserve_worktrees
+            || matches!(
+                operation.kind.as_str(),
+                "acquire" | "claim" | "release" | "gc" | "remove"
+            ),
+        RecoveryRequiredSnafu {
+            workspace_id: *workspace_id,
+            operation_id: operation.id,
+            kind: operation.kind.clone(),
+        }
+    );
     let recovery_lease_id = LeaseId::new();
     let recovery_lease = Timestamp::after_seconds(300);
     if !claim_expired_operation(
@@ -773,6 +802,12 @@ fn recovery_error(errors: &[String]) -> JsonDocument {
 
 #[derive(Debug, Snafu)]
 pub enum ReconciliationError {
+    #[snafu(display("workspace {workspace_id} has an expired {kind} operation {operation_id}; recover it through its lifecycle command before retrying"))]
+    RecoveryRequired {
+        workspace_id: WorkspaceId,
+        operation_id: OperationId,
+        kind: String,
+    },
     #[snafu(context(false), display("{source}"))]
     Addition {
         #[snafu(source(from(crate::add::AddError, Box::new)))]
