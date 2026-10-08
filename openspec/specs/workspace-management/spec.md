@@ -478,9 +478,10 @@ root is a single worktree SHALL retain its repository instructions unchanged.
 
 The generated instructions SHALL describe a monorepo-style workspace of
 independent Git worktrees, repository-local Git commands and instructions,
-named-branch preservation, external temporary artifacts, untracked and ignored
-file inspection, and automatic workspace release. They SHALL keep this guidance
-concise and emphasize preserving valuable work.
+named-branch preservation, external temporary artifacts, and untracked and
+ignored file inspection. They SHALL keep this guidance concise and emphasize
+preserving valuable work. Workspace release SHALL remain outside these agent
+instructions.
 
 #### Scenario: Prepare a Workspace for Recycling
 
