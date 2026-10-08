@@ -28,6 +28,9 @@ pub fn plan_worktrees(input: &ValidatedCreateInput) -> Result<Vec<WorktreePlan>,
                 repository: repository.clone(),
             })?
             .to_owned();
+        if !single_repository {
+            crate::workspace_instructions::validate_worktree_name(&name)?;
+        }
         if let Some(previous_repository) = names.insert(name.clone(), repository.clone()) {
             return Err(NamingError::DuplicateName {
                 name,
@@ -52,6 +55,10 @@ pub fn plan_worktrees(input: &ValidatedCreateInput) -> Result<Vec<WorktreePlan>,
 
 #[derive(Debug, Snafu)]
 pub enum NamingError {
+    #[snafu(transparent)]
+    Instructions {
+        source: crate::workspace_instructions::InstructionsError,
+    },
     #[snafu(display("repository has no usable base name: {repository}"))]
     MissingRepositoryName { repository: CanonicalPath },
     #[snafu(display(
@@ -77,6 +84,26 @@ mod tests {
 
     fn fake_repository(path: &std::path::Path) {
         fs::create_dir_all(path.join(".git")).expect("fake repository should be created");
+    }
+
+    #[test]
+    fn reserves_workspace_instruction_name_only_for_shared_roots() {
+        let root = test_root();
+        let instructions = root.join("AGENTS.md");
+        let other = root.join("other");
+        fake_repository(&instructions);
+        fake_repository(&other);
+        let single =
+            validate_create(&root.join("workspace"), std::slice::from_ref(&instructions)).unwrap();
+        assert!(plan_worktrees(&single).is_ok());
+        let multi = validate_create(&root.join("workspace"), &[instructions, other]).unwrap();
+        assert!(matches!(
+            plan_worktrees(&multi),
+            Err(NamingError::Instructions {
+                source: crate::workspace_instructions::InstructionsError::ReservedName
+            })
+        ));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

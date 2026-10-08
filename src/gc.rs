@@ -1191,7 +1191,15 @@ fn unexpected_workspace_entries(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| GcCandidateReason::UnexpectedContent)?
         .into_iter()
-        .filter(|entry| !expected_paths.iter().any(|expected| expected == entry))
+        .filter_map(|entry| {
+            if expected_paths.contains(&entry) {
+                return None;
+            }
+            match crate::workspace_instructions::is_managed(&entry) {
+                Ok(true) => None,
+                Ok(false) | Err(_) => Some(entry),
+            }
+        })
         .collect())
 }
 
@@ -1203,7 +1211,8 @@ fn workspace_root_reason(error: validation::WorkspaceRootError) -> GcCandidateRe
         validation::WorkspaceRootError::NotDirectory { .. }
         | validation::WorkspaceRootError::OutsideManagedRoot { .. }
         | validation::WorkspaceRootError::NotAbsolute { .. } => GcCandidateReason::UnsafeRoot,
-        validation::WorkspaceRootError::ReadDirectory { .. } => {
+        validation::WorkspaceRootError::ReadDirectory { .. }
+        | validation::WorkspaceRootError::Instructions { .. } => {
             GcCandidateReason::UnexpectedContent
         }
     }
@@ -1335,6 +1344,13 @@ where
     }
     if plan.workspace_path.exists() {
         heartbeat()?;
+        if !plan
+            .worktrees
+            .iter()
+            .any(|worktree| worktree.path == plan.workspace_path)
+        {
+            crate::workspace_instructions::remove(&plan.workspace_path)?;
+        }
         fs::remove_dir(&plan.workspace_path).context(IoSnafu {
             path: &plan.workspace_path,
         })?;
@@ -1374,6 +1390,10 @@ fn renew_gc_lease(
 
 #[derive(Debug, Snafu)]
 enum GcPhysicalError {
+    #[snafu(transparent)]
+    Instructions {
+        source: crate::workspace_instructions::InstructionsError,
+    },
     #[snafu(transparent)]
     Git { source: crate::git::GitError },
     #[snafu(display("GC operation lease renewal failed: {message}"))]

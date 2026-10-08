@@ -318,6 +318,7 @@ fn plan_relocation(
                 repo.worktree_path.as_path().file_name()
             }
             .ok_or_else(|| JournalSnafu.build())?;
+            crate::workspace_instructions::validate_worktree_name(name)?;
             ensure!(
                 names.insert(name.to_owned()),
                 UnsafeSnafu {
@@ -353,6 +354,7 @@ fn plan_relocation(
                 .as_path()
                 .file_name()
                 .ok_or_else(|| JournalSnafu.build())?;
+            crate::workspace_instructions::validate_worktree_name(name)?;
             ensure!(
                 names.insert(name.to_owned()),
                 UnsafeSnafu {

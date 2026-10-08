@@ -22,6 +22,7 @@
       (root + /docs/status.md)
       (root + /migrations)
       (root + /scripts/generate-third-party-notices.sh)
+      (root + /src/workspace_agents.md)
     ];
   };
   cargoArgs = {

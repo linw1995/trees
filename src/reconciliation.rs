@@ -683,6 +683,16 @@ fn recover_incomplete_operation(
     if errors.is_empty() && workspace.canonical_path.as_path().exists() {
         match renew_lease(connection, lease_id) {
             Ok(()) => {
+                if repositories
+                    .iter()
+                    .all(|repository| repository.worktree_path != workspace.canonical_path)
+                {
+                    if let Err(error) =
+                        crate::workspace_instructions::remove(workspace.canonical_path.as_path())
+                    {
+                        errors.push(error.to_string());
+                    }
+                }
                 if let Err(error) = std::fs::remove_dir(&workspace.canonical_path) {
                     errors.push(error.to_string());
                 }

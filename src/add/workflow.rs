@@ -275,6 +275,10 @@ pub fn provision(
         )?;
         persistence::event(db, lease, "worktree_add_completed", document(repo)?)?;
     }
+    if plan.existing.len() + plan.additions.len() > 1 {
+        persistence::renew(db, lease)?;
+        crate::workspace_instructions::create(plan.workspace_path.as_path())?;
+    }
     Ok(())
 }
 
@@ -432,6 +436,7 @@ fn remove_container(
         "remove empty workspace container",
         document(&plan.workspace_path)?,
     )?;
+    crate::workspace_instructions::remove(plan.workspace_path.as_path())?;
     std::fs::remove_dir(plan.workspace_path.as_path()).context(IoSnafu {
         path: plan.workspace_path.as_path(),
     })?;
@@ -711,6 +716,10 @@ fn can_publish_recovery(
     let Ok(observed) = final_observations(db, lease, plan) else {
         return Ok(false);
     };
+    if plan.existing.len() + plan.additions.len() > 1 {
+        persistence::renew(db, lease)?;
+        crate::workspace_instructions::create(plan.workspace_path.as_path())?;
+    }
     persistence::finish(db, lease, plan, &observed, true)?;
     Ok(true)
 }

@@ -128,6 +128,10 @@ pub struct AddResult {
 #[derive(Debug, Snafu)]
 pub enum AddError {
     #[snafu(transparent)]
+    Instructions {
+        source: crate::workspace_instructions::InstructionsError,
+    },
+    #[snafu(transparent)]
     Reconcile {
         source: crate::reconciliation::ReconciliationError,
     },

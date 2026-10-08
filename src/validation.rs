@@ -50,7 +50,9 @@ pub fn validate_workspace_contents(
         let entry = entry.context(ReadDirectoryRootSnafu {
             path: workspace_path,
         })?;
-        if !expected.contains(entry.path().as_path()) {
+        if !expected.contains(entry.path().as_path())
+            && !crate::workspace_instructions::is_managed(&entry.path())?
+        {
             return Err(WorkspaceRootError::UnexpectedEntry { path: entry.path() });
         }
     }
@@ -206,6 +208,10 @@ pub enum ValidationError {
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(RootSnafu)))]
 pub enum WorkspaceRootError {
+    #[snafu(transparent)]
+    Instructions {
+        source: crate::workspace_instructions::InstructionsError,
+    },
     #[snafu(display(
         "workspace and managed root must be absolute: {} / {}",
         workspace.display(),
@@ -360,6 +366,58 @@ mod tests {
         }
 
         fs::remove_dir_all(root).expect("test root should be removable");
+    }
+
+    #[test]
+    fn generated_workspace_instructions_preserve_foreign_entries() {
+        let root = test_root();
+        let worktree = root.join("repo");
+        fs::create_dir_all(&worktree).unwrap();
+        let path = root.join(crate::workspace_instructions::FILE_NAME);
+        crate::workspace_instructions::create(&root).unwrap();
+        validate_workspace_contents(&root, std::slice::from_ref(&worktree)).unwrap();
+
+        let original = fs::read(&path).unwrap();
+        let mut modified = original.clone();
+        modified[0] = b'!';
+        fs::write(&path, &modified).unwrap();
+        crate::workspace_instructions::create(&root).unwrap();
+        crate::workspace_instructions::remove(&root).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), modified);
+        assert!(matches!(
+            validate_workspace_contents(&root, std::slice::from_ref(&worktree)),
+            Err(WorkspaceRootError::UnexpectedEntry { .. })
+        ));
+        fs::remove_file(&path).unwrap();
+
+        fs::create_dir(&path).unwrap();
+        assert!(matches!(
+            validate_workspace_contents(&root, std::slice::from_ref(&worktree)),
+            Err(WorkspaceRootError::UnexpectedEntry { .. })
+        ));
+        crate::workspace_instructions::create(&root).unwrap();
+        crate::workspace_instructions::remove(&root).unwrap();
+        assert!(path.is_dir());
+        fs::remove_dir(&path).unwrap();
+
+        #[cfg(unix)]
+        {
+            let target = worktree.join("instructions.md");
+            fs::write(&target, &original).unwrap();
+            std::os::unix::fs::symlink(&target, &path).unwrap();
+            assert!(matches!(
+                validate_workspace_contents(&root, std::slice::from_ref(&worktree)),
+                Err(WorkspaceRootError::UnexpectedEntry { .. })
+            ));
+            crate::workspace_instructions::create(&root).unwrap();
+            crate::workspace_instructions::remove(&root).unwrap();
+            assert!(fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(fs::read(&target).unwrap(), original);
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
