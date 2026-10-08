@@ -22,6 +22,14 @@ pub fn validate_workspace_root(
             managed_root: managed_root.to_owned(),
         });
     }
+
+    validate_workspace_contents(workspace_path, expected_worktree_paths)
+}
+
+pub fn validate_workspace_contents(
+    workspace_path: &Path,
+    expected_worktree_paths: &[PathBuf],
+) -> Result<(), WorkspaceRootError> {
     if !workspace_path.is_dir() {
         return Err(WorkspaceRootError::NotDirectory {
             path: workspace_path.to_owned(),
@@ -327,10 +335,10 @@ mod tests {
         let root = test_root();
         let managed_root = root.join("managed");
         let workspace = managed_root.join("workspace");
-        fs::create_dir_all(workspace.join("repo")).expect("workspace should be created");
+        fs::create_dir_all(workspace.join("public")).expect("workspace should be created");
         let managed_root = fs::canonicalize(&managed_root).expect("managed root should resolve");
         let workspace = fs::canonicalize(&workspace).expect("workspace should resolve");
-        let worktree = fs::canonicalize(workspace.join("repo")).expect("worktree should resolve");
+        let worktree = fs::canonicalize(workspace.join("public")).expect("worktree should resolve");
 
         validate_workspace_root(&workspace, &managed_root, std::slice::from_ref(&worktree))
             .expect("workspace root should contain only expected worktrees");
@@ -340,6 +348,16 @@ mod tests {
             validate_workspace_root(&workspace, &managed_root, std::slice::from_ref(&worktree)),
             Err(WorkspaceRootError::UnexpectedEntry { .. })
         ));
+
+        #[cfg(unix)]
+        {
+            fs::remove_file(workspace.join("unexpected")).unwrap();
+            std::os::unix::fs::symlink("missing", workspace.join("unexpected")).unwrap();
+            assert!(matches!(
+                validate_workspace_root(&workspace, &managed_root, std::slice::from_ref(&worktree)),
+                Err(WorkspaceRootError::UnexpectedEntry { .. })
+            ));
+        }
 
         fs::remove_dir_all(root).expect("test root should be removable");
     }

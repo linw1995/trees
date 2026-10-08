@@ -95,10 +95,10 @@ fn reconcile_workspace_inner(
     let mut changed_worktrees = 0;
     let mut observed_states = Vec::with_capacity(repositories.len());
 
-    for repository in repositories {
+    for repository in &repositories {
         let observation = match lease_id {
-            Some(lease_id) => observe_repository(&repository, || renew_lease(connection, lease_id)),
-            None => observe_repository(&repository, || Ok(())),
+            Some(lease_id) => observe_repository(repository, || renew_lease(connection, lease_id)),
+            None => observe_repository(repository, || Ok(())),
         }?;
         let (state, head, details, error_json) = observation.into_record();
         observed_states.push(state);
@@ -137,7 +137,20 @@ fn reconcile_workspace_inner(
         .iter()
         .all(|state| *state == RepoWorktreeState::Attached)
     {
-        WorkspaceState::Ready
+        let expected_paths = repositories
+            .iter()
+            .map(|repository| repository.worktree_path.as_path().to_owned())
+            .collect::<Vec<_>>();
+        if crate::validation::validate_workspace_contents(
+            workspace.canonical_path.as_path(),
+            &expected_paths,
+        )
+        .is_ok()
+        {
+            WorkspaceState::Ready
+        } else {
+            WorkspaceState::Degraded
+        }
     } else {
         WorkspaceState::Creating
     };

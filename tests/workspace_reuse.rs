@@ -123,6 +123,121 @@ fn cleanup_fixture(fixture: AutomaticFixture) {
 }
 
 #[test]
+fn shared_workspace_content_rejects_release_before_aligning_worktrees() {
+    let mut fixture = automatic_fixture_with_repositories(2);
+    let allocation = allocate_automatic_workspace(&mut fixture.connection, &fixture.plan)
+        .expect("clean workspace should be acquired");
+    let original_head = git::find_worktree(&fixture.source, &fixture.worktree_path)
+        .expect("worktree should be registered")
+        .head;
+    fs::write(fixture.source.as_path().join("README"), "updated\n")
+        .expect("source should be updated");
+    run_git(fixture.source.as_path(), &["commit", "-qam", "update"]);
+
+    let extra = allocation.workspace_path.as_path().join("public");
+    fs::create_dir(&extra).expect("public directory should be created");
+    fs::write(extra.join("unsaved"), "local\n").expect("public content should be written");
+
+    let error = release_automatic_workspace(
+        &mut fixture.connection,
+        &allocation.workspace_path,
+        allocation.claim_id,
+    )
+    .expect_err("shared content should prevent release");
+    assert!(matches!(error, WorkspaceError::NotReusable { .. }));
+    assert_eq!(
+        fs::read_to_string(extra.join("unsaved")).expect("public content should remain readable"),
+        "local\n"
+    );
+    assert_eq!(
+        find_workspace_claim(&mut fixture.connection, &fixture.workspace.id)
+            .expect("claim should be queryable")
+            .expect("claim should remain active")
+            .id,
+        allocation.claim_id
+    );
+    assert_eq!(
+        find_workspace(&mut fixture.connection, &fixture.workspace.id)
+            .expect("workspace should be queryable")
+            .state,
+        WorkspaceState::Degraded
+    );
+    assert!(
+        list_repo_worktrees(&mut fixture.connection, &fixture.workspace.id)
+            .expect("worktrees should be queryable")
+            .iter()
+            .all(|repository| repository.state == RepoWorktreeState::Attached)
+    );
+    assert_eq!(
+        git::find_worktree(&fixture.source, &fixture.worktree_path)
+            .expect("worktree should remain registered")
+            .head,
+        original_head
+    );
+
+    fs::remove_dir_all(extra).expect("public content should be removable");
+
+    release_automatic_workspace(
+        &mut fixture.connection,
+        &allocation.workspace_path,
+        allocation.claim_id,
+    )
+    .expect("release should succeed after shared content is removed");
+    assert_eq!(
+        find_workspace(&mut fixture.connection, &fixture.workspace.id)
+            .expect("workspace should be queryable")
+            .state,
+        WorkspaceState::Ready
+    );
+    cleanup_fixture(fixture);
+}
+
+#[test]
+fn automatic_allocation_skips_shared_content_and_reconciliation_restores_reuse() {
+    let mut fixture = automatic_fixture_with_repositories(2);
+    let public = fixture.workspace.canonical_path.as_path().join("public");
+    fs::create_dir(&public).expect("public directory should be created");
+    fs::write(public.join("unsaved"), "local\n").expect("public content should be written");
+
+    let allocation = allocate_automatic_workspace(&mut fixture.connection, &fixture.plan)
+        .expect("allocation should provision a clean slot");
+    assert_ne!(allocation.workspace_path, fixture.workspace.canonical_path);
+    assert_eq!(
+        fs::read_to_string(public.join("unsaved")).expect("public content should remain readable"),
+        "local\n"
+    );
+    assert_eq!(
+        find_workspace(&mut fixture.connection, &fixture.workspace.id)
+            .expect("original workspace should be queryable")
+            .state,
+        WorkspaceState::Degraded
+    );
+    assert!(
+        find_workspace_claim(&mut fixture.connection, &fixture.workspace.id)
+            .expect("original claim should be queryable")
+            .is_none()
+    );
+
+    fs::remove_dir_all(public).expect("public content should be removable");
+    let reused = trees::workspace::acquire_automatic_candidate(
+        &mut fixture.connection,
+        &fixture.plan,
+        &fixture.workspace,
+    )
+    .expect("original slot should become reusable after content is removed");
+    assert_eq!(reused.workspace_path, fixture.workspace.canonical_path);
+    for claim in [reused, allocation] {
+        release_automatic_workspace(
+            &mut fixture.connection,
+            &claim.workspace_path,
+            claim.claim_id,
+        )
+        .expect("clean slot should be releasable");
+    }
+    cleanup_fixture(fixture);
+}
+
+#[test]
 fn reuses_the_same_automatic_slot_across_acquire_release_cycles() {
     let mut fixture = automatic_fixture();
     let first = allocate_automatic_workspace(&mut fixture.connection, &fixture.plan)

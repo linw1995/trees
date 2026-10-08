@@ -318,7 +318,10 @@ Successful release prints `workspace_id`, `workspace_path`, `claim_id`, and
 `released_at` as line-oriented key-value pairs.
 
 Release requires every managed worktree to be clean: staged, unstaged, or
-untracked changes reject the entire operation. Release fetches each source
+untracked changes reject the entire operation. In a multi-repository workspace,
+the shared root must contain only managed worktree directories. Extra files,
+directories (including `public/`), or symlinks mark the workspace as degraded
+and prevent release and automatic reuse until removed. Release fetches each source
 repository and aligns its worktree in detached mode to the primary branch's
 tracking upstream, falling back to the local `HEAD` of the primary worktree when no
 tracking upstream is configured, just as online create does. The source's local

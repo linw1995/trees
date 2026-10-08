@@ -834,6 +834,21 @@ where
         crate::storage::list_repo_worktrees(connection, &workspace.id).context(DatabaseSnafu)?;
     let mut alignments = Vec::with_capacity(repositories.len());
 
+    let expected_paths = repositories
+        .iter()
+        .map(|repository| repository.worktree_path.as_path().to_owned())
+        .collect::<Vec<_>>();
+    snafu::ensure!(
+        validation::validate_workspace_contents(
+            workspace.canonical_path.as_path(),
+            &expected_paths
+        )
+        .is_ok(),
+        NotReusableSnafu {
+            path: workspace.canonical_path.clone()
+        }
+    );
+
     // Validate every worktree before changing any of them. Release must never
     // discard staged, unstaged, or untracked work from the current claimant.
     for repository in repositories {
