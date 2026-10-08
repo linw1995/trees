@@ -3,7 +3,8 @@
 ## Decisions
 
 - Keep the static English template beside its filesystem implementation and
-  explicitly include it in the Nix package source.
+  explicitly include it in the Nix package source. Limit it to the workspace
+  layout and five core rules; retain lifecycle details in the user documentation.
 - Share creation, recognition, removal, and filename validation through one
   implementation module. Use typed Snafu errors and transparent propagation.
   Retain the existing module entry points and visibility conventions.
