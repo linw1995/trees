@@ -151,9 +151,13 @@ impl Terminal {
         }
     }
 
-    fn read(&mut self, deadline: Instant) -> bool {
+    fn read(&mut self, deadline: Instant, marker: &str) -> bool {
         let remaining = deadline.saturating_duration_since(Instant::now());
-        assert!(!remaining.is_zero(), "terminal timed out: {}", self.output);
+        assert!(
+            !remaining.is_zero(),
+            "terminal timed out waiting for {marker}: {}",
+            self.output
+        );
         let master = self.master.as_mut().unwrap();
         let mut descriptor = libc::pollfd {
             fd: master.as_raw_fd(),
@@ -170,7 +174,11 @@ impl Terminal {
         if ready < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
             return true;
         }
-        assert!(ready > 0, "terminal timed out: {}", self.output);
+        assert!(
+            ready > 0,
+            "terminal timed out waiting for {marker}: {}",
+            self.output
+        );
         let mut bytes = [0; 4096];
         match master.read(&mut bytes) {
             Ok(0) => false,
@@ -188,7 +196,11 @@ impl Terminal {
     fn until(&mut self, marker: &str) {
         let deadline = Instant::now() + Duration::from_secs(20);
         while !self.output.contains(marker) {
-            assert!(self.read(deadline), "missing {marker}: {}", self.output);
+            assert!(
+                self.read(deadline, marker),
+                "missing {marker}: {}",
+                self.output
+            );
         }
     }
 
@@ -198,7 +210,7 @@ impl Terminal {
 
     fn finish(&mut self) -> ExitStatus {
         let deadline = Instant::now() + Duration::from_secs(20);
-        while self.read(deadline) {}
+        while self.read(deadline, "terminal EOF") {}
         self.child.wait().unwrap()
     }
 }
@@ -216,9 +228,9 @@ impl Drop for Terminal {
 
 #[test]
 fn process_helper() {
-    if std::env::var_os("SESSION_PROCESS_HELPER").is_none() {
+    let Some(mode) = std::env::var_os("SESSION_PROCESS_HELPER") else {
         return;
-    }
+    };
     let limit = libc::rlimit {
         rlim_cur: 0,
         rlim_max: 0,
@@ -227,8 +239,26 @@ fn process_helper() {
     for signal in [libc::SIGINT, libc::SIGQUIT, libc::SIGTERM] {
         unsafe { libc::signal(signal, libc::SIG_DFL) };
     }
+    if mode == "continue" {
+        extern "C" fn finish_on_continue(_: libc::c_int) {
+            let marker = b"SESSION_CHILD_FINISHED\n";
+            unsafe {
+                libc::write(libc::STDOUT_FILENO, marker.as_ptr().cast(), marker.len());
+                libc::_exit(0);
+            }
+        }
+        // The test harness has multiple threads, so SIGCONT may reach any of them.
+        unsafe {
+            libc::signal(libc::SIGCONT, finish_on_continue as *const () as usize);
+        }
+    }
     println!("SESSION_CHILD_READY");
     std::io::stdout().flush().unwrap();
+    if mode == "continue" {
+        loop {
+            unsafe { libc::pause() };
+        }
+    }
     let mut line = String::new();
     std::io::stdin().read_line(&mut line).unwrap();
     println!("SESSION_CHILD_FINISHED");
@@ -277,7 +307,9 @@ fn terminal_job_can_be_suspended_and_resumed() {
     shell
         .arg("-i")
         .env("PS1", "OUTER_READY> ")
-        .env("SESSION_PROCESS_HELPER", "1");
+        // The shell can reclaim the terminal before every descendant has stopped.
+        // Waiting on SIGCONT prevents the helper from stealing the shell's input.
+        .env("SESSION_PROCESS_HELPER", "continue");
     for (name, value) in command.get_envs() {
         if let Some(value) = value {
             shell.env(name, value);
@@ -300,7 +332,7 @@ fn terminal_job_can_be_suspended_and_resumed() {
     terminal.until("OUTER_READY>");
     terminal.send(b"printf 'SESSION_SUSPENDED_OK\\n'\n");
     terminal.until("SESSION_SUSPENDED_OK");
-    terminal.send(b"fg\n\n");
+    terminal.send(b"fg\n");
     terminal.until("SESSION_CHILD_FINISHED");
     terminal.send(b"exit 0\n");
     assert!(terminal.finish().success(), "{}", terminal.output);
