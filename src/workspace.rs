@@ -365,7 +365,11 @@ fn align_acquired_worktrees(
         });
     }
 
-    execute_worktree_alignments(connection, lease_id, alignments)
+    execute_worktree_alignments(connection, lease_id, alignments)?;
+    if plan.repositories.len() > 1 {
+        crate::workspace_instructions::create(workspace.canonical_path.as_path())?;
+    }
+    Ok(())
 }
 
 fn acquire_details(claim: &WorkspaceClaim, pool_id: PoolId) -> JsonDocument {
@@ -1394,6 +1398,11 @@ fn execute_creation_with_claim(
             };
             return fail_creation(connection, context, &[], None, claim, primary);
         }
+        if let Err(source) =
+            crate::workspace_instructions::create(context.plan.workspace_path.as_path())
+        {
+            return fail_creation(connection, context, &[], None, claim, source.into());
+        }
     }
 
     let mut completed = Vec::new();
@@ -1574,7 +1583,11 @@ fn rollback_creation(
 ) -> Result<(), WorkspaceError> {
     let error_json = error_document(primary);
     let mut errors = rollback_repositories(connection, context, completed, failed, &error_json);
-    rollback_workspace_directory(connection, context, &mut errors);
+    // A failed root mkdir does not grant ownership of an existing container.
+    if !matches!(primary, WorkspaceError::Io { path, .. } if path == context.plan.workspace_path.as_path())
+    {
+        rollback_workspace_directory(connection, context, &mut errors);
+    }
     rollback_claim(connection, context, claim, &mut errors);
     finish_rollback(connection, context, error_json, &mut errors);
 
@@ -1665,6 +1678,14 @@ fn rollback_workspace_directory(
     }
     match crate::storage::renew_operation_lease(connection, &context.lease_id) {
         Ok(true) => {
+            if !workspace_is_worktree_root(&context.plan) {
+                if let Err(error) =
+                    crate::workspace_instructions::remove(context.plan.workspace_path.as_path())
+                {
+                    errors.push(error.to_string());
+                    return;
+                }
+            }
             if let Err(error) = fs::remove_dir(&context.plan.workspace_path) {
                 errors.push(error.to_string());
             }
@@ -1736,6 +1757,10 @@ fn error_document(error: &WorkspaceError) -> JsonDocument {
 
 #[derive(Debug, Snafu)]
 pub enum WorkspaceError {
+    #[snafu(transparent)]
+    Instructions {
+        source: crate::workspace_instructions::InstructionsError,
+    },
     #[snafu(transparent)]
     Addition { source: crate::add::AddError },
     #[snafu(transparent)]
@@ -1855,12 +1880,52 @@ mod tests {
     }
 
     #[test]
+    fn failed_container_creation_preserves_existing_instructions() {
+        let root = test_root();
+        let first = root.join("first");
+        let second = root.join("second");
+        repository(&first);
+        repository(&second);
+        let plan = prepare_create(&CreateRequest {
+            workspace_path: root.join("workspace"),
+            repositories: vec![first, second],
+            offline: true,
+        })
+        .unwrap();
+        let mut connection = crate::database::connect(&root.join("db.sqlite")).unwrap();
+        let context = initialize_creation(&mut connection, plan).unwrap();
+        fs::create_dir(context.plan.workspace_path.as_path()).unwrap();
+        let path = context.plan.workspace_path.as_path().join("AGENTS.md");
+        fs::write(&path, crate::workspace_instructions::CONTENT).unwrap();
+
+        assert!(execute_creation(&mut connection, &context).is_err());
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            crate::workspace_instructions::CONTENT
+        );
+        assert!(context
+            .repositories
+            .iter()
+            .all(|repo| !repo.plan.worktree_path.exists()));
+        assert_eq!(
+            crate::storage::operation_state(&mut connection, &context.operation_id).unwrap(),
+            Some(OperationState::RolledBack)
+        );
+        drop(connection);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn prepares_a_multi_repository_creation_plan() {
         let root = test_root();
         let first = root.join("first");
         let second = root.join("second");
         repository(&first);
         repository(&second);
+        let instructions = "# Repository Instructions\n\nFollow repository conventions.\n";
+        fs::write(first.join("AGENTS.md"), instructions).unwrap();
+        run_git(&first, &["add", "-f", "AGENTS.md"]);
+        run_git(&first, &["commit", "-qm", "add instructions"]);
 
         let plan = prepare_create(&CreateRequest {
             workspace_path: root.join("workspace"),
@@ -1888,6 +1953,16 @@ mod tests {
         finalize_persisted_creation(&mut connection, &context.workspace_id, &context.lease_id)
             .expect("creation should finalize");
         assert!(context.plan.workspace_path.as_path().exists());
+        let path = context.plan.workspace_path.as_path();
+        assert_eq!(
+            fs::read_to_string(path.join("AGENTS.md")).unwrap(),
+            crate::workspace_instructions::CONTENT
+        );
+        assert_eq!(
+            fs::read_to_string(path.join("first/AGENTS.md")).unwrap(),
+            instructions
+        );
+        assert!(!path.join("second/AGENTS.md").exists());
         assert!(context
             .repositories
             .iter()

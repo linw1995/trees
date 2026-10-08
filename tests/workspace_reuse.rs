@@ -123,6 +123,108 @@ fn cleanup_fixture(fixture: AutomaticFixture) {
 }
 
 #[test]
+fn generated_instructions_allow_multi_worktree_release_reuse_and_gc() {
+    let mut fixture = automatic_fixture_with_repositories(2);
+    let path = fixture.workspace.canonical_path.as_path().join("AGENTS.md");
+    let instructions = fs::read_to_string(&path).expect("workspace instructions should exist");
+    assert_eq!(instructions, trees::workspace_instructions::CONTENT);
+    let allocation = allocate_automatic_workspace(&mut fixture.connection, &fixture.plan)
+        .expect("workspace with generated instructions should be reusable");
+    assert_eq!(allocation.workspace_path, fixture.workspace.canonical_path);
+    release_automatic_workspace(
+        &mut fixture.connection,
+        &allocation.workspace_path,
+        allocation.claim_id,
+    )
+    .expect("generated instructions should not prevent release");
+    diesel::update(trees::schema::workspaces::table.find(fixture.workspace.id))
+        .set(
+            trees::schema::workspaces::last_released_at
+                .eq(Timestamp::parse("2020-01-01T00:00:00Z").unwrap()),
+        )
+        .execute(&mut fixture.connection)
+        .unwrap();
+    let threshold = "1d".parse().unwrap();
+    let scan = gc::scan(&mut fixture.connection, threshold).unwrap();
+    assert_eq!(scan.counts.safe_to_remove, 1);
+    assert!(path.is_file());
+    let report =
+        gc::execute(&mut fixture.connection, threshold, false).expect("normal GC should succeed");
+    assert_eq!(report.removed.len(), 1);
+    assert!(report.failed.is_empty());
+    assert!(!fixture.workspace.canonical_path.as_path().exists());
+    drop(fixture.connection);
+    fs::remove_dir_all(fixture.root).unwrap();
+}
+
+#[test]
+fn reuse_restores_missing_workspace_instructions() {
+    let mut fixture = automatic_fixture_with_repositories(2);
+    let path = fixture.workspace.canonical_path.as_path().join("AGENTS.md");
+    fs::remove_file(&path).unwrap();
+    let allocation = allocate_automatic_workspace(&mut fixture.connection, &fixture.plan).unwrap();
+    assert_eq!(allocation.workspace_path, fixture.workspace.canonical_path);
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        trees::workspace_instructions::CONTENT
+    );
+    release_automatic_workspace(
+        &mut fixture.connection,
+        &allocation.workspace_path,
+        allocation.claim_id,
+    )
+    .unwrap();
+    cleanup_fixture(fixture);
+}
+
+#[test]
+fn modified_workspace_instructions_block_release_reuse_and_normal_removal() {
+    let mut fixture = automatic_fixture_with_repositories(2);
+    let allocation = allocate_automatic_workspace(&mut fixture.connection, &fixture.plan).unwrap();
+    let path = allocation.workspace_path.as_path().join("AGENTS.md");
+    let original = fs::read(&path).unwrap();
+    let mut modified = original.clone();
+    modified[0] = b'!';
+    fs::write(&path, &modified).unwrap();
+    assert!(release_automatic_workspace(
+        &mut fixture.connection,
+        &allocation.workspace_path,
+        allocation.claim_id,
+    )
+    .is_err());
+    assert_eq!(
+        find_workspace_claim(&mut fixture.connection, &fixture.workspace.id)
+            .unwrap()
+            .unwrap()
+            .id,
+        allocation.claim_id
+    );
+    assert_eq!(fs::read(&path).unwrap(), modified);
+
+    fs::write(&path, &original).unwrap();
+    release_automatic_workspace(
+        &mut fixture.connection,
+        &allocation.workspace_path,
+        allocation.claim_id,
+    )
+    .unwrap();
+    fs::write(&path, &modified).unwrap();
+    let report =
+        gc::remove_workspace(&mut fixture.connection, &fixture.workspace.id, false).unwrap();
+    assert!(!report.removed);
+    let replacement = allocate_automatic_workspace(&mut fixture.connection, &fixture.plan).unwrap();
+    assert_ne!(replacement.workspace_path, fixture.workspace.canonical_path);
+    assert_eq!(fs::read(&path).unwrap(), modified);
+    release_automatic_workspace(
+        &mut fixture.connection,
+        &replacement.workspace_path,
+        replacement.claim_id,
+    )
+    .unwrap();
+    cleanup_fixture(fixture);
+}
+
+#[test]
 fn shared_workspace_content_rejects_release_before_aligning_worktrees() {
     let mut fixture = automatic_fixture_with_repositories(2);
     let allocation = allocate_automatic_workspace(&mut fixture.connection, &fixture.plan)

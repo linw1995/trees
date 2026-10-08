@@ -97,6 +97,63 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn expansion_preserves_repository_instructions_and_generates_shared_instructions() {
+    let mut fixture = Fixture::new();
+    assert!(!fixture.path.as_path().join("AGENTS.md").exists());
+    let instructions = "# Repository Instructions\n\nKeep repository-specific rules.\n";
+    fs::write(fixture.path.as_path().join("AGENTS.md"), instructions).unwrap();
+    git(fixture.path.as_path(), &["add", "-f", "AGENTS.md"]);
+    git(
+        fixture.path.as_path(),
+        &["commit", "-qm", "add instructions"],
+    );
+    let request = fixture.request(vec![fixture.web.clone()]);
+    add::execute(&mut fixture.db, request).unwrap();
+    assert_eq!(
+        fs::read_to_string(fixture.path.as_path().join("api/AGENTS.md")).unwrap(),
+        instructions
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.path.as_path().join("AGENTS.md")).unwrap(),
+        trees::workspace_instructions::CONTENT
+    );
+    assert!(git(
+        &fixture.path.as_path().join("api"),
+        &["status", "--porcelain"]
+    )
+    .is_empty());
+
+    let custom = "# Local Workspace Instructions\n\nPreserve this content.\n";
+    fs::write(fixture.path.as_path().join("AGENTS.md"), custom).unwrap();
+    let request = fixture.request(vec![fixture.web.clone()]);
+    add::execute(&mut fixture.db, request).unwrap();
+    assert_eq!(
+        fs::read_to_string(fixture.path.as_path().join("AGENTS.md")).unwrap(),
+        custom
+    );
+}
+
+#[test]
+fn addition_rejects_reserved_instruction_name_before_relocating() {
+    let mut fixture = Fixture::new();
+    let source = Fixture::repository(&fixture.root, "AGENTS.md");
+    let request = fixture.request(vec![source]);
+    assert!(matches!(
+        add::execute(&mut fixture.db, request),
+        Err(add::AddError::Instructions {
+            source: trees::workspace_instructions::InstructionsError::ReservedName
+        })
+    ));
+    assert!(fixture.path.as_path().join(".git").is_file());
+    assert_eq!(
+        storage::list_repo_worktrees(&mut fixture.db, &fixture.workspace)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn planning_deduplicates_existing_inputs_without_fetching_or_moving() {
     let mut fixture = Fixture::new();
     git(
@@ -237,6 +294,8 @@ fn recovery_publishes_complete_layout_after_interruption() {
     )
     .unwrap();
     add::workflow::provision(&mut fixture.db, &intent.lease_id, &plan).unwrap();
+    let instructions = fixture.path.as_path().join("AGENTS.md");
+    fs::remove_file(&instructions).unwrap();
     assert_eq!(
         storage::list_repo_worktrees(&mut fixture.db, &fixture.workspace)
             .unwrap()
@@ -249,6 +308,7 @@ fn recovery_publishes_complete_layout_after_interruption() {
             .unwrap(),
         trees::reconciliation::RecoveryOutcome::Succeeded
     ));
+    assert!(instructions.is_file());
     assert_eq!(
         storage::list_repo_worktrees(&mut fixture.db, &fixture.workspace)
             .unwrap()

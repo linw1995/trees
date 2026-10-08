@@ -49,6 +49,31 @@ are cleaned only when their ownership is proven. Retry the same URL to recover
 an interrupted clone; concurrent provisioning for that URL reports that the
 operation is in progress.
 
+### Workspace Instructions and Cleanliness
+
+Multi-repository workspaces include a generated `AGENTS.md` at the shared root.
+It describes the monorepo-style layout of independent Git worktrees, repository
+instructions, and how to keep the workspace clean for reuse and cleanup. Trees
+also creates it when `add` expands a single-repository workspace or automatic
+allocation reuses an older multi-repository workspace without the file.
+Single-repository workspaces keep their repository's own instructions unchanged.
+The repository name `AGENTS.md` is reserved in a multi-repository workspace.
+
+Run Git commands in each repository directory. Preserve commits on named branches
+before release because worktrees start detached and release realigns them. Keep
+temporary notes, logs, and artifacts outside the workspace, and check each
+worktree with `git -C <repo> status --porcelain=v1 --untracked-files=all` before
+finishing. Ignored files can still block checkout or normal worktree removal;
+inspect them with `git -C <repo> status --short --ignored` and preserve valuable
+files outside the workspace before removing disposable output.
+
+Keep the generated root `AGENTS.md` unchanged. Trees recognizes only a regular
+file matching the generated content; a modified file, directory, or symlink does
+not receive an exemption from root-content checks. Trees never overwrites an
+existing file, and normal cleanup removes only the unchanged generated file.
+Release an automatic workspace with `trees release` after saving work and
+resolving dirty files. Claims persist after shell exit and prevent automatic GC.
+
 ### Select the Starting Revision
 
 Repository arguments may name either an upstream repository or one of its
@@ -319,7 +344,8 @@ Successful release prints `workspace_id`, `workspace_path`, `claim_id`, and
 
 Release requires every managed worktree to be clean: staged, unstaged, or
 untracked changes reject the entire operation. In a multi-repository workspace,
-the shared root must contain only managed worktree directories. Extra files,
+the shared root must contain only managed worktree directories and the unchanged
+Trees-generated `AGENTS.md`. Extra files,
 directories (including `public/`), or symlinks mark the workspace as degraded
 and prevent release and automatic reuse until removed. Release fetches each source
 repository and aligns its worktree in detached mode to the primary branch's
