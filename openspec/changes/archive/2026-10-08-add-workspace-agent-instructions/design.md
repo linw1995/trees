@@ -15,6 +15,8 @@
 - Create instructions before provisioning worktrees and remove them during
   creation rollback. Addition recovery restores missing instructions before
   publishing a completed layout. Reuse restores older missing files.
+  Addition provisioning and recovery share one instruction preparation step,
+  keeping the worktree provisioning function within the CI complexity threshold.
 - A failed root directory creation grants no container ownership. Classify that
   existing filesystem error before rollback, preserving the original error and
   user-visible message while leaving existing content untouched.

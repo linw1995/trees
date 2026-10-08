@@ -275,6 +275,14 @@ pub fn provision(
         )?;
         persistence::event(db, lease, "worktree_add_completed", document(repo)?)?;
     }
+    prepare_shared_instructions(db, lease, plan)
+}
+
+fn prepare_shared_instructions(
+    db: &mut SqliteConnection,
+    lease: &LeaseId,
+    plan: &AddPlan,
+) -> Result<(), AddError> {
     if plan.existing.len() + plan.additions.len() > 1 {
         persistence::renew(db, lease)?;
         crate::workspace_instructions::create(plan.workspace_path.as_path())?;
@@ -716,10 +724,7 @@ fn can_publish_recovery(
     let Ok(observed) = final_observations(db, lease, plan) else {
         return Ok(false);
     };
-    if plan.existing.len() + plan.additions.len() > 1 {
-        persistence::renew(db, lease)?;
-        crate::workspace_instructions::create(plan.workspace_path.as_path())?;
-    }
+    prepare_shared_instructions(db, lease, plan)?;
     persistence::finish(db, lease, plan, &observed, true)?;
     Ok(true)
 }
