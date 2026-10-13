@@ -9,13 +9,12 @@ use snafu::{OptionExt, ResultExt, Snafu};
 use crate::domain::{CanonicalPath, JsonDocument, Timestamp, WorkspaceId, WorkspaceState};
 use crate::git;
 use crate::reconciliation;
-use crate::status::disk_usage::CachedObservation;
 use crate::storage::{
-    begin_operation, disk_usage_cache, find_running_operation, find_workspace,
-    find_workspace_claim, list_automatic_workspaces, list_repo_worktrees,
-    record_workspace_explicitly_removed, record_workspace_gc_failure, record_workspace_gc_skipped,
-    record_workspace_remove_failure, record_workspace_remove_skipped, record_workspace_removed,
-    renew_operation_lease, OperationIntent, OperationIntentError, RepoWorktreeRow,
+    begin_operation, find_running_operation, find_workspace, find_workspace_claim,
+    list_automatic_workspaces, list_repo_worktrees, record_workspace_explicitly_removed,
+    record_workspace_gc_failure, record_workspace_gc_skipped, record_workspace_remove_failure,
+    record_workspace_remove_skipped, record_workspace_removed, renew_operation_lease,
+    OperationIntent, OperationIntentError, RepoWorktreeRow,
 };
 use crate::validation;
 
@@ -144,8 +143,6 @@ impl fmt::Display for GcCandidateReason {
 #[derive(Debug, Clone)]
 pub struct GcCandidate {
     pub workspace: crate::storage::WorkspaceRow,
-    pub repositories: Vec<RepoWorktreeRow>,
-    pub disk_usage: CachedObservation,
     pub idle_since: Timestamp,
     pub age_eligible: bool,
     pub claimed: bool,
@@ -283,8 +280,6 @@ pub fn scan_with_force(
         .into_iter()
         .filter(|workspace| workspace.state != WorkspaceState::Removed)
         .collect::<Vec<_>>();
-    let workspace_ids = workspaces.iter().map(|workspace| workspace.id).collect();
-    let mut disk_usage = disk_usage_cache::workspaces_for_ids(connection, &workspace_ids)?;
     let mut counts = GcCounts {
         automatic: workspaces.len(),
         ..GcCounts::default()
@@ -311,12 +306,8 @@ pub fn scan_with_force(
         let active_operation = running_operation.is_some();
         let operation_expired =
             running_operation.is_some_and(|running| running.lease.lease_expires_at.has_expired());
-        let repositories = list_repo_worktrees(connection, &workspace.id).context(DatabaseSnafu)?;
-        let disk_usage = CachedObservation::from(disk_usage.remove(&workspace.id).flatten());
         let mut candidate = GcCandidate {
             workspace,
-            repositories,
-            disk_usage,
             idle_since,
             age_eligible,
             claimed,
@@ -325,8 +316,10 @@ pub fn scan_with_force(
             operation_expired,
         };
         if candidate.database_reason(force).is_none() {
+            let repositories =
+                list_repo_worktrees(connection, &candidate.workspace.id).context(DatabaseSnafu)?;
             candidate.physical_reason =
-                prepare_removal(&candidate.workspace, &candidate.repositories, force).err();
+                prepare_removal(&candidate.workspace, &repositories, force).err();
         }
         if candidate.reason(force) == GcCandidateReason::Eligible {
             counts.safe_to_remove += 1;
@@ -1420,10 +1413,6 @@ enum GcPhysicalError {
 
 #[derive(Debug, Snafu)]
 pub enum GcError {
-    #[snafu(transparent)]
-    Cache {
-        source: disk_usage_cache::CacheError,
-    },
     #[snafu(display("workspace not found: {workspace_id}"))]
     WorkspaceNotFound { workspace_id: WorkspaceId },
     #[snafu(display("GC database operation failed: {source}"))]
@@ -1592,8 +1581,6 @@ mod tests {
                     last_released_at: None,
                     removed_at: None,
                 },
-                repositories: Vec::new(),
-                disk_usage: CachedObservation::default(),
                 idle_since: timestamp("2020-01-01T00:00:00Z"),
                 age_eligible,
                 claimed,

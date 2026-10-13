@@ -202,7 +202,7 @@ impl From<WorkspaceClaimRow> for WorkspaceClaim {
     }
 }
 
-#[derive(Debug, Clone, Queryable, Identifiable)]
+#[derive(Debug, Queryable, Identifiable)]
 #[diesel(table_name = repo_worktrees)]
 pub struct RepoWorktreeRow {
     pub id: RepoWorktreeId,

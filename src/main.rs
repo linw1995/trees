@@ -411,8 +411,8 @@ fn run_gc(arguments: trees::cli::GcArgs) -> Result<ExitCode, CliError> {
 }
 
 fn run_gc_command(arguments: &trees::cli::GcArgs) -> Result<ExitCode, CliError> {
-    let scan = load_gc_scan(arguments)?;
-    print_gc_scan(&scan, arguments.force);
+    let (scan, rows) = load_gc_preview(arguments)?;
+    print_gc_scan(&scan, arguments.force, &rows);
     run_gc_after_scan(arguments, &scan)
 }
 
@@ -433,16 +433,45 @@ fn run_gc_after_scan(
     }
 }
 
-fn load_gc_scan(arguments: &trees::cli::GcArgs) -> Result<trees::gc::GcScan, CliError> {
+fn load_gc_preview(
+    arguments: &trees::cli::GcArgs,
+) -> Result<(trees::gc::GcScan, Vec<[String; 5]>), CliError> {
     let mut connection = trees::database::open_read_only()?;
-    Ok(trees::gc::scan_with_force(
-        &mut connection,
-        arguments.older_than,
-        arguments.force,
-    )?)
+    let scan = trees::gc::scan_with_force(&mut connection, arguments.older_than, arguments.force)?;
+    let workspace_ids = scan
+        .candidates
+        .iter()
+        .map(|candidate| candidate.workspace.id)
+        .collect();
+    let mut usage =
+        trees::storage::disk_usage_cache::workspaces_for_ids(&mut connection, &workspace_ids)?;
+    let color = status_color_enabled();
+    let rows = scan
+        .candidates
+        .iter()
+        .map(|candidate| {
+            let repositories =
+                trees::storage::list_repo_worktrees(&mut connection, &candidate.workspace.id)
+                    .context(RepoStatusSnafu)?
+                    .into_iter()
+                    .map(trees::status::RepoWorktreeStatus::from)
+                    .collect::<Vec<_>>();
+            let disk_usage = trees::status::disk_usage::CachedObservation::from(
+                usage.remove(&candidate.workspace.id).flatten(),
+            );
+            Ok([
+                candidate.reason(arguments.force).to_string(),
+                trees::status::repository_summary(&repositories, color),
+                trees::status::disk_usage::inventory_cell(&disk_usage),
+                candidate.idle_since.to_string(),
+                candidate.workspace.id.to_string(),
+            ])
+        })
+        .collect::<Result<Vec<_>, CliError>>()?;
+    Ok((scan, rows))
 }
 
-fn print_gc_scan(scan: &trees::gc::GcScan, force: bool) {
+fn print_gc_scan(scan: &trees::gc::GcScan, force: bool, rows: &[[String; 5]]) {
     println!("Cutoff: {}\n", scan.cutoff);
     println!(
         "{}",
@@ -469,29 +498,9 @@ fn print_gc_scan(scan: &trees::gc::GcScan, force: bool) {
         println!("\nNo automatic workspaces.");
         return;
     }
-    let color = status_color_enabled();
-    let rows = scan
-        .candidates
-        .iter()
-        .map(|candidate| {
-            let repositories = candidate
-                .repositories
-                .iter()
-                .cloned()
-                .map(trees::status::RepoWorktreeStatus::from)
-                .collect::<Vec<_>>();
-            [
-                candidate.reason(force).to_string(),
-                trees::status::repository_summary(&repositories, color),
-                trees::status::disk_usage::inventory_cell(&candidate.disk_usage),
-                candidate.idle_since.to_string(),
-                candidate.workspace.id.to_string(),
-            ]
-        })
-        .collect::<Vec<_>>();
     println!(
         "\n{}",
-        trees::status::render_table(&["REASON", "REPOS", "SIZE", "IDLE SINCE", "ID"], &rows)
+        trees::status::render_table(&["REASON", "REPOS", "SIZE", "IDLE SINCE", "ID"], rows)
     );
 }
 
@@ -830,6 +839,10 @@ enum CliError {
     },
     #[snafu(transparent)]
     Gc { source: trees::gc::GcError },
+    #[snafu(transparent)]
+    DiskUsageCache {
+        source: trees::storage::disk_usage_cache::CacheError,
+    },
     #[snafu(display("interactive confirmation is unavailable; use --dry-run, --yes, or --force"))]
     InteractiveConfirmationUnavailable,
     #[snafu(display("failed to flush confirmation prompt: {source}"))]

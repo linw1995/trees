@@ -339,9 +339,9 @@ claim during admission, without adopting the replacement or an outer workspace.
 
 The CLI SHALL provide `trees gc --older-than <duration> [--dry-run] [--yes]
 [--force]`. GC SHALL calculate a UTC cutoff from the current time minus the
-supplied duration and consider all `automatic` workspaces. The idle timestamp
-SHALL be the last successful release time, or `created_at` when the workspace
-has never been released.
+supplied duration and consider only non-removed `automatic` workspaces. The idle
+timestamp SHALL be the last successful release time, or `created_at` when the
+workspace has never been released.
 Each candidate SHALL use `canonical_path.parent()` for root-containment and
 unexpected-content checks; the current configuration root SHALL not filter
 reuse or GC candidates.
@@ -369,8 +369,9 @@ or not detached. Forced cleanup SHALL record that it was forced.
 
 - **WHEN** a caller runs `trees gc --older-than 30d --dry-run`
 - **THEN** the command reports automatic, unclaimed, claimed,
-  age-qualified, selected, and skipped counts with workspace paths and
-  reasons, without removing worktrees, directories, claims, rows, or events
+  age-qualified, safe-to-remove, and selected counts in a table, followed by
+  candidate reasons, repositories, cached sizes, idle times, and stable IDs,
+  without removing worktrees, directories, claims, rows, or events
 
 #### Scenario: Confirm a Normal GC Run
 
@@ -397,8 +398,8 @@ or not detached. Forced cleanup SHALL record that it was forced.
 
 - **WHEN** an automatic GC scan finds an idle manual workspace older than the
   cutoff
-- **THEN** it reports the workspace as skipped and does not invoke any Git or
-  filesystem removal for that workspace
+- **THEN** it excludes the workspace from candidates and counts and does not invoke
+  any Git or filesystem removal for that workspace
 
 #### Scenario: Remove an Idle Workspace
 
@@ -835,3 +836,38 @@ or its instructions.
 
 - **WHEN** an existing shared container makes directory creation fail
 - **THEN** rollback preserves that container and its instructions, even when they match the template
+
+### Requirement: Present GC Decisions as Workspace Tables
+
+The CLI SHALL render GC scans and execution summaries using the shared workspace
+table layout. Candidate rows SHALL contain `REASON`, `REPOS`, `SIZE`,
+`IDLE SINCE`, and `ID`, without workspace paths. Repository and cached-size cells
+SHALL use workspace status formatting. Display metadata SHALL be read only and
+SHALL NOT affect core GC scan or execution APIs.
+
+#### Scenario: Explain a Retained Workspace
+
+- **WHEN** an automatic workspace is young, claimed, or unsafe to remove
+- **THEN** its row includes the reason and repository summary even though it
+  will not be removed
+
+#### Scenario: Display a Cached Workspace Size
+
+- **WHEN** GC previews a workspace with cached disk usage
+- **THEN** its size cell uses the same binary units and completeness markers as
+  workspace status, with `unknown` for an unmeasured workspace
+- **AND** the preview does not refresh the cache or traverse files for size
+
+#### Scenario: Omit Removed History
+
+- **WHEN** stored history includes removed automatic workspaces
+- **THEN** those workspaces appear in neither candidate rows nor scan counts
+- **AND** an empty current inventory reports no automatic workspaces
+
+#### Scenario: Report the Current Execution
+
+- **WHEN** a confirmed GC execution finishes
+- **THEN** its summary reports current unclaimed, claimed, removed, skipped, and
+  failed counts
+- **AND** skipped counts retained candidates from that execution, while removed
+  counts only successful removals from that execution

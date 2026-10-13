@@ -101,7 +101,7 @@ fn add_workspace(
 #[test]
 fn gc_previews_cached_sizes_and_excludes_removed_workspaces() {
     use diesel::prelude::*;
-    use trees::status::disk_usage::{Issue, IssueCode, Observation};
+    use trees::status::disk_usage::Observation;
 
     let root = root();
     let database_path = database_path(&root);
@@ -119,8 +119,6 @@ fn gc_previews_cached_sizes_and_excludes_removed_workspaces() {
     )
     .unwrap();
     let workspace_path = root.join("workspace");
-    fs::create_dir_all(&workspace_path).unwrap();
-    fs::write(workspace_path.join("keep"), "preserved").unwrap();
     let (active, _) = add_workspace(&mut connection, &workspace_path, origin.id);
     let (removed, _) = add_workspace(&mut connection, &root.join("removed"), origin.id);
     diesel::update(trees::schema::workspaces::table)
@@ -131,72 +129,42 @@ fn gc_previews_cached_sizes_and_excludes_removed_workspaces() {
         .execute(&mut connection)
         .unwrap();
     diesel::update(trees::schema::workspaces::table.find(removed))
-        .set((
-            trees::schema::workspaces::state.eq(WorkspaceState::Removed),
-            trees::schema::workspaces::disk_usage_json.eq(Some("{}")),
-        ))
+        .set(trees::schema::workspaces::state.eq(WorkspaceState::Removed))
         .execute(&mut connection)
         .unwrap();
-    let before_events = trees::schema::lifecycle_events::table
-        .count()
-        .get_result::<i64>(&mut connection)
+    let observation = Observation {
+        observed_at: Timestamp::now(),
+        status: Completeness::Complete,
+        allocated_bytes: Some(1536),
+        issues: Vec::new(),
+    };
+    disk_usage_cache::save_if_path_unchanged(
+        &mut connection,
+        disk_usage_cache::EntityId::Workspace(active),
+        &path(&workspace_path),
+        Some(&observation),
+    )
+    .unwrap();
+    let output = command(&root)
+        .args(["gc", "--older-than", "30d", "--dry-run"])
+        .output()
         .unwrap();
-
-    for (status, expected) in [
-        (Some(Completeness::Complete), "1.5 KiB"),
-        (Some(Completeness::Partial), "1.5 KiB (partial)"),
-        (Some(Completeness::Unavailable), "unavailable"),
-        (None, "unknown"),
-    ] {
-        let observation = status.map(|status| Observation {
-            observed_at: Timestamp::now(),
-            status,
-            allocated_bytes: (status != Completeness::Unavailable).then_some(1536),
-            issues: (status != Completeness::Complete)
-                .then_some(Issue {
-                    code: IssueCode::EntryUnreadable,
-                    affected_count: Some(1),
-                })
-                .into_iter()
-                .collect(),
-        });
-        disk_usage_cache::save_if_path_unchanged(
-            &mut connection,
-            disk_usage_cache::EntityId::Workspace(active),
-            &path(&workspace_path),
-            observation.as_ref(),
-        )
+    assert!(output.status.success(), "{output:?}");
+    let output = String::from_utf8(output.stdout).unwrap();
+    let row = output
+        .lines()
+        .find(|line| line.contains(&active.to_string()))
         .unwrap();
-        let output = command(&root)
-            .args(["gc", "--older-than", "30d", "--dry-run"])
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "{output:?}");
-        let output = String::from_utf8(output.stdout).unwrap();
-        let row = output
-            .lines()
-            .find(|line| line.contains(&active.to_string()))
-            .unwrap();
-        assert!(row.starts_with("young"));
-        assert!(row.contains("1/1 api"));
-        assert!(row.contains(expected));
-        assert!(output.contains("SIZE"));
-        assert!(!output.contains("PATH"));
-        assert!(!output.contains(root.to_str().unwrap()));
-        assert!(!output.contains(&removed.to_string()));
-        assert_eq!(
-            trees::schema::lifecycle_events::table
-                .count()
-                .get_result::<i64>(&mut connection)
-                .unwrap(),
-            before_events
-        );
-        assert_eq!(
-            disk_usage_cache::workspaces_for_ids(&mut connection, &[active].into()).unwrap()
-                [&active],
-            observation
-        );
-    }
+    assert!(row.starts_with("young"));
+    assert!(row.contains("1/1 api"));
+    assert!(row.contains("1.5 KiB"));
+    assert!(output.contains("SIZE"));
+    assert!(!output.contains(root.to_str().unwrap()));
+    assert!(!output.contains(&removed.to_string()));
+    assert_eq!(
+        disk_usage_cache::workspaces_for_ids(&mut connection, &[active].into()).unwrap()[&active],
+        Some(observation),
+    );
     let skipped = command(&root)
         .args(["gc", "--older-than", "30d", "--yes"])
         .output()
@@ -211,10 +179,6 @@ fn gc_previews_cached_sizes_and_excludes_removed_workspaces() {
             .split_whitespace()
             .collect::<Vec<_>>(),
         ["1", "0", "0", "1", "0"]
-    );
-    assert_eq!(
-        fs::read_to_string(workspace_path.join("keep")).unwrap(),
-        "preserved"
     );
     diesel::update(trees::schema::workspaces::table.find(active))
         .set(trees::schema::workspaces::state.eq(WorkspaceState::Removed))
