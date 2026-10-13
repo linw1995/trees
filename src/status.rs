@@ -329,7 +329,7 @@ pub fn render_workspaces_with_sessions(
     }
 }
 
-fn render_table<const N: usize>(headers: &[&str; N], rows: &[[String; N]]) -> String {
+pub fn render_table<const N: usize>(headers: &[&str; N], rows: &[[String; N]]) -> String {
     let widths = std::array::from_fn::<_, N, _>(|column| {
         rows.iter()
             .map(|row| display_width(row[column].as_str()))
@@ -403,7 +403,7 @@ fn workspace_status_summary(workspace: &WorkspaceStatus) -> String {
     }
 }
 
-fn repository_summary(repositories: &[RepoWorktreeStatus], color: bool) -> String {
+pub fn repository_summary(repositories: &[RepoWorktreeStatus], color: bool) -> String {
     let ready = repositories
         .iter()
         .filter(|repository| repository.state == RepoWorktreeState::Attached)

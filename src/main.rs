@@ -443,20 +443,56 @@ fn load_gc_scan(arguments: &trees::cli::GcArgs) -> Result<trees::gc::GcScan, Cli
 }
 
 fn print_gc_scan(scan: &trees::gc::GcScan, force: bool) {
-    println!("cutoff={}", scan.cutoff);
-    println!("automatic={}", scan.counts.automatic);
-    println!("unclaimed={}", scan.counts.unclaimed);
-    println!("claimed={}", scan.counts.claimed);
-    println!("age_eligible={}", scan.counts.age_eligible);
-    println!("safe_to_remove={}", scan.counts.safe_to_remove);
-    println!("candidates={}", scan.execution_candidate_count(force));
-    for candidate in &scan.candidates {
-        println!(
-            "candidate={} reason={}",
-            candidate.workspace.canonical_path,
-            candidate.reason(force)
-        );
+    println!("Cutoff: {}\n", scan.cutoff);
+    println!(
+        "{}",
+        trees::status::render_table(
+            &[
+                "AUTOMATIC",
+                "UNCLAIMED",
+                "CLAIMED",
+                "AGE ELIGIBLE",
+                "SAFE TO REMOVE",
+                "CANDIDATES",
+            ],
+            &[[
+                scan.counts.automatic.to_string(),
+                scan.counts.unclaimed.to_string(),
+                scan.counts.claimed.to_string(),
+                scan.counts.age_eligible.to_string(),
+                scan.counts.safe_to_remove.to_string(),
+                scan.execution_candidate_count(force).to_string(),
+            ]],
+        )
+    );
+    if scan.candidates.is_empty() {
+        println!("\nNo automatic workspaces.");
+        return;
     }
+    let color = status_color_enabled();
+    let rows = scan
+        .candidates
+        .iter()
+        .map(|candidate| {
+            let repositories = candidate
+                .repositories
+                .iter()
+                .cloned()
+                .map(trees::status::RepoWorktreeStatus::from)
+                .collect::<Vec<_>>();
+            [
+                candidate.reason(force).to_string(),
+                trees::status::repository_summary(&repositories, color),
+                trees::status::disk_usage::inventory_cell(&candidate.disk_usage),
+                candidate.idle_since.to_string(),
+                candidate.workspace.id.to_string(),
+            ]
+        })
+        .collect::<Vec<_>>();
+    println!(
+        "\n{}",
+        trees::status::render_table(&["REASON", "REPOS", "SIZE", "IDLE SINCE", "ID"], &rows)
+    );
 }
 
 enum GcConfirmation {
@@ -494,11 +530,19 @@ fn confirm_gc_interactively(candidate_count: usize) -> Result<GcConfirmation, Cl
 
 fn execute_gc(arguments: &trees::cli::GcArgs) -> Result<ExitCode, CliError> {
     let report = execute_gc_report(arguments)?;
-    println!("unclaimed={}", report.scan.counts.unclaimed);
-    println!("claimed={}", report.scan.counts.claimed);
-    println!("removed={}", report.removed.len());
-    println!("skipped={}", report.skipped.len());
-    println!("failed={}", report.failed.len());
+    println!(
+        "\n{}",
+        trees::status::render_table(
+            &["UNCLAIMED", "CLAIMED", "REMOVED", "SKIPPED", "FAILED"],
+            &[[
+                report.scan.counts.unclaimed.to_string(),
+                report.scan.counts.claimed.to_string(),
+                report.removed.len().to_string(),
+                report.skipped.len().to_string(),
+                report.failed.len().to_string(),
+            ]],
+        )
+    );
     if !report.failed.is_empty() {
         for failure in report.failed {
             eprintln!("GC failed: {}: {}", failure.workspace_path, failure.error);
