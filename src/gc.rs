@@ -275,7 +275,11 @@ pub fn scan_with_force(
     force: bool,
 ) -> Result<GcScan, GcError> {
     let cutoff = Timestamp::before_seconds(older_than.seconds());
-    let workspaces = list_automatic_workspaces(connection).context(DatabaseSnafu)?;
+    let workspaces = list_automatic_workspaces(connection)
+        .context(DatabaseSnafu)?
+        .into_iter()
+        .filter(|workspace| workspace.state != WorkspaceState::Removed)
+        .collect::<Vec<_>>();
     let mut counts = GcCounts {
         automatic: workspaces.len(),
         ..GcCounts::default()
@@ -1673,6 +1677,7 @@ mod tests {
             (WorkspaceState::Ready, young, None),
             (WorkspaceState::Ready, old.clone(), Some("active")),
             (WorkspaceState::Degraded, old.clone(), None),
+            (WorkspaceState::Removed, old.clone(), None),
         ];
         let mut workspace_ids = Vec::new();
         for (state, idle_since, claim_kind) in entries {
@@ -1732,7 +1737,12 @@ mod tests {
         assert_eq!(result.counts.claimed, 1);
         assert_eq!(result.counts.age_eligible, 3);
         assert_eq!(result.counts.safe_to_remove, 0);
-        assert_eq!(workspace_ids.len(), 4);
+        assert_eq!(workspace_ids.len(), 5);
+        assert_eq!(result.candidates.len(), 4);
+        assert!(result
+            .candidates
+            .iter()
+            .all(|candidate| candidate.workspace.state != WorkspaceState::Removed));
 
         drop(connection);
         fs::remove_file(database_path).expect("state database should be removable");

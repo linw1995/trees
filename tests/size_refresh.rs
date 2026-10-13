@@ -99,6 +99,112 @@ fn add_workspace(
 }
 
 #[test]
+fn gc_previews_cached_sizes_and_excludes_removed_workspaces() {
+    use diesel::prelude::*;
+    use trees::status::disk_usage::Observation;
+
+    let root = root();
+    let database_path = database_path(&root);
+    fs::create_dir_all(database_path.parent().unwrap()).unwrap();
+    let mut connection = database::connect(&database_path).unwrap();
+    let origin = ensure_origin_repository(
+        &mut connection,
+        &path(root.join("api/.git")),
+        &path(root.join("api")),
+    )
+    .unwrap();
+    let pool = trees::storage::ensure_workspace_pool(
+        &mut connection,
+        &trees::pool::RepositorySetKey::from_repository_ids(&[origin.id]),
+    )
+    .unwrap();
+    let workspace_path = root.join("workspace");
+    let (active, _) = add_workspace(&mut connection, &workspace_path, origin.id);
+    let (removed, _) = add_workspace(&mut connection, &root.join("removed"), origin.id);
+    diesel::update(trees::schema::workspaces::table)
+        .set((
+            trees::schema::workspaces::management_mode.eq(WorkspaceManagementMode::Automatic),
+            trees::schema::workspaces::pool_id.eq(Some(pool.id)),
+        ))
+        .execute(&mut connection)
+        .unwrap();
+    diesel::update(trees::schema::workspaces::table.find(removed))
+        .set(trees::schema::workspaces::state.eq(WorkspaceState::Removed))
+        .execute(&mut connection)
+        .unwrap();
+    let observation = Observation {
+        observed_at: Timestamp::now(),
+        status: Completeness::Complete,
+        allocated_bytes: Some(1536),
+        issues: Vec::new(),
+    };
+    disk_usage_cache::save_if_path_unchanged(
+        &mut connection,
+        disk_usage_cache::EntityId::Workspace(active),
+        &path(&workspace_path),
+        Some(&observation),
+    )
+    .unwrap();
+    let output = command(&root)
+        .args(["gc", "--older-than", "30d", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let output = String::from_utf8(output.stdout).unwrap();
+    let row = output
+        .lines()
+        .find(|line| line.contains(&active.to_string()))
+        .unwrap();
+    assert!(row.starts_with("young"));
+    assert!(row.contains("1/1 api"));
+    assert!(row.contains("1.5 KiB"));
+    assert!(output.contains("SIZE"));
+    assert!(!output.contains(root.to_str().unwrap()));
+    assert!(!output.contains(&removed.to_string()));
+    assert_eq!(
+        disk_usage_cache::workspaces_for_ids(&mut connection, &[active].into()).unwrap()[&active],
+        Some(observation),
+    );
+    let skipped = command(&root)
+        .args(["gc", "--older-than", "30d", "--yes"])
+        .output()
+        .unwrap();
+    assert!(skipped.status.success(), "{skipped:?}");
+    let skipped = String::from_utf8(skipped.stdout).unwrap();
+    assert_eq!(
+        skipped
+            .lines()
+            .last()
+            .unwrap()
+            .split_whitespace()
+            .collect::<Vec<_>>(),
+        ["1", "0", "0", "1", "0"]
+    );
+    diesel::update(trees::schema::workspaces::table.find(active))
+        .set(trees::schema::workspaces::state.eq(WorkspaceState::Removed))
+        .execute(&mut connection)
+        .unwrap();
+    let empty = command(&root)
+        .args(["gc", "--older-than", "30d", "--yes"])
+        .output()
+        .unwrap();
+    assert!(empty.status.success(), "{empty:?}");
+    let empty = String::from_utf8(empty.stdout).unwrap();
+    assert!(empty.contains("No automatic workspaces."));
+    assert_eq!(
+        empty
+            .lines()
+            .last()
+            .unwrap()
+            .split_whitespace()
+            .collect::<Vec<_>>(),
+        ["0", "0", "0", "0", "0"]
+    );
+    drop(connection);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn lifecycle_refresh_updates_workspace_worktree_and_origin_caches() {
     let root = root();
     let origin_dir = root.join("origin");

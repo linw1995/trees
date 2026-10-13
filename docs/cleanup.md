@@ -12,10 +12,21 @@ trees gc --older-than 30d --yes
 trees gc --older-than 30d --force
 ```
 
-Normal GC reports automatic, unclaimed, claimed, age-eligible, and
-candidate counts before asking for confirmation. `--yes` skips confirmation
-while keeping normal safety checks. `--force` also skips confirmation and may
-remove dirty worktrees or unexpected content, but never bypasses manual,
+Normal GC shows the cutoff and a table of automatic, unclaimed, claimed,
+age-eligible, safe-to-remove, and candidate counts before asking for confirmation.
+A workspace table lists `REASON`, `REPOS`, `SIZE`, `IDLE SINCE`, and the stable
+workspace `ID` using the same aligned format as `trees status --view workspaces`.
+`REPOS` uses the workspace view's attached/total counts, repository names, and
+state markers. `SIZE` reads the same cached disk usage as the workspace view,
+including `unknown`, `unavailable`, and partial measurements. Removed workspaces
+are excluded from the table and scan counts. `IDLE SINCE` is the last release
+time, or the creation time if the workspace has never been released. After
+execution, a summary table reports unclaimed, claimed, removed, skipped, and
+failed counts.
+
+`--yes` skips confirmation while keeping normal safety checks.
+`--force` also skips confirmation and may remove dirty worktrees or unexpected
+content, but never bypasses manual,
 claim, operation, root-containment, or repository-identity guards.
 
 ## Remove Individual Workspaces
