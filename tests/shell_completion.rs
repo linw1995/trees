@@ -283,6 +283,8 @@ fn completes_every_workspace_and_claim_id_position() {
         vec!["trees", "release", "--workspace-id", &active],
         vec!["trees", "status", &active],
         vec!["trees", "status", "--workspace-id", &active],
+        vec!["trees", "reconcile", &active],
+        vec!["trees", "reconcile", "--workspace-id", &active],
         vec!["trees", "open", "--workspace-id", &active],
     ] {
         assert!(
@@ -294,6 +296,7 @@ fn completes_every_workspace_and_claim_id_position() {
         vec!["trees", "add", "--claim-id", &claim],
         vec!["trees", "release", "--claim-id", &claim],
         vec!["trees", "status", "--claim-id", &claim],
+        vec!["trees", "reconcile", "--claim-id", &claim],
         vec!["trees", "open", "--claim-id", &claim],
     ] {
         assert!(

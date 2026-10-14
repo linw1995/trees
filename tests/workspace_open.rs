@@ -408,7 +408,7 @@ mod unix {
             .unwrap()
             .unwrap();
 
-        for kind in ["release", "acquire", "claim", "gc", "remove"] {
+        for kind in ["release", "acquire", "claim", "gc", "remove", "reconcile"] {
             let intent = pending_operation(&mut db, workspace.id, kind);
             let output = command(&root)
                 .args(["open", &workspace.id.to_string(), "--program=pwd"])

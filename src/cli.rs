@@ -41,8 +41,34 @@ pub enum Command {
     Remove(RemoveArgs),
     #[command(about = "Inspect persisted pools, workspaces, or source repositories")]
     Status(StatusArgs),
+    #[command(about = "Check a workspace and update its persisted state")]
+    Reconcile(ReconcileArgs),
     #[command(about = "Open a program in a workspace or source repository")]
     Open(OpenArgs),
+}
+
+#[derive(Debug, Args)]
+#[command(group(workspace_locator::group(Self::SELECTION_DEFAULT)))]
+pub struct ReconcileArgs {
+    #[arg(id = "reconcile_workspace_id", group = workspace_locator::GROUP, value_name = "WORKSPACE_ID")]
+    pub workspace_id: Option<crate::domain::WorkspaceId>,
+
+    #[command(flatten)]
+    pub locator: WorkspaceLocatorArgs,
+
+    #[arg(long, help = "Print the reconciliation result as JSON")]
+    pub json: bool,
+}
+
+impl ReconcileArgs {
+    const SELECTION_DEFAULT: SelectionDefault = SelectionDefault::CurrentDirectory;
+
+    pub fn selector(&self) -> Result<WorkspaceSelector, InputError> {
+        self.locator.resolve(
+            self.workspace_id.map(WorkspaceLocatorInput::Id),
+            Self::SELECTION_DEFAULT,
+        )
+    }
 }
 
 #[derive(Debug, Args)]

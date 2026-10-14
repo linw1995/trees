@@ -96,6 +96,25 @@ struct IdBinding {
 
 const ID_BINDINGS: &[IdBinding] = &[
     IdBinding {
+        command: "reconcile",
+        argument: "reconcile_workspace_id",
+        kind: CandidateKind::Workspace {
+            include_removed: false,
+        },
+    },
+    IdBinding {
+        command: "reconcile",
+        argument: "workspace_id",
+        kind: CandidateKind::Workspace {
+            include_removed: false,
+        },
+    },
+    IdBinding {
+        command: "reconcile",
+        argument: "claim_id",
+        kind: CandidateKind::Claim,
+    },
+    IdBinding {
         command: "add",
         argument: "workspace_id",
         kind: CandidateKind::Workspace {
@@ -267,6 +286,7 @@ mod tests {
             ("claim", "workspace_dir"),
             ("release", "legacy_workspace_dir"),
             ("status", "workspace_dir"),
+            ("reconcile", "workspace_dir"),
             ("open", "workspace_dir"),
         ] {
             let argument = cli

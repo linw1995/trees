@@ -22,10 +22,50 @@ Status reads persisted state and cached disk usage from one consistent SQLite
 snapshot, then collects optional session metadata and observes target processes
 after closing the database connection. It does not scan workspace or repository
 directories, run Git, or inspect file contents. It does not reconcile, recover
-an expired operation, or assert that an available workspace is currently reusable. Use
+an expired operation, or assert that an available workspace is currently reusable.
+Use `trees reconcile` to check the current workspace and refresh its stored state. Use
 `trees gc --older-than 30d --dry-run` to check which workspaces currently qualify
 for removal at a chosen age threshold. User-configured hooks execute external
 code whose side effects are controlled by the provider.
+
+## Check Workspace State
+
+Run an explicit reconciliation after changes made outside Trees:
+
+```sh
+trees reconcile
+trees reconcile WORKSPACE_ID
+trees reconcile --workspace-id WORKSPACE_ID
+trees reconcile --workspace-dir ./workspace
+trees reconcile --claim-id CLAIM_ID --json
+```
+
+Without a selector, reconciliation checks the nearest registered workspace
+containing the current directory, including nested repository directories.
+Explicit selectors are mutually exclusive. Missing targets and removed
+workspaces fail. Manual and automatic workspaces can be checked, including
+workspaces with an active claim.
+
+Reconciliation observes Git worktree identity, revision, branch attachment,
+local changes, missing paths, and unexpected shared workspace content. It
+updates stored workspace and worktree states, reconciliation time, and lifecycle
+events. Repeated checks without new changes do not duplicate observation events.
+It preserves files, branches, revisions, and claims, and does not refresh cached
+disk usage or run status hooks.
+
+Checks use an exclusive operation lease and reject an active lifecycle operation.
+Expired `acquire`, `claim`, `release`, `gc`, `remove`, and `reconcile` operations
+are recovered by observation before checking. Expired `create`, `add`, and
+unknown operations require recovery through their lifecycle command because
+their recovery may change workspace structure. Open also supports recovery of
+expired reconciliation operations.
+
+Human output prints `workspace_id`, `workspace_path`, `workspace_state`, and
+`changed_worktrees` as assignments. `--json` emits the same fields in one object;
+progress goes to standard error. `changed_worktrees` counts worktrees whose
+stored state or HEAD changed during this check. A completed check succeeds even
+when the observed workspace is degraded; an execution or admission error fails.
+Use `trees status --view workspaces` afterward for individual worktree details.
 
 ## Target Workspace
 
@@ -311,7 +351,7 @@ canonical workspace directory; `--program=<PROGRAM>` selects another executable
 without shell parsing. Both manual and automatic workspaces can be opened
 without an active claim; opening does not acquire a claim. Open rejects removed
 workspaces and unexpired operation leases. Before opening,
-it recovers expired `acquire`, `claim`, `release`, `gc`, and `remove` operations
+it recovers expired `acquire`, `claim`, `release`, `gc`, `remove`, and `reconcile` operations
 through the shared lifecycle recovery workflow. Recovery observes the current
 worktrees, records the interrupted operation as failed, and releases its lease;
 it preserves branches, files, and claims without resuming the original command.

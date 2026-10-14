@@ -31,6 +31,7 @@ fn run(cli: trees::cli::Cli) -> Result<ExitCode, CliError> {
         trees::cli::Command::Gc(arguments) => run_gc(arguments),
         trees::cli::Command::Remove(arguments) => run_remove(arguments),
         trees::cli::Command::Status(arguments) => run_status(arguments),
+        trees::cli::Command::Reconcile(arguments) => run_reconcile(arguments),
         trees::cli::Command::Open(arguments) => run_open(arguments),
     }
 }
@@ -706,6 +707,20 @@ fn execute_removal(arguments: &trees::cli::RemoveArgs) -> Result<ExitCode, CliEr
     })
 }
 
+fn run_reconcile(arguments: trees::cli::ReconcileArgs) -> Result<ExitCode, CliError> {
+    let selector = arguments.selector()?;
+    let mut connection = trees::database::open_default()?;
+    let result = trees::reconciliation::execute(&mut connection, &selector)?;
+    if arguments.json {
+        return print_json(&result);
+    }
+    println!("workspace_id={}", result.workspace_id);
+    println!("workspace_path={}", result.workspace_path);
+    println!("workspace_state={}", result.workspace_state);
+    println!("changed_worktrees={}", result.changed_worktrees);
+    Ok(ExitCode::SUCCESS)
+}
+
 fn run_status(arguments: trees::cli::StatusArgs) -> Result<ExitCode, CliError> {
     if arguments.all && arguments.view != trees::cli::StatusView::Workspaces {
         return InvalidStatusArgumentsSnafu.fail();
@@ -785,6 +800,10 @@ fn exit_code(status: ExitStatus) -> ExitCode {
 
 #[derive(Debug, Snafu)]
 enum CliError {
+    #[snafu(transparent)]
+    Reconcile {
+        source: trees::reconciliation::ReconcileError,
+    },
     #[snafu(transparent)]
     Addition { source: trees::add::AddError },
     #[snafu(transparent)]
