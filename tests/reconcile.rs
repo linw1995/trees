@@ -267,17 +267,19 @@ fn finalizes_failed_checks_and_preserves_the_primary_error_chain() {
     use std::error::Error;
     use trees::workspace_locator::WorkspaceSelector;
 
-    for fail_finalization in [false, true] {
+    for (fail_observation, fail_finalization) in [(true, false), (true, true), (false, true)] {
         let fixture = Fixture::new(false);
         let mut connection = fixture.connection();
         fs::write(fixture.workspace.join("alpha/unsaved"), "keep this work").unwrap();
-        connection
-            .batch_execute(
-                "CREATE TRIGGER reject_observation BEFORE INSERT ON lifecycle_events
-             WHEN NEW.event_type = 'external_worktree_changed'
-             BEGIN SELECT RAISE(FAIL, 'observation persistence failed'); END;",
-            )
-            .unwrap();
+        if fail_observation {
+            connection
+                .batch_execute(
+                    "CREATE TRIGGER reject_observation BEFORE INSERT ON lifecycle_events
+                     WHEN NEW.event_type = 'external_worktree_changed'
+                     BEGIN SELECT RAISE(FAIL, 'observation persistence failed'); END;",
+                )
+                .unwrap();
+        }
         if fail_finalization {
             connection
                 .batch_execute(
@@ -289,12 +291,13 @@ fn finalizes_failed_checks_and_preserves_the_primary_error_chain() {
         let error =
             trees::reconciliation::execute(&mut connection, &WorkspaceSelector::Id(fixture.id))
                 .unwrap_err();
-        assert!(error.to_string().contains("observation persistence failed"));
-        assert!(error
-            .source()
-            .unwrap()
-            .to_string()
-            .contains("observation persistence failed"));
+        let expected_error = if fail_observation {
+            "observation persistence failed"
+        } else {
+            "finalization persistence failed"
+        };
+        assert!(error.to_string().contains(expected_error));
+        assert!(error.source().unwrap().to_string().contains(expected_error));
         let running = trees::storage::find_running_operation(&mut connection, &fixture.id).unwrap();
         assert_eq!(running.is_some(), fail_finalization);
         if fail_finalization {
@@ -317,6 +320,56 @@ fn finalizes_failed_checks_and_preserves_the_primary_error_chain() {
             "keep this work"
         );
     }
+}
+
+#[test]
+fn rejects_a_changed_current_workspace_after_recovery() {
+    use diesel::connection::SimpleConnection;
+
+    let fixture = Fixture::new(false);
+    let nested = fixture.workspace.join("alpha/nested");
+    fs::create_dir(&nested).unwrap();
+    let nested_id = WorkspaceId::new();
+    let intent = fixture.operation("reconcile", true);
+    let mut connection = fixture.connection();
+    connection
+        .batch_execute(&format!(
+            "CREATE TRIGGER register_nested_workspace AFTER DELETE ON operation_leases
+         WHEN OLD.operation_id = '{}'
+         BEGIN
+           INSERT INTO workspaces (id, canonical_path, state, created_at, updated_at)
+           VALUES ('{}', '{}', 'ready', '{}', '{}');
+         END;",
+            intent.id,
+            nested_id,
+            fs::canonicalize(&nested).unwrap().display(),
+            Timestamp::now(),
+            Timestamp::now(),
+        ))
+        .unwrap();
+    let output = fixture
+        .command()
+        .current_dir(&nested)
+        .arg("reconcile")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("workspace selection changed"));
+    assert_eq!(
+        operation_state(&mut connection, &intent.id).unwrap(),
+        Some(OperationState::Failed)
+    );
+    assert!(
+        trees::storage::find_running_operation(&mut connection, &fixture.id)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        trees::storage::find_running_operation(&mut connection, &nested_id)
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]

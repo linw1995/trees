@@ -42,8 +42,20 @@ command or operation kind added.
 
 ## Final Validation
 
-- All 440 Rust tests pass with `cargo test --all-targets --all-features`.
+- All 441 Rust tests pass with `cargo test --all-targets --all-features`.
 - Flake checks pass for the host system.
 - Strict delta validation passes without warnings. The reviewed change is
   synchronized to the lifecycle and open specifications and archived.
 - Repository hooks cover the final implementation and archived documents.
+
+## Coverage Review
+
+The first remote CI run passed every check. Its coverage report identified two
+uncovered behavior paths: target selection changing after recovery and terminal
+persistence failing after a successful observation. Add a deterministic database
+trigger regression for selection changes, and extend the existing failure matrix
+to cover successful observation with failed finalization. The remaining uncovered
+line is a test assertion's diagnostic output and does not justify another test.
+
+Removing the target identity guard makes the new selection regression fail,
+confirming that the guard protects behavior rather than adding redundant admission.

@@ -50,6 +50,11 @@ terminal operation success or failure.
 - **WHEN** another lifecycle operation has an active workspace lease
 - **THEN** reconciliation fails without observing the workspace or changing that operation
 
+#### Scenario: Reject a Changed Target After Recovery
+
+- **WHEN** the selected workspace changes between initial selection and final admission
+- **THEN** reconciliation fails before starting a new check and asks the caller to retry
+
 #### Scenario: Fail an Observation
 
 - **WHEN** a workspace check fails but its terminal event can be persisted
@@ -60,6 +65,11 @@ terminal operation success or failure.
 - **WHEN** the observation and its failure finalization both fail
 - **THEN** the command preserves the primary error chain and reports the finalization error
 - **AND** its retained lease remains available for later recovery
+
+#### Scenario: Fail After Successful Observation
+
+- **WHEN** observations succeed but the terminal operation event cannot be persisted
+- **THEN** reconciliation reports the persistence error and retains the operation lease for recovery
 
 ### Requirement: Recover Interrupted Reconciliation
 
