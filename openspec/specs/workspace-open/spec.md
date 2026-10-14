@@ -85,7 +85,7 @@ lease, open SHALL NOT trigger recovery, reconciliation, or lifecycle events.
 
 ### Requirement: Recover Expired Operations Before Opening
 
-Open SHALL recover expired `acquire`, `claim`, `release`, `gc`, and `remove`
+Open SHALL recover expired `acquire`, `claim`, `release`, `gc`, `remove`, and `reconcile`
 operations through shared lifecycle recovery without resuming the original
 command or changing branches, files, directory structure, or claims. It SHALL
 reject expired structural or unknown operations before lease takeover. Recovery
@@ -115,3 +115,9 @@ failed before retiring its lease.
 
 - **WHEN** recovery cannot complete its observations or persist its terminal event
 - **THEN** open reports the recovery error and does not start the program
+
+#### Scenario: Recover an Interrupted Reconciliation Before Opening
+
+- **WHEN** the workspace has an expired reconciliation operation lease
+- **THEN** open observes the worktrees, records the interrupted check as failed, and releases its lease
+- **AND** user files, branches, and claims remain intact

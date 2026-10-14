@@ -70,7 +70,7 @@ source directories stay at their original paths.
 | --- | --- |
 | [Installation](docs/installation.md) | Nix, source builds, release archives, and shell completion. |
 | [Workspace lifecycle](docs/workspaces.md) | Manual and automatic allocation, source selection, starting revisions, repository additions, explicit claims, and release. |
-| [Status and opening](docs/status.md) | Pool capacity, workspace health, source inventory, JSON output, and opening a workspace. |
+| [Status and opening](docs/status.md) | Pool capacity, workspace health, reconciliation, source inventory, JSON output, and opening a workspace. |
 | [Storage configuration](docs/configuration.md) | Automatic workspace and source clone directories. |
 | [Cleanup](docs/cleanup.md) | Automatic GC, workspace removal, and source record removal. |
 

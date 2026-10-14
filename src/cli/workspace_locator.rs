@@ -114,7 +114,7 @@ mod tests {
         Cli::command().debug_assert();
         let id = WorkspaceId::new().to_string();
         let claim = ClaimId::new().to_string();
-        for command in ["status", "open", "release"] {
+        for command in ["status", "open", "release", "reconcile"] {
             let positional = if command == "release" { "." } else { &id };
             let inputs = [
                 vec![positional],
@@ -130,6 +130,7 @@ mod tests {
                     Command::Status(args) => args.selector(),
                     Command::Open(args) => args.selector(),
                     Command::Release(args) => args.selector(),
+                    Command::Reconcile(args) => args.selector(),
                     _ => unreachable!(),
                 }
                 .unwrap();
@@ -161,6 +162,7 @@ mod tests {
                 Command::Status(args) => args.selector(),
                 Command::Open(args) => args.selector(),
                 Command::Release(args) => args.selector(),
+                Command::Reconcile(args) => args.selector(),
                 _ => unreachable!(),
             };
             assert!(matches!(result, Err(InputError::ClaimId { .. })));

@@ -103,10 +103,19 @@ fn named_selectors_reach_the_same_workspace_across_commands() {
                     .unwrap(),
             );
             assert_eq!(String::from_utf8_lossy(&opened.stdout).trim(), path);
+            let checked = success(
+                command(&root)
+                    .args(["reconcile", option, value, "--json"])
+                    .output()
+                    .unwrap(),
+            );
+            let checked: Value = serde_json::from_slice(&checked.stdout).unwrap();
+            assert_eq!(checked["workspace_id"], id);
+            assert_eq!(checked["workspace_state"], "ready");
         }
         fs::create_dir_all(Path::new(path).join("child")).unwrap();
         let missing_id = WorkspaceId::new().to_string();
-        for command_name in ["status", "open", "release"] {
+        for command_name in ["status", "open", "release", "reconcile"] {
             for selector in [
                 vec!["--workspace-id", missing_id.as_str()],
                 vec!["--claim-id", missing_id.as_str()],
@@ -185,7 +194,7 @@ fn named_selectors_reach_the_same_workspace_across_commands() {
 fn explicit_misses_and_conflicts_do_not_fall_back_to_current_directory() {
     let root = root();
     let id = WorkspaceId::new().to_string();
-    for command_name in ["status", "open", "release"] {
+    for command_name in ["status", "open", "release", "reconcile"] {
         for selector in [
             vec!["--workspace-id", &id],
             vec!["--workspace-dir", "."],

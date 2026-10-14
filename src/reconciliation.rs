@@ -1,11 +1,13 @@
 use std::time::Instant;
 
 use diesel::sqlite::SqliteConnection;
-use snafu::{ResultExt, Snafu};
+use diesel::Connection;
+use serde::Serialize;
+use snafu::{IntoError, ResultExt, Snafu};
 
 use crate::domain::{
-    JsonDocument, LeaseId, OperationId, OperationState, RepoWorktreeState, Timestamp, WorkspaceId,
-    WorkspaceState,
+    CanonicalPath, ClaimId, JsonDocument, LeaseId, OperationId, OperationState, RepoWorktreeState,
+    Timestamp, WorkspaceId, WorkspaceState,
 };
 use crate::git::GitError;
 use crate::storage::{
@@ -15,6 +17,138 @@ use crate::storage::{
     update_workspace_observation, OperationRow, RepoWorktreeRow, TransitionMetadata,
     WorkspaceClaimRow, WorkspaceRow,
 };
+use crate::workspace_locator::{locate, LocateError, WorkspaceSelector};
+
+#[derive(Debug, Serialize)]
+pub struct ReconcileResult {
+    pub workspace_id: WorkspaceId,
+    pub workspace_path: CanonicalPath,
+    pub workspace_state: WorkspaceState,
+    pub changed_worktrees: usize,
+}
+
+#[derive(Debug, Snafu)]
+pub enum ReconcileError {
+    #[snafu(display("workspace not found: {workspace_id}"))]
+    UnknownWorkspace { workspace_id: WorkspaceId },
+    #[snafu(display("workspace not found: {path}"))]
+    UnknownWorkspacePath { path: CanonicalPath },
+    #[snafu(display("workspace claim not found: {claim_id}"))]
+    UnknownWorkspaceClaim { claim_id: ClaimId },
+    #[snafu(display("workspace has been removed: {workspace_id}"))]
+    RemovedWorkspace { workspace_id: WorkspaceId },
+    #[snafu(display("workspace has an active operation: {workspace_id}"))]
+    ActiveOperation { workspace_id: WorkspaceId },
+    #[snafu(display("workspace selection changed during reconciliation; retry the command"))]
+    SelectionChanged,
+    #[snafu(transparent)]
+    Locate { source: LocateError },
+    #[snafu(transparent)]
+    Reconciliation { source: ReconciliationError },
+    #[snafu(
+        context(false),
+        display("reconciliation database operation failed: {source}")
+    )]
+    Database { source: diesel::result::Error },
+    #[snafu(display("{primary}; failed to finalize reconciliation: {finalization}"))]
+    Finalization {
+        #[snafu(source)]
+        primary: Box<ReconciliationError>,
+        finalization: diesel::result::Error,
+    },
+}
+
+/// Observes a selected workspace under an exclusive lifecycle operation lease.
+pub fn execute(
+    connection: &mut SqliteConnection,
+    selector: &WorkspaceSelector,
+) -> Result<ReconcileResult, ReconcileError> {
+    let workspace = connection.transaction(|connection| reconcile_target(connection, selector))?;
+    recover_expired_operation_for_access(connection, &workspace.id)?;
+    let intent = crate::storage::OperationIntent::new(
+        workspace.id,
+        "reconcile",
+        Timestamp::after_seconds(300),
+        "checking workspace",
+        JsonDocument::from_serializable(&serde_json::json!({
+            "workspace_path": workspace.canonical_path,
+        }))
+        .expect("reconciliation intent should serialize"),
+    );
+    // Admission is repeated with the write lock after recovery, before any Git work.
+    connection.immediate_transaction(|connection| {
+        let current = reconcile_target(connection, selector)?;
+        snafu::ensure!(
+            current.id == workspace.id && current.canonical_path == workspace.canonical_path,
+            SelectionChangedSnafu
+        );
+        snafu::ensure!(
+            find_running_operation(connection, &workspace.id)?.is_none(),
+            ActiveOperationSnafu {
+                workspace_id: workspace.id
+            }
+        );
+        crate::storage::persist_operation_intent(connection, &intent)?;
+        Ok::<_, ReconcileError>(())
+    })?;
+    let summary = match reconcile_workspace_with_lease(
+        connection,
+        &workspace.id,
+        &intent.id,
+        &intent.lease_id,
+    ) {
+        Ok(summary) => summary,
+        Err(primary) => {
+            let metadata = TransitionMetadata::new("operation_failed", "trees")
+                .with_error(json_error(&primary.to_string()));
+            if let Err(finalization) = record_operation_transition(
+                connection,
+                &intent.lease_id,
+                OperationState::Failed,
+                metadata,
+            ) {
+                return Err(FinalizationSnafu { finalization }.into_error(Box::new(primary)));
+            }
+            return Err(primary.into());
+        }
+    };
+    record_operation_transition(
+        connection,
+        &intent.lease_id,
+        OperationState::Succeeded,
+        TransitionMetadata::new("operation_succeeded", "trees")
+            .with_pending_step("reconciliation complete"),
+    )?;
+    Ok(ReconcileResult {
+        workspace_id: workspace.id,
+        workspace_path: workspace.canonical_path,
+        workspace_state: summary.workspace_state,
+        changed_worktrees: summary.changed_worktrees,
+    })
+}
+
+fn reconcile_target(
+    connection: &mut SqliteConnection,
+    selector: &WorkspaceSelector,
+) -> Result<WorkspaceRow, ReconcileError> {
+    let Some(located) = locate(connection, selector)? else {
+        return match selector {
+            WorkspaceSelector::Id(id) => UnknownWorkspaceSnafu { workspace_id: *id }.fail(),
+            WorkspaceSelector::ExactPath(path) | WorkspaceSelector::ContainingDirectory(path) => {
+                UnknownWorkspacePathSnafu { path: path.clone() }.fail()
+            }
+            WorkspaceSelector::ClaimId(id) => UnknownWorkspaceClaimSnafu { claim_id: *id }.fail(),
+        };
+    };
+    let workspace = located.workspace;
+    snafu::ensure!(
+        workspace.state != WorkspaceState::Removed,
+        RemovedWorkspaceSnafu {
+            workspace_id: workspace.id
+        }
+    );
+    Ok(workspace)
+}
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct ReconciliationSummary {
@@ -374,7 +508,7 @@ fn recover_expired_operation_inner(
         !preserve_worktrees
             || matches!(
                 operation.kind.as_str(),
-                "acquire" | "claim" | "release" | "gc" | "remove"
+                "acquire" | "claim" | "release" | "gc" | "remove" | "reconcile"
             ),
         RecoveryRequiredSnafu {
             workspace_id: *workspace_id,
