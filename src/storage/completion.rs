@@ -1,7 +1,10 @@
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 
-use crate::domain::{CanonicalPath, ClaimId, OriginRepositoryId, WorkspaceId, WorkspaceState};
+use crate::domain::{
+    CanonicalPath, ClaimId, OriginRepositoryId, WorkspaceId, WorkspaceManagementMode,
+    WorkspaceState,
+};
 use crate::schema::{origin_repositories, workspace_claims, workspaces};
 
 pub fn workspaces(
@@ -9,6 +12,19 @@ pub fn workspaces(
 ) -> QueryResult<Vec<(WorkspaceId, WorkspaceState)>> {
     workspaces::table
         .select((workspaces::id, workspaces::state))
+        .load(connection)
+}
+
+pub fn open_workspaces(connection: &mut SqliteConnection) -> QueryResult<Vec<WorkspaceId>> {
+    workspaces::table
+        .left_join(workspace_claims::table)
+        .filter(workspaces::state.ne(WorkspaceState::Removed))
+        .filter(
+            workspaces::management_mode
+                .eq(WorkspaceManagementMode::Manual)
+                .or(workspace_claims::id.is_not_null()),
+        )
+        .select(workspaces::id)
         .load(connection)
 }
 

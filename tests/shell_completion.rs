@@ -4,9 +4,12 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use trees::domain::{
-    CanonicalPath, ClaimId, OriginRepositoryId, Timestamp, WorkspaceId, WorkspaceState,
+    CanonicalPath, ClaimId, OriginRepositoryId, PoolId, Timestamp, WorkspaceId,
+    WorkspaceManagementMode, WorkspaceState,
 };
-use trees::storage::{NewOriginRepository, NewWorkspace, NewWorkspaceClaim};
+use trees::storage::{
+    NewManagedWorkspace, NewOriginRepository, NewWorkspace, NewWorkspaceClaim, NewWorkspacePool,
+};
 
 fn binary() -> &'static str {
     env!("CARGO_BIN_EXE_trees")
@@ -145,6 +148,40 @@ impl IdFixture {
             origin,
             claim,
         }
+    }
+
+    fn released_workspace(&self) -> WorkspaceId {
+        let mut connection = trees::database::connect(&database_path(&self.home)).unwrap();
+        let pool_id = PoolId::new();
+        trees::storage::insert_workspace_pool(
+            &mut connection,
+            &NewWorkspacePool {
+                id: pool_id,
+                hash_key: pool_id.to_string(),
+                repository_ids: "[]".to_owned(),
+            },
+        )
+        .unwrap();
+        let id = WorkspaceId::new();
+        let directory = self.home.join(id.to_string());
+        fs::create_dir(&directory).unwrap();
+        trees::storage::insert_managed_workspace(
+            &mut connection,
+            &NewManagedWorkspace {
+                id,
+                canonical_path: CanonicalPath::resolve(directory).unwrap(),
+                state: WorkspaceState::Ready,
+                created_at: Timestamp::now(),
+                updated_at: Timestamp::now(),
+                last_reconciled_at: None,
+                management_mode: WorkspaceManagementMode::Automatic,
+                pool_id: Some(pool_id),
+                last_released_at: Some(Timestamp::now()),
+                removed_at: None,
+            },
+        )
+        .unwrap();
+        id
     }
 }
 
@@ -353,6 +390,102 @@ fn completes_cross_entity_ids_without_ambiguous_values() {
         &["trees", "open", "--workspace-id", &collision]
     )
     .contains(&collision));
+}
+
+#[test]
+fn open_completion_tracks_current_claims_for_automatic_workspaces() {
+    let fixture = IdFixture::new();
+    let workspace_id = fixture.released_workspace();
+    let automatic = workspace_id.to_string();
+    let manual = fixture.collision.to_string();
+    let removed = fixture.removed.to_string();
+    let origin = fixture.origin.to_string();
+    let claim_id = ClaimId::new();
+    let mut connection = trees::database::connect(&database_path(&fixture.home)).unwrap();
+
+    for claimed in [false, true, false] {
+        if claimed {
+            trees::storage::insert_workspace_claim(
+                &mut connection,
+                &NewWorkspaceClaim {
+                    id: claim_id,
+                    workspace_id,
+                    claimed_at: Timestamp::now(),
+                },
+            )
+            .unwrap();
+        }
+        for shell in ["bash", "zsh"] {
+            for words in [
+                vec!["trees", "open", ""],
+                vec!["trees", "open", "--workspace-id", ""],
+                vec!["trees", "open", &automatic[..8]],
+                vec!["trees", "open", "--workspace-id", &automatic[..8]],
+            ] {
+                let ids = completion_values(&fixture.home, shell, &words);
+                assert_eq!(ids.contains(&automatic), claimed, "{shell}: {words:?}");
+                assert!(!ids.contains(&removed), "{shell}: {words:?}");
+            }
+            assert!(completion_values(
+                &fixture.home,
+                shell,
+                &["trees", "open", "--workspace-id", &manual],
+            )
+            .contains(&manual));
+            assert!(
+                completion_values(&fixture.home, shell, &["trees", "open", &origin])
+                    .contains(&origin)
+            );
+            assert_eq!(
+                completion_values(
+                    &fixture.home,
+                    shell,
+                    &["trees", "open", "--claim-id", &claim_id.to_string()],
+                )
+                .contains(&claim_id.to_string()),
+                claimed,
+            );
+            for words in [
+                vec!["trees", "claim", "--workspace-id", &automatic],
+                vec!["trees", "status", &automatic],
+                vec!["trees", "remove", &automatic],
+            ] {
+                assert!(completion_values(&fixture.home, shell, &words).contains(&automatic));
+            }
+        }
+        if claimed {
+            assert!(trees::storage::release_workspace_claim(
+                &mut connection,
+                &workspace_id,
+                &claim_id,
+            )
+            .unwrap());
+        }
+    }
+}
+
+#[test]
+fn hidden_workspaces_still_make_positional_origin_ids_ambiguous() {
+    let fixture = IdFixture::new();
+    let mut connection = trees::database::connect(&database_path(&fixture.home)).unwrap();
+    for workspace_id in [fixture.removed, fixture.released_workspace()] {
+        let id = workspace_id.to_string();
+        let path = fixture.home.join(format!("origin-{id}"));
+        fs::create_dir(&path).unwrap();
+        let path = CanonicalPath::resolve(path).unwrap();
+        trees::storage::insert_origin_repository(
+            &mut connection,
+            &NewOriginRepository {
+                id: id.parse().unwrap(),
+                repository_identity: path.clone(),
+                source_path: path,
+            },
+        )
+        .unwrap();
+        for shell in ["bash", "zsh"] {
+            assert!(completion_values(&fixture.home, shell, &["trees", "open", &id]).is_empty());
+        }
+    }
 }
 
 #[test]

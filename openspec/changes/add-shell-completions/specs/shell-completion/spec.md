@@ -35,7 +35,7 @@ Completion SHALL cover every current argument position that accepts a persisted 
 | `claim` | `--workspace-id` | Non-removed workspaces |
 | `release` | `--workspace-id`, `--claim-id` | Non-removed workspaces; active claims |
 | `status` | positional `WORKSPACE_ID`, `--workspace-id`, `--claim-id` | All workspaces including removed records; active claims |
-| `open` | positional `ID`, `--workspace-id`, `--claim-id` | Non-removed workspaces and registered origins for positional `ID`; non-removed workspaces for `--workspace-id`; active claims |
+| `open` | positional `ID`, `--workspace-id`, `--claim-id` | Non-removed manual or currently claimed automatic workspaces; registered origins for positional `ID`; active claims |
 | `remove` | positional `WORKSPACE_OR_REPO_ID` | Non-removed workspaces and registered origins |
 
 Future CLI arguments that accept persisted Trees IDs SHALL receive completion as part of their introduction. A candidate SHALL be offered only when it matches the typed prefix. Suggestions SHALL be sorted and deduplicated. Completion SHALL NOT promise that a candidate passes the command's later eligibility checks.
@@ -55,7 +55,16 @@ Future CLI arguments that accept persisted Trees IDs SHALL receive completion as
 
 - **WHEN** a user requests completion after `trees open` or `trees remove` and a space
 - **THEN** matching non-removed workspace and registered origin repository IDs are suggested
+- **AND** `open` omits automatic workspaces without a current claim
 - **AND** an ID present in both tables is not suggested as a positional candidate because the command would reject it as ambiguous
+
+#### Scenario: Open a Previously Released Workspace
+
+- **WHEN** an automatic workspace has been released and has no current claim
+- **THEN** its ID is omitted from positional and `--workspace-id` completion for `open`
+- **AND** it becomes a candidate again once a new claim exists, even if release history remains
+- **AND** manual workspaces remain candidates without claims
+- **AND** other commands retain their stated candidate scopes
 
 #### Scenario: Inspect a Removed Workspace
 
