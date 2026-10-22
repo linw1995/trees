@@ -76,3 +76,8 @@ upgrades. Completion suggests command options and IDs accepted by each command.
 Positional `open` and `remove` accept workspace and source repository IDs. For
 `create --repo` and `add --repo`, completion also suggests unique registered
 source names and local directories.
+
+`open` ID completion omits removed workspaces and automatic workspaces without
+a current claim. Released workspaces reappear after they are claimed again.
+Manual workspaces and registered source repositories remain available; other
+commands keep their own candidate scopes.

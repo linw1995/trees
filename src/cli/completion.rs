@@ -81,10 +81,17 @@ fn complete_repositories(current: &OsStr) -> Vec<CompletionCandidate> {
 
 #[derive(Clone, Copy, Debug)]
 enum CandidateKind {
-    Workspace { include_removed: bool },
+    Workspace(WorkspaceScope),
     Claim,
     Origin,
-    WorkspaceOrOrigin,
+    WorkspaceOrOrigin(WorkspaceScope),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum WorkspaceScope {
+    All,
+    NonRemoved,
+    ForOpen,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -98,16 +105,12 @@ const ID_BINDINGS: &[IdBinding] = &[
     IdBinding {
         command: "reconcile",
         argument: "reconcile_workspace_id",
-        kind: CandidateKind::Workspace {
-            include_removed: false,
-        },
+        kind: CandidateKind::Workspace(WorkspaceScope::NonRemoved),
     },
     IdBinding {
         command: "reconcile",
         argument: "workspace_id",
-        kind: CandidateKind::Workspace {
-            include_removed: false,
-        },
+        kind: CandidateKind::Workspace(WorkspaceScope::NonRemoved),
     },
     IdBinding {
         command: "reconcile",
@@ -117,9 +120,7 @@ const ID_BINDINGS: &[IdBinding] = &[
     IdBinding {
         command: "add",
         argument: "workspace_id",
-        kind: CandidateKind::Workspace {
-            include_removed: false,
-        },
+        kind: CandidateKind::Workspace(WorkspaceScope::NonRemoved),
     },
     IdBinding {
         command: "add",
@@ -129,16 +130,12 @@ const ID_BINDINGS: &[IdBinding] = &[
     IdBinding {
         command: "claim",
         argument: "workspace_id",
-        kind: CandidateKind::Workspace {
-            include_removed: false,
-        },
+        kind: CandidateKind::Workspace(WorkspaceScope::NonRemoved),
     },
     IdBinding {
         command: "release",
         argument: "workspace_id",
-        kind: CandidateKind::Workspace {
-            include_removed: false,
-        },
+        kind: CandidateKind::Workspace(WorkspaceScope::NonRemoved),
     },
     IdBinding {
         command: "release",
@@ -148,16 +145,12 @@ const ID_BINDINGS: &[IdBinding] = &[
     IdBinding {
         command: "status",
         argument: "legacy_workspace_id",
-        kind: CandidateKind::Workspace {
-            include_removed: true,
-        },
+        kind: CandidateKind::Workspace(WorkspaceScope::All),
     },
     IdBinding {
         command: "status",
         argument: "workspace_id",
-        kind: CandidateKind::Workspace {
-            include_removed: true,
-        },
+        kind: CandidateKind::Workspace(WorkspaceScope::All),
     },
     IdBinding {
         command: "status",
@@ -167,14 +160,12 @@ const ID_BINDINGS: &[IdBinding] = &[
     IdBinding {
         command: "open",
         argument: "legacy_workspace_id",
-        kind: CandidateKind::WorkspaceOrOrigin,
+        kind: CandidateKind::WorkspaceOrOrigin(WorkspaceScope::ForOpen),
     },
     IdBinding {
         command: "open",
         argument: "workspace_id",
-        kind: CandidateKind::Workspace {
-            include_removed: false,
-        },
+        kind: CandidateKind::Workspace(WorkspaceScope::ForOpen),
     },
     IdBinding {
         command: "open",
@@ -184,7 +175,7 @@ const ID_BINDINGS: &[IdBinding] = &[
     IdBinding {
         command: "remove",
         argument: "workspace_id",
-        kind: CandidateKind::WorkspaceOrOrigin,
+        kind: CandidateKind::WorkspaceOrOrigin(WorkspaceScope::NonRemoved),
     },
 ];
 
@@ -218,13 +209,19 @@ fn load_ids(
     kind: CandidateKind,
 ) -> QueryResult<BTreeSet<String>> {
     match kind {
-        CandidateKind::Workspace { include_removed } => {
-            Ok(storage::completion::workspaces(connection)?
+        CandidateKind::Workspace(WorkspaceScope::ForOpen) => {
+            Ok(storage::completion::open_workspaces(connection)?
                 .into_iter()
-                .filter(|(_, state)| include_removed || *state != WorkspaceState::Removed)
-                .map(|(id, _)| id.to_string())
+                .map(|id| id.to_string())
                 .collect())
         }
+        CandidateKind::Workspace(scope) => Ok(storage::completion::workspaces(connection)?
+            .into_iter()
+            .filter(|(_, state)| {
+                matches!(scope, WorkspaceScope::All) || *state != WorkspaceState::Removed
+            })
+            .map(|(id, _)| id.to_string())
+            .collect()),
         CandidateKind::Claim => Ok(storage::completion::claims(connection)?
             .into_iter()
             .map(|id| id.to_string())
@@ -233,15 +230,12 @@ fn load_ids(
             .into_iter()
             .map(|id| id.to_string())
             .collect()),
-        CandidateKind::WorkspaceOrOrigin => {
-            let workspaces = storage::completion::workspaces(connection)?;
+        CandidateKind::WorkspaceOrOrigin(scope) => {
+            let workspace_ids =
+                load_ids(connection, CandidateKind::Workspace(WorkspaceScope::All))?;
             let origins = load_ids(connection, CandidateKind::Origin)?;
-            let workspace_ids: BTreeSet<String> =
-                workspaces.iter().map(|(id, _)| id.to_string()).collect();
-            Ok(workspaces
+            Ok(load_ids(connection, CandidateKind::Workspace(scope))?
                 .into_iter()
-                .filter(|(_, state)| *state != WorkspaceState::Removed)
-                .map(|(id, _)| id.to_string())
                 .chain(origins.iter().cloned())
                 .filter(|id| !(workspace_ids.contains(id) && origins.contains(id)))
                 .collect())
