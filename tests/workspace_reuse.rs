@@ -841,6 +841,41 @@ fn forced_explicit_removal_removes_dirty_detached_content() {
 }
 
 #[test]
+fn forced_explicit_removal_unregisters_a_branch_attached_worktree() {
+    let mut fixture = automatic_fixture();
+    run_git(
+        &fixture.worktree_path,
+        &["checkout", "-q", "-b", "external"],
+    );
+
+    let normal = gc::scan_removal(&mut fixture.connection, &fixture.workspace.id, false)
+        .expect("normal removal preflight should succeed");
+    assert_eq!(normal.reason, gc::GcCandidateReason::WorktreeMismatch);
+    let forced = gc::scan_removal(&mut fixture.connection, &fixture.workspace.id, true)
+        .expect("forced removal preflight should succeed");
+    assert_eq!(forced.reason, gc::GcCandidateReason::Eligible);
+
+    let report = gc::remove_workspace(&mut fixture.connection, &fixture.workspace.id, true)
+        .expect("forced removal should succeed");
+    assert!(report.removed);
+    assert!(!fixture.workspace.canonical_path.as_path().exists());
+    assert_eq!(
+        git::list_worktrees(&fixture.source)
+            .expect("source worktrees should be readable")
+            .len(),
+        1
+    );
+    run_git(
+        fixture.source.as_path(),
+        &["show-ref", "--verify", "refs/heads/external"],
+    );
+
+    drop(fixture.connection);
+    fs::remove_file(fixture.database_path).expect("database should be removable");
+    fs::remove_dir_all(fixture.root).expect("test root should be removable");
+}
+
+#[test]
 fn explicit_removal_rejects_active_operations_and_recovers_expired_ones() {
     let mut fixture = automatic_fixture();
     let acquire = allocate_automatic_workspace(&mut fixture.connection, &fixture.plan)

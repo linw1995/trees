@@ -271,7 +271,7 @@ pub struct RemoveArgs {
 
     #[arg(
         long,
-        help = "Skip confirmation and allow removal of claimed workspaces, dirty worktrees, and unexpected content"
+        help = "Skip confirmation and allow removal of claimed workspaces, branch-attached or dirty worktrees, and unexpected content"
     )]
     pub force: bool,
 }

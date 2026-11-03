@@ -319,7 +319,7 @@ pub fn scan_with_force(
             let repositories =
                 list_repo_worktrees(connection, &candidate.workspace.id).context(DatabaseSnafu)?;
             candidate.physical_reason =
-                prepare_removal(&candidate.workspace, &repositories, force).err();
+                prepare_removal(&candidate.workspace, &repositories, force, RemovalScope::Gc).err();
         }
         if candidate.reason(force) == GcCandidateReason::Eligible {
             counts.safe_to_remove += 1;
@@ -403,9 +403,11 @@ fn removal_reason(
         return Ok(GcCandidateReason::Unhealthy);
     }
     let repositories = list_repo_worktrees(connection, &workspace.id).context(DatabaseSnafu)?;
-    Ok(prepare_removal(workspace, &repositories, force)
-        .err()
-        .unwrap_or(GcCandidateReason::Eligible))
+    Ok(
+        prepare_removal(workspace, &repositories, force, RemovalScope::Explicit)
+            .err()
+            .unwrap_or(GcCandidateReason::Eligible),
+    )
 }
 
 pub fn remove_workspace(
@@ -532,7 +534,7 @@ fn prepare_started_removal(
     }
 
     let repositories = list_repo_worktrees(connection, workspace_id).context(DatabaseSnafu)?;
-    match prepare_removal(&workspace, &repositories, force) {
+    match prepare_removal(&workspace, &repositories, force, RemovalScope::Explicit) {
         Ok(plan) => Ok(PreparedRemoval::Ready { workspace, plan }),
         Err(reason) => {
             finish_skipped_removal(connection, workspace_id, lease_id, workspace, force, reason)
@@ -845,7 +847,7 @@ fn execute_started_candidate(
     }
 
     let repositories = list_repo_worktrees(connection, workspace_id).context(DatabaseSnafu)?;
-    let removal_plan = match prepare_removal(&workspace, &repositories, force) {
+    let removal_plan = match prepare_removal(&workspace, &repositories, force, RemovalScope::Gc) {
         Ok(plan) => plan,
         Err(reason) => {
             finish_gc_skip(connection, lease_id, workspace_id, details_json, reason)?;
@@ -1060,6 +1062,12 @@ struct RemovalPlan {
     extra_entries: Vec<PathBuf>,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum RemovalScope {
+    Gc,
+    Explicit,
+}
+
 struct WorktreeRemoval {
     repository: CanonicalPath,
     path: PathBuf,
@@ -1070,6 +1078,7 @@ fn prepare_removal(
     workspace: &crate::storage::WorkspaceRow,
     repositories: &[RepoWorktreeRow],
     force: bool,
+    scope: RemovalScope,
 ) -> Result<RemovalPlan, GcCandidateReason> {
     let Some(workspace_root) = workspace.canonical_path.as_path().parent() else {
         return Err(GcCandidateReason::UnsafeRoot);
@@ -1088,7 +1097,8 @@ fn prepare_removal(
             extra_entries: Vec::new(),
         });
     };
-    let worktrees = prepare_worktree_removals(repositories, force)?;
+    let allow_branch_attached = force && scope == RemovalScope::Explicit;
+    let worktrees = prepare_worktree_removals(repositories, force, allow_branch_attached)?;
     Ok(RemovalPlan {
         workspace_path: workspace.canonical_path.as_path().to_owned(),
         worktrees,
@@ -1225,10 +1235,11 @@ fn workspace_root_reason(error: validation::WorkspaceRootError) -> GcCandidateRe
 fn prepare_worktree_removals(
     repositories: &[RepoWorktreeRow],
     force: bool,
+    allow_branch_attached: bool,
 ) -> Result<Vec<WorktreeRemoval>, GcCandidateReason> {
     repositories
         .iter()
-        .map(|repository| prepare_worktree_removal(repository, force))
+        .map(|repository| prepare_worktree_removal(repository, force, allow_branch_attached))
         .collect::<Result<Vec<_>, _>>()
         .map(|removals| removals.into_iter().flatten().collect())
 }
@@ -1236,17 +1247,19 @@ fn prepare_worktree_removals(
 fn prepare_worktree_removal(
     repository: &RepoWorktreeRow,
     force: bool,
+    allow_branch_attached: bool,
 ) -> Result<Option<WorktreeRemoval>, GcCandidateReason> {
     let listed = git::list_worktrees(&repository.source_path)
         .map_err(|_| GcCandidateReason::GitError)?
         .into_iter()
         .find(|worktree| worktree.path.as_path() == repository.worktree_path.as_path());
     let worktree_exists = worktree_path_exists(repository)?;
-    if let Some(worktree) = listed.as_ref() {
-        ensure_unbranched_worktree(worktree)?;
-    }
     if !force {
         validate_clean_worktree(repository, listed.as_ref(), worktree_exists)?;
+    } else if !allow_branch_attached {
+        if let Some(worktree) = listed.as_ref() {
+            ensure_unbranched_worktree(worktree)?;
+        }
     }
     let Some(worktree) = listed else {
         return Ok(worktree_exists.then(|| WorktreeRemoval {
@@ -1291,6 +1304,7 @@ fn validate_clean_worktree(
     let Some(worktree) = worktree else {
         return Err(GcCandidateReason::WorktreeMismatch);
     };
+    ensure_unbranched_worktree(worktree)?;
     if worktree.prunable.is_some() || !worktree_exists {
         return Err(GcCandidateReason::WorktreeMismatch);
     }
