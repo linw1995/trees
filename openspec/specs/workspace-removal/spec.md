@@ -59,9 +59,9 @@ serialize the new operation through the per-workspace operation lease.
 Normal removal SHALL require a ready workspace whose recorded worktrees are
 clean, detached, present, identity-matched, at their recorded revisions, and
 whose workspace directory contains no unexpected entries. `--force` MAY remove
-unhealthy, dirty, changed, missing, or extra physical content, but SHALL NOT
-bypass claims, unexpired operations, path containment, source repository
-identity, present worktree identity, or branch-attachment checks.
+unhealthy, dirty, changed, branch-attached, missing, or extra physical content,
+but SHALL NOT bypass claims, unexpired operations, path containment, source
+repository identity, or present worktree identity checks.
 
 #### Scenario: Reject Unsafe Normal Remove
 
@@ -74,6 +74,12 @@ identity, present worktree identity, or branch-attachment checks.
 - **WHEN** forced removal targets an unclaimed detached workspace with local
   changes and all hard guards pass
 - **THEN** it removes the workspace and records that the operation was forced
+
+#### Scenario: Force Remove a Branch-Attached Worktree
+
+- **WHEN** forced removal targets a branch-attached recorded worktree
+- **THEN** it removes the worktree and its source-repository registration while
+  preserving the branch ref
 
 ### Requirement: Support Read-Only Preflight
 
