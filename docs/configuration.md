@@ -237,43 +237,62 @@ printf '%s\n' '{"version":1,"workspaces":[{"id":"demo","path":"/work/demo"}]}' \
   | ./scripts/examples/session-hook
 ```
 
-### Codex Provider with UV
+### Agent Session Provider with UV
 
-The [Codex provider](../scripts/hooks/codex-sessions) is an executable `uv` script
-using only the Python standard library. It returns real session lists from local
-Codex metadata. Install `uv` and Python 3.11 or newer, then install the executable:
+The [session provider](../scripts/hooks/sessions) is an executable `uv`
+script using only the Python standard library. It returns real session lists from
+local Codex and Pi metadata. Install `uv` and Python 3.11 or newer, then install
+the executable:
 
 ```sh
 mkdir -p "$HOME/.local/bin"
-install -m755 scripts/hooks/codex-sessions "$HOME/.local/bin/trees-codex-sessions"
-printf '%s\n' '{"version":1,"workspaces":[]}' | "$HOME/.local/bin/trees-codex-sessions"
+install -m755 scripts/hooks/sessions "$HOME/.local/bin/trees-sessions"
+printf '%s\n' '{"version":1,"workspaces":[]}' | "$HOME/.local/bin/trees-sessions"
 ```
 
 The warm-up command verifies runtime availability. Execution uses
 `uv run --script --offline` and never downloads dependencies or Python during
-status. Configure the installed executable using your absolute home path:
+status. Replace a previous `trees-codex-sessions` installation with
+`trees-sessions` and update the configured `program` path. Configure the
+installed executable using your absolute home path:
 
 ```toml
 [status.latest_session_hook]
-program = "/Users/your-user/.local/bin/trees-codex-sessions"
+program = "/Users/your-user/.local/bin/trees-sessions"
 timeout_ms = 2000
 ```
 
-The provider reads `CODEX_HOME`, defaulting to `~/.codex`. For database location,
-a top-level `sqlite_home` in its `config.toml` takes precedence over
+For Codex, the provider reads `CODEX_HOME`, defaulting to `~/.codex`. For database
+location, a top-level `sqlite_home` in its `config.toml` takes precedence over
 `CODEX_SQLITE_HOME`; otherwise the Codex home is used. Relative configured paths
 resolve against the Codex home, while relative environment paths resolve against
 the hook's working directory. Profile and command-line storage overrides are not
 resolved. The newest numeric `state_*.sqlite` is opened read-only; required columns
 are checked before querying. No app-server starts and no transcripts are scanned.
 
+For Pi, the provider reads the agent directory from `PI_CODING_AGENT_DIR`,
+defaulting to `~/.pi/agent`. Session storage comes from
+`PI_CODING_AGENT_SESSION_DIR`, then a top-level `sessionDir` in the agent
+directory's `settings.json`, and otherwise the `sessions` subdirectory. Relative
+paths resolve against the hook's working directory. The provider scans `.jsonl`
+files recursively. `--session-dir` and project settings are not resolved. Pi's
+format permits `session` headers, message trees, forks, and clones; the provider
+reads the header first and only scans full files for a requested workspace.
+
 Only sessions whose canonical working directory equals a requested workspace root
 are included. Sessions started in nested repository directories are omitted. This
 avoids confusing nested workspace boundaries absent from the hook request. Archived
-sessions and child-agent sessions are excluded. Results use descending update time and descending session ID as the tiebreaker. Titles prefer the database name, latest valid
-`session_index.jsonl` name, stored title, preview, first message, and finally
-`Untitled session`. Optional name and millisecond timestamp columns are supported.
+Codex sessions and child-agent sources are excluded. Codex results prefer the
+database name, latest valid `session_index.jsonl` name, stored title, preview,
+first message, and finally `Untitled session`. Optional Codex name and millisecond
+timestamp columns are supported. Pi results prefer the latest `session_info` name,
+the first nonempty user message, and finally `Untitled session`. Pi update time
+follows the latest user or assistant message timestamp, then the header timestamp,
+then the file modification time. Sessions from both providers are merged by
+descending update time, then descending session ID.
 
-Missing storage returns empty lists. Unreadable or incompatible storage fails the
-hook visibly. The provider depends on Codex's internal metadata format and may
-need updates when that format changes. It never creates or migrates Codex storage.
+Missing storage returns empty lists. Unreadable or incompatible Codex storage
+fails the hook visibly. Invalid Pi settings fail the hook visibly, while malformed
+individual Pi session files are skipped as Pi's own session listing does. The
+provider depends on the internal metadata formats of both agents and may need
+updates when they change. It never creates or migrates agent storage.
