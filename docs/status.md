@@ -2,8 +2,8 @@
 
 [Back to Trees](../README.md#documentation)
 
-Inspect the persisted workspace inventory without changing lifecycle or Git
-state:
+Inspect the persisted workspace inventory and observe container workspace-root
+content without changing lifecycle or Git state:
 
 ```sh
 trees status
@@ -19,14 +19,16 @@ trees status WORKSPACE_ID --view repos --json
 ```
 
 Status reads persisted state and cached disk usage from one consistent SQLite
-snapshot, then collects optional session metadata and observes target processes
-after closing the database connection. It does not scan workspace or repository
-directories, run Git, or inspect file contents. It does not reconcile, recover
-an expired operation, or assert that an available workspace is currently reusable.
-Use `trees reconcile` to check the current workspace and refresh its stored state. Use
-`trees gc --older-than 30d --dry-run` to check which workspaces currently qualify
-for removal at a chosen age threshold. User-configured hooks execute external
-code whose side effects are controlled by the provider.
+snapshot. It then observes workspace-root content for a selected container
+workspace, collects optional session metadata, and observes target processes
+after closing the database connection. Content observation reads directory
+entries only; it does not run Git or scan workspace directories for size. Status
+does not reconcile, recover an expired operation, or assert that an available
+workspace is currently reusable. Use `trees reconcile` to refresh persisted
+workspace and worktree state. Use `trees gc --older-than 30d --dry-run` to check
+which workspaces currently qualify for removal at a chosen age threshold.
+User-configured hooks execute external code whose side effects are controlled by
+the provider.
 
 ## Check Workspace State
 
@@ -65,7 +67,7 @@ Human output prints `workspace_id`, `workspace_path`, `workspace_state`, and
 progress goes to standard error. `changed_worktrees` counts worktrees whose
 stored state or HEAD changed during this check. A completed check succeeds even
 when the observed workspace is degraded; an execution or admission error fails.
-Use `trees status --view workspaces` afterward for individual worktree details.
+Use `trees status --view workspaces` afterward for workspace-root content details.
 
 ## Target Workspace
 
@@ -84,6 +86,7 @@ Workspace (current directory)
   Path        /work/api
   Status      ready 🔒
   Mode        automatic 🤖
+  Content     clean
   Repos       0/0
   Disk usage  1.5 KiB
   Processes   0
@@ -95,15 +98,16 @@ No workspace pools.
 
 An explicit ID changes the heading to `Workspace (selected by ID)`. Manual mode
 uses `manual 👤`. A retained operation adds an `Operation` line between Mode
-and Repos, for example `release / running (lease expired)`; active and
+and Content, for example `release / running (lease expired)`; active and
 inconsistent leases are also identified. Status reports these operations without
 recovering them. Claim information appears only as the lock on Status.
 
 Summary reconciliation times use local `YYYY-MM-DD HH:MM:SS`, with the timezone
 offset applicable at the recorded instant, or `never` when absent. If local
 timezone lookup fails, the summary uses UTC without a suffix. Inventory tables
-keep their existing compact UTC times. Health and repository readiness are
-persisted observations, not live Git cleanliness checks.
+keep their existing compact UTC times. `Status` remains the persisted lifecycle
+state. `Content` reports unexpected entries at a container workspace root.
+`Repos` uses persisted worktree state.
 
 Outside any registered workspace, status silently prints the existing inventory
 without a summary, extra heading, or diagnostic. A removed workspace can still
@@ -125,9 +129,10 @@ RFC 3339 timestamps, and structured claim and operation objects. Human headings,
 escaping, colors, and emoji do not change the JSON contract. Prefer JSON for
 scripts; terminal summaries add lines when a target is found.
 
-Every version-2 report also contains nullable `target_disk_usage` and an ordered
-`workspace_disk_usage` array. The target field is null when no workspace is
-selected. The array has one entry per displayed row in `--view workspaces`, in
+Every version-2 report also contains nullable `target_workspace_observation` as
+specified by [Workspace Content](#workspace-content), nullable
+`target_disk_usage`, and an ordered `workspace_disk_usage` array. The target
+field is null when no workspace is selected. The array has one entry per displayed row in `--view workspaces`, in
 the same order as `workspaces`, and is empty in the other views. This includes
 removed rows displayed with `--all`. Each array entry adds `workspace_id` to
 the same observation fields used by `target_disk_usage`. When a target also
@@ -269,6 +274,8 @@ The default `pools` view reports one row per automatic repository set.
 
 Pipelines and `NO_COLOR` receive plain values without ANSI escapes. Availability
 is a scheduling hint; automatic allocation still reconciles a slot before use.
+Pool capacity remains persisted state. Select a workspace with `--view
+workspaces` or an explicit ID for workspace-root content details.
 Repository labels start with source-path base names and expand conflicting
 labels with parent components until unique within the pool.
 
@@ -283,31 +290,89 @@ snapshot for the selected view. Workspace JSON retains separate state and claim
 fields plus complete current operation, path, and repo-worktree details.
 
 Workspace `REPOS` uses `<ready>/<total>` followed by repository labels. Ready
-is the user-facing name for repo worktrees stored in the `attached` state. On
-interactive terminals, ready and total are green and blue; pipelines and
-`NO_COLOR` receive the same uncolored value. Ready repository labels are green,
-pending labels are yellow, and problem labels are red. Non-ready repositories
-also retain explicit suffixes such as `(dirty)`, `(missing)`, `(mismatch)`, and
-`(error)` in plain output. Removed labels are gray and use `(removed)`.
-Path-derived labels escape control characters and table delimiters before color
-is applied, preventing repository names from injecting terminal output.
+counts worktrees whose persisted state is attached. On interactive terminals,
+ready and total are green and blue; pipelines and `NO_COLOR` receive the same
+uncolored value. Ready repository labels are green, pending labels are yellow,
+and problem labels are red. Non-ready repositories also retain explicit suffixes
+such as `(dirty)`, `(missing)`, `(mismatch)`, and `(error)` in plain output.
+Removed labels are gray and use `(removed)`. Path-derived labels escape control
+characters and table delimiters before color is applied, preventing repository
+names from injecting terminal output.
 
-The workspace table adds `SIZE` between `REPOS` and `RECONCILED`. It shows the
-same cached amount as the target summary when that workspace is selected. A
-partial result uses `1.5 KiB (partial)`; a failed measurement uses
-`unavailable`, and an unmeasured workspace uses `unknown`. JSON contains the
-detailed issue codes. Removed rows displayed with `--all` also have a size
-cell, which becomes unknown after removal invalidates the old measurement.
+The workspace inventory table keeps `STATUS`, `MODE`, `REPOS`, `SIZE`,
+`RECONCILED`, and `ID`. It reads persisted state only; live observations are
+limited to the selected target summary. `SIZE` shows the same cached amount as
+the target summary when that workspace is selected. A partial result uses
+`1.5 KiB (partial)`; a failed measurement uses `unavailable`, and an unmeasured
+workspace uses `unknown`. JSON contains the detailed issue codes. Removed rows
+displayed with `--all` also have a size cell, which becomes unknown after
+removal invalidates the old measurement.
 
-For a selected workspace, an indented `REPO` and `SIZE` table follows the
-compact `Repos` line when worktrees exist. Each size measures the corresponding
-worktree path separately. The workspace root can contain a worktree and other files, so
-the worktree sizes are not added to calculate workspace `Disk usage`.
+For a selected container workspace, `Content` reports unexpected entries at the
+workspace root. When entries exist, a `WORKSPACE PATH` and `KIND` table follows
+the `Content` line. Paths are relative to the workspace root, sorted, and
+limited to 20 entries; the `Content` count remains the full count and a final
+`…` row marks truncation. Managed `AGENTS.md` instructions and expected worktree
+paths are excluded. A single-repository workspace whose root is the worktree
+does not show `Content` or a workspace entry table.
+
+An indented `REPO` and `SIZE` table follows the compact `Repos` line when
+worktrees exist. Each size measures the corresponding worktree path separately.
+The workspace root can contain a worktree and other files, so the worktree sizes
+are not added to calculate workspace `Disk usage`.
 
 ```text
 STATUS       MODE  REPOS               SIZE     RECONCILED  ID
 degraded 🔒  🤖    0/1 example(dirty)  1.5 KiB  10:00       01990000-0000-7000-8000-000000000002
 ```
+
+Selected container workspace detail:
+
+```text
+  Content     dirty (2 entries)
+    WORKSPACE PATH  KIND
+    notes.md        file
+    scripts         directory
+  Repos       2/2 api,web
+    REPO  SIZE
+    api   8.0 KiB
+    web   8.0 KiB
+  Disk usage  20.0 KiB
+```
+
+## Workspace Content
+
+Status observes workspace-root content for the selected target when its root is
+a container. A single-repository workspace whose root is the worktree is not
+observed. The observation runs after the read-only database transaction closes
+and never changes persisted state. It reads directory entries only.
+
+The observation collects entries that are neither expected repository worktree
+paths nor managed `AGENTS.md` instructions. A nonempty result is `dirty`; an
+empty result is `clean`. Paths are relative to the workspace root, sorted, and
+limited to 20 entries. The full count remains available when the list is
+truncated. A missing root is `missing`, a removed workspace is `removed`, and an
+unreadable root is `unknown` with an issue.
+
+`Content` in the summary reports `clean`, `dirty` with the entry count,
+`missing`, `removed`, or `unknown`. Clean is green, dirty and missing are red,
+and removed or unknown are gray. When unexpected entries exist, a `WORKSPACE
+PATH` and `KIND` table follows the `Content` line.
+
+Every version-2 report adds nullable top-level `target_workspace_observation`.
+It is null for a single-worktree root or when no target is selected. Otherwise,
+it has these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `observed_at` | RFC 3339 time at the start of content observation. |
+| `state` | `clean`, `dirty`, `missing`, `removed`, or `unknown`. |
+| `changed_entries` | Full unexpected entry count; null when not observed. |
+| `entries` | Ordered objects with relative `path` and `kind` (`file`, `directory`, `symlink`, or `other`). Limited to 20. |
+| `truncated` | Whether `entries` omits additional unexpected entries. |
+| `issues` | Objects with `code` and nullable bounded `message`. Codes are `root_unreadable` and `instructions_unreadable`. |
+
+Content observation failures are nonfatal and do not change the exit status.
 
 ## Source Repositories
 
@@ -316,9 +381,11 @@ columns. Conflicting labels expand to unique path suffixes. JSON uses the
 version-2 envelope with `view: "repos"` and a `repos` array containing
 `origin_repository_id`, `source_path`, `repository_identity`, `label`, and
 `disk_usage`.
-This view reads stored metadata without probing Git, migrating storage, or
-recovering clone operations. A missing source remains visible. `--all` applies
-only to the workspace view; repos has no hidden registration state.
+The repos inventory reads stored metadata without probing source repositories,
+migrating storage, or recovering clone operations. A missing source remains
+visible. `--all` applies only to the workspace view; repos has no hidden
+registration state. A selected target still receives the same workspace content
+observation as in the other views.
 
 ## Open an Existing Workspace or Source Repository
 
@@ -382,7 +449,8 @@ inventory, `--view workspaces` appends `LATEST SESSION`. It displays the first
 session as `AGENT: TITLE`, `—` for a successful empty list, or `unavailable` for a
 missing result or failed query. Trees preserves provider order even when a later
 entry has a newer timestamp. Titles are escaped and limited to 60 display columns;
-JSON retains full titles and every session. Target summaries remain unchanged.
+JSON retains full titles and every session. Target summaries retain their
+fields plus the optional `Content` line.
 
 Trees runs one batch after closing lifecycle storage and before observing target
 processes. It does not persist session results or use them for release, reuse, or

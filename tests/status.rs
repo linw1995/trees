@@ -1161,3 +1161,198 @@ mod session_hooks {
         fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[test]
+fn reports_container_workspace_content() {
+    let root = test_root();
+    let db_path = database_path(&root);
+    fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+
+    let workspace_dir = root.join("team");
+    fs::create_dir_all(workspace_dir.join("api")).unwrap();
+    fs::create_dir_all(workspace_dir.join("web")).unwrap();
+    trees::workspace_instructions::create(&workspace_dir).unwrap();
+    fs::write(workspace_dir.join("notes.md"), "notes\n").unwrap();
+    fs::create_dir_all(workspace_dir.join("scripts")).unwrap();
+
+    let mut connection = database::connect(&db_path).unwrap();
+    let api_origin = ensure_origin_repository(
+        &mut connection,
+        &path(root.join("origins/api")),
+        &path(root.join("origins/api")),
+    )
+    .unwrap();
+    let web_origin = ensure_origin_repository(
+        &mut connection,
+        &path(root.join("origins/web")),
+        &path(root.join("origins/web")),
+    )
+    .unwrap();
+    let workspace_id = insert_workspace(
+        &mut connection,
+        path(&workspace_dir),
+        WorkspaceState::Ready,
+        WorkspaceManagementMode::Manual,
+        None,
+    );
+    insert_repo_worktree(
+        &mut connection,
+        &NewRepoWorktree {
+            id: RepoWorktreeId::new(),
+            workspace_id,
+            origin_repository_id: api_origin.id,
+            worktree_path: path(workspace_dir.join("api")),
+            state: RepoWorktreeState::Attached,
+            last_head: None,
+            last_observed_at: Timestamp::now(),
+        },
+    )
+    .unwrap();
+    insert_repo_worktree(
+        &mut connection,
+        &NewRepoWorktree {
+            id: RepoWorktreeId::new(),
+            workspace_id,
+            origin_repository_id: web_origin.id,
+            worktree_path: path(workspace_dir.join("web")),
+            state: RepoWorktreeState::Attached,
+            last_head: None,
+            last_observed_at: Timestamp::now(),
+        },
+    )
+    .unwrap();
+
+    let single_dir = root.join("single");
+    fs::create_dir_all(&single_dir).unwrap();
+    let single_id = insert_workspace(
+        &mut connection,
+        path(&single_dir),
+        WorkspaceState::Ready,
+        WorkspaceManagementMode::Manual,
+        None,
+    );
+    insert_repo_worktree(
+        &mut connection,
+        &NewRepoWorktree {
+            id: RepoWorktreeId::new(),
+            workspace_id: single_id,
+            origin_repository_id: api_origin.id,
+            worktree_path: path(&single_dir),
+            state: RepoWorktreeState::Attached,
+            last_head: None,
+            last_observed_at: Timestamp::now(),
+        },
+    )
+    .unwrap();
+
+    let missing_id = insert_workspace(
+        &mut connection,
+        path(root.join("missing")),
+        WorkspaceState::Ready,
+        WorkspaceManagementMode::Manual,
+        None,
+    );
+    for (origin, name) in [(api_origin.id, "api"), (web_origin.id, "web")] {
+        insert_repo_worktree(
+            &mut connection,
+            &NewRepoWorktree {
+                id: RepoWorktreeId::new(),
+                workspace_id: missing_id,
+                origin_repository_id: origin,
+                worktree_path: path(root.join("missing").join(name)),
+                state: RepoWorktreeState::Attached,
+                last_head: None,
+                last_observed_at: Timestamp::now(),
+            },
+        )
+        .unwrap();
+    }
+    drop(connection);
+    let before_database = fs::read(&db_path).unwrap();
+
+    let human = command(&root)
+        .args(["status", &workspace_id.to_string(), "--view", "workspaces"])
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    assert!(human.status.success());
+    let human = String::from_utf8(human.stdout).unwrap();
+    assert!(human.contains("Content     dirty (2 entries)"), "{human}");
+    assert!(human.contains("WORKSPACE PATH"), "{human}");
+    assert!(human.contains("KIND"), "{human}");
+    assert!(human.contains("notes.md"), "{human}");
+    assert!(human.contains("scripts"), "{human}");
+    assert!(human.contains("Repos       2/2 api,web"), "{human}");
+    assert!(human.contains("REPO  SIZE"), "{human}");
+    assert!(!human.contains("SCOPE"), "{human}");
+    assert!(!human.contains("CHANGES"), "{human}");
+    assert!(!human.contains("Changes"), "{human}");
+    assert!(!human.contains("AGENTS.md"), "{human}");
+
+    let json = command(&root)
+        .args([
+            "status",
+            &workspace_id.to_string(),
+            "--view",
+            "workspaces",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(json.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let content = &value["target_workspace_observation"];
+    assert_eq!(content["state"], "dirty");
+    assert_eq!(content["changed_entries"], 2);
+    assert_eq!(content["entries"][0]["path"], "notes.md");
+    assert_eq!(content["entries"][0]["kind"], "file");
+    assert_eq!(content["entries"][1]["path"], "scripts");
+    assert_eq!(content["entries"][1]["kind"], "directory");
+    assert_eq!(content["truncated"], false);
+    assert!(value.get("target_worktree_observation").is_none());
+
+    fs::remove_file(workspace_dir.join("notes.md")).unwrap();
+    fs::remove_dir(workspace_dir.join("scripts")).unwrap();
+    let human = command(&root)
+        .args(["status", &workspace_id.to_string()])
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    assert!(human.status.success());
+    let human = String::from_utf8(human.stdout).unwrap();
+    assert!(human.contains("Content     clean"), "{human}");
+    assert!(!human.contains("WORKSPACE PATH"), "{human}");
+
+    fs::write(workspace_dir.join("AGENTS.md"), "modified\n").unwrap();
+    let human = command(&root)
+        .args(["status", &workspace_id.to_string()])
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    assert!(human.status.success());
+    let human = String::from_utf8(human.stdout).unwrap();
+    assert!(human.contains("Content     dirty (1 entry)"), "{human}");
+    assert!(human.contains("AGENTS.md"), "{human}");
+
+    let human = command(&root)
+        .args(["status", &single_id.to_string()])
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    assert!(human.status.success());
+    let human = String::from_utf8(human.stdout).unwrap();
+    assert!(!human.contains("Content"), "{human}");
+    assert!(!human.contains("WORKSPACE PATH"), "{human}");
+
+    let human = command(&root)
+        .args(["status", &missing_id.to_string()])
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    assert!(human.status.success());
+    let human = String::from_utf8(human.stdout).unwrap();
+    assert!(human.contains("Content     missing"), "{human}");
+
+    assert_eq!(fs::read(&db_path).unwrap(), before_database);
+    fs::remove_dir_all(root).unwrap();
+}

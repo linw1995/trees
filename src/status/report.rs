@@ -3,6 +3,7 @@ use serde::Serialize;
 use snafu::ResultExt;
 
 use super::combined::{self, Snapshot, SnapshotError};
+use super::contents;
 use super::disk_usage;
 use super::processes::{self, Boundary, Observation};
 use super::{session_hook, StatusView, WorkspaceStatus};
@@ -16,6 +17,7 @@ pub struct Report {
     pub snapshot: Snapshot,
     pub target_processes: Option<Observation>,
     pub target_disk_usage: Option<disk_usage::CachedObservation>,
+    pub target_workspace_observation: Option<contents::Observation>,
     pub workspace_disk_usage: Vec<WorkspaceDiskUsage>,
     pub workspace_sessions: Option<session_hook::Observation>,
 }
@@ -56,6 +58,7 @@ fn load_with_observers(
     let (snapshot, boundaries) =
         load_persisted(connection.as_mut(), selector, view, include_removed, || {})?;
     drop(connection);
+    let target_workspace_observation = contents::observe(snapshot.target());
     let workspace_sessions = match &snapshot {
         Snapshot::Workspaces(snapshot) if !snapshot.workspaces.is_empty() => {
             sessions(&snapshot.workspaces)
@@ -81,6 +84,7 @@ fn load_with_observers(
         snapshot,
         target_processes,
         target_disk_usage,
+        target_workspace_observation,
         workspace_disk_usage,
         workspace_sessions,
     })

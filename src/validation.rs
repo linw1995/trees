@@ -30,6 +30,17 @@ pub fn validate_workspace_contents(
     workspace_path: &Path,
     expected_worktree_paths: &[PathBuf],
 ) -> Result<(), WorkspaceRootError> {
+    let unexpected = unexpected_workspace_entries(workspace_path, expected_worktree_paths)?;
+    if let Some(path) = unexpected.into_iter().next() {
+        return Err(WorkspaceRootError::UnexpectedEntry { path });
+    }
+    Ok(())
+}
+
+pub fn unexpected_workspace_entries(
+    workspace_path: &Path,
+    expected_worktree_paths: &[PathBuf],
+) -> Result<Vec<PathBuf>, WorkspaceRootError> {
     if !workspace_path.is_dir() {
         return Err(WorkspaceRootError::NotDirectory {
             path: workspace_path.to_owned(),
@@ -37,13 +48,14 @@ pub fn validate_workspace_contents(
     }
 
     if expected_worktree_paths == [workspace_path] {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     let expected = expected_worktree_paths
         .iter()
         .cloned()
         .collect::<HashSet<_>>();
+    let mut unexpected = Vec::new();
     for entry in fs::read_dir(workspace_path).context(ReadDirectoryRootSnafu {
         path: workspace_path,
     })? {
@@ -53,11 +65,11 @@ pub fn validate_workspace_contents(
         if !expected.contains(entry.path().as_path())
             && !crate::workspace_instructions::is_managed(&entry.path())?
         {
-            return Err(WorkspaceRootError::UnexpectedEntry { path: entry.path() });
+            unexpected.push(entry.path());
         }
     }
-
-    Ok(())
+    unexpected.sort();
+    Ok(unexpected)
 }
 
 #[derive(Debug, Clone)]
